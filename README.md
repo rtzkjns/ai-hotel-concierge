@@ -1,6 +1,6 @@
 # Kazzhol Concierge — MVP
 
-A pitchable **Telegram** bot that acts as a virtual concierge for **Hotel Kazzhol Astana**. It:
+A pitchable **Telegram** bot that acts as a virtual concierge for all three **Kazzhol** hotels — Astana, Almaty, and Park Almaty. The guest picks their hotel first, then the bot uses that property's knowledge. It:
 
 - Answers guest questions in **Russian, Kazakh, and English** (auto-detects and replies in the same language), grounded in a per-property knowledge base.
 - Captures **booking requests** (dates, guests, room type, contact) and forwards them to staff — works with **no PMS / booking system** (lead-capture fallback).
@@ -34,7 +34,8 @@ npm test        # run the unit test suite
 ```
 
 ## Demo script (what to show the owner)
-- Ask in Russian: «Где находится отель?» → grounded Russian answer.
+- Send `/start` → pick a hotel (Astana / Almaty / Park Almaty).
+- Ask in Russian: «Где находится отель?» → grounded Russian answer for the chosen hotel.
 - Ask the same in Kazakh and English → replies switch language to match.
 - «Хочу забронировать номер на 1–3 июля, 2 гостя» → bot collects details, a lead lands in the staff group.
 - «Хочу поговорить с человеком» → escalation appears in the staff group; the bot goes quiet on that thread.
@@ -44,7 +45,7 @@ npm test        # run the unit test suite
 src/
   config.ts            env + config
   types.ts             shared types
-  knowledge/astana.ts  Astana property facts (confirm with owner before pitch)
+  knowledge/index.ts   all 3 properties' facts (confirm prices with owner before pitch)
   store.ts             SQLite: conversations + booking leads
   ai/systemPrompt.ts   system prompt (voice + KB + language rules)
   ai/tools.ts          Claude tool schemas

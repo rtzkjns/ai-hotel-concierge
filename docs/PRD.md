@@ -126,6 +126,8 @@ Off-the-shelf tools (Simplified, SocialRails, ManyChat) are either pure schedule
 
 The "check availability / quote / book" features **cannot be built without knowing and getting API access to Kazzhol's PMS / booking engine / channel manager.** Public data shows they sell on Booking.com + website + Guest Reservations, but the backend system is unknown (in CIS commonly **TravelLine** or **Bnovo**).
 
+**Site inspection finding (2026-06-19):** kazzhol.com has **no embedded self-service booking engine** — no TravelLine/Bnovo/other widget on the page. Direct reservations are taken **manually** via WhatsApp (per-property numbers published on the site: Astana +7 776 412 6353, Almaty +7 708 709 3000, Park Almaty +7 708 906 0661), reservations email, phone, and Booking.com. They likely run a channel manager internally to sync Booking.com inventory, but it is not detectable from outside. **This strongly validates the lead-capture fallback** and means the one question for the owner is: *"how do you manage availability / Booking.com — manually, or via a system like TravelLine/Bnovo (and does it have an API)?"*
+
 **Action required from owner before §3 booking features start:**
 - Which PMS / booking engine / channel manager do the hotels use?
 - Is API access available, and read-only vs read-write?
@@ -157,9 +159,9 @@ Until this is answered, availability/booking is **specced but not started**; FAQ
 2. Answers **FAQs in RU / KK / EN** with auto-detect, grounded in real Kazzhol facts (scraped from their site/booking pages + a small editable knowledge base).
 3. Handles **booking requests via the lead-capture fallback** — collects dates, guests, room preference, contact, and says "our team will confirm availability." This demos the *entire* booking conversation **without a PMS**; when the PMS arrives later it slots in behind the same flow.
 4. Demonstrates **human handoff** — on a complaint / "talk to a human" / unanswerable question, it pauses on that thread and posts the conversation + a "needs a human" alert into a **private Telegram staff group**; a manager replies there.
-5. Covers **one property first — Astana** (largest following, ~18K), then clone the KB for the others.
+5. Covers **all three properties** (Astana, Almaty, Park Almaty). The guest picks their hotel first (inline keyboard), then the bot uses that property's knowledge base. One brain, per-property knowledge.
 
-**Locked MVP decisions:** channel = **Telegram bot** (closest analog to the real WhatsApp/IG DM product, Meta-free) · voice = **warm & friendly** · handoff = **private Telegram staff group** (chain has no unified inbox today — that's part of the value we sell) · first property = **Astana**.
+**Locked MVP decisions:** channel = **Telegram bot** (closest analog to the real WhatsApp/IG DM product, Meta-free) · voice = **warm & friendly** · handoff = **private Telegram staff group** (chain has no unified inbox today — that's part of the value we sell) · properties = **all 3, guest selects hotel first**.
 
 **Explicitly NOT in the MVP:** real-time availability/pricing (needs PMS), WhatsApp/Instagram (need Meta), outbound posting. These come after the pitch lands.
 

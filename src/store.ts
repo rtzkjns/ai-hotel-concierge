@@ -28,7 +28,7 @@ export class Store {
     `);
   }
 
-  getOrCreateConversation(chatId: number, property: string): Conversation {
+  getOrCreateConversation(chatId: number, property: string = ''): Conversation {
     const row = this.db
       .prepare('SELECT chat_id, property, status, history FROM conversations WHERE chat_id = ?')
       .get(chatId) as
@@ -50,11 +50,16 @@ export class Store {
   }
 
   appendMessage(chatId: number, message: ChatMessage): void {
-    const convo = this.getOrCreateConversation(chatId, 'astana');
+    const convo = this.getOrCreateConversation(chatId);
     const history = [...convo.history, message];
     this.db
       .prepare('UPDATE conversations SET history = ? WHERE chat_id = ?')
       .run(JSON.stringify(history), chatId);
+  }
+
+  setProperty(chatId: number, property: string): void {
+    this.getOrCreateConversation(chatId);
+    this.db.prepare('UPDATE conversations SET property = ? WHERE chat_id = ?').run(property, chatId);
   }
 
   setStatus(chatId: number, status: ConversationStatus): void {

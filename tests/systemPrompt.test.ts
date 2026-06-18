@@ -1,12 +1,21 @@
 import { describe, it, expect } from 'vitest';
 import { buildSystemPrompt } from '../src/ai/systemPrompt';
-import { astanaKnowledge } from '../src/knowledge/astana';
+import { properties } from '../src/knowledge';
 
 describe('buildSystemPrompt', () => {
-  const prompt = buildSystemPrompt(astanaKnowledge);
+  const astana = properties.astana;
+  const prompt = buildSystemPrompt(astana.name, astana.knowledge);
 
-  it('embeds the property knowledge', () => {
+  it('embeds the property name and knowledge', () => {
     expect(prompt).toContain('Hotel Kazzhol Astana');
+    expect(prompt).toContain('Fergana'); // a fact from the Astana knowledge base
+  });
+
+  it('uses the given property name, not a hardcoded one', () => {
+    const almaty = properties.almaty;
+    const p = buildSystemPrompt(almaty.name, almaty.knowledge);
+    expect(p).toContain('Hotel Kazzhol Almaty');
+    expect(p).not.toContain('Hotel Kazzhol Astana');
   });
 
   it('instructs language mirroring for the three languages', () => {

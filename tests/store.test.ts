@@ -23,6 +23,13 @@ describe('Store', () => {
     expect(convo.history[0]).toEqual({ role: 'user', content: 'Привет' });
   });
 
+  it('sets the chosen property and defaults to unselected', () => {
+    const fresh = store.getOrCreateConversation(222);
+    expect(fresh.property).toBe('');
+    store.setProperty(222, 'almaty');
+    expect(store.getOrCreateConversation(222).property).toBe('almaty');
+  });
+
   it('marks a conversation handed off', () => {
     store.getOrCreateConversation(111, 'astana');
     store.setStatus(111, 'handed_off');
