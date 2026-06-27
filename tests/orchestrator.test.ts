@@ -23,6 +23,7 @@ describe('generateReply', () => {
       systemPrompt: 's',
       onBookingLead: vi.fn(),
       onEscalate: vi.fn(),
+      checkAvailability: vi.fn(async () => ({ property: '', checkIn: '', checkOut: '', offers: [], source: 'stub' as const })),
     });
     expect(result.reply).toBe('We are 10 minutes from Bayterek.');
     expect(result.handedOff).toBe(false);
@@ -57,6 +58,7 @@ describe('generateReply', () => {
       systemPrompt: 's',
       onBookingLead,
       onEscalate: vi.fn(),
+      checkAvailability: vi.fn(async () => ({ property: '', checkIn: '', checkOut: '', offers: [], source: 'stub' as const })),
     });
     expect(onBookingLead).toHaveBeenCalledWith(expect.objectContaining({ contactName: 'Aibek' }));
     expect(result.reply).toBe('Thank you! Our team will confirm.');
@@ -85,6 +87,7 @@ describe('generateReply', () => {
       systemPrompt: 's',
       onBookingLead: vi.fn(),
       onEscalate,
+      checkAvailability: vi.fn(async () => ({ property: '', checkIn: '', checkOut: '', offers: [], source: 'stub' as const })),
     });
     expect(onEscalate).toHaveBeenCalledWith('complaint', 'Guest unhappy with noise');
     expect(result.handedOff).toBe(true);

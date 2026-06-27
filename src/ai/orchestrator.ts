@@ -1,6 +1,7 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import type { ChatMessage } from '../types';
-import { toolDefinitions, type BookingLeadArgs, type EscalateArgs } from './tools';
+import { toolDefinitions, type BookingLeadArgs, type EscalateArgs, type CheckAvailabilityArgs } from './tools';
+import type { AvailabilityResult } from '../integrations/exely/types';
 
 export interface AnthropicLike {
   messages: {
@@ -14,6 +15,7 @@ export interface GenerateDeps {
   systemPrompt: string;
   onBookingLead: (args: BookingLeadArgs) => Promise<void> | void;
   onEscalate: (reason: string, summary: string) => Promise<void> | void;
+  checkAvailability: (args: CheckAvailabilityArgs) => Promise<AvailabilityResult>;
 }
 
 export async function generateReply(
@@ -64,6 +66,14 @@ export async function generateReply(
           type: 'tool_result',
           tool_use_id: block.id,
           content: 'Escalated to staff.',
+        });
+      } else if (block.name === 'check_availability') {
+        const args = block.input as CheckAvailabilityArgs;
+        const availability = await deps.checkAvailability(args);
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: block.id,
+          content: JSON.stringify(availability),
         });
       }
     }

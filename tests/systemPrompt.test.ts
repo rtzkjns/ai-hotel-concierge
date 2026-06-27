@@ -39,3 +39,11 @@ describe('buildSystemPrompt', () => {
     expect(prompt).toMatch(/multi-part/i);
   });
 });
+
+describe('buildSystemPrompt availability rules', () => {
+  it('tells the AI to use check_availability and never invent prices/availability', () => {
+    const prompt = buildSystemPrompt('Hotel Kazzhol Astana', 'KNOWLEDGE');
+    expect(prompt).toContain('check_availability');
+    expect(prompt.toLowerCase()).toContain('never invent');
+  });
+});

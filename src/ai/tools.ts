@@ -15,6 +15,13 @@ export interface EscalateArgs {
   summary: string;
 }
 
+export interface CheckAvailabilityArgs {
+  checkIn: string;
+  checkOut: string;
+  guests: number;
+  roomType?: string;
+}
+
 export const toolDefinitions: Anthropic.Tool[] = [
   {
     name: 'capture_booking_lead',
@@ -38,6 +45,23 @@ export const toolDefinitions: Anthropic.Tool[] = [
         },
       },
       required: ['checkIn', 'checkOut', 'guests', 'roomType', 'contactName', 'contactPhone'],
+    },
+  },
+  {
+    name: 'check_availability',
+    description:
+      'Look up LIVE room availability and price for specific dates. Always call this before ' +
+      'quoting any price or saying whether rooms are free — never guess. Returns room offers ' +
+      'with per-night price in KZT.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        checkIn: { type: 'string', description: 'Check-in date, YYYY-MM-DD' },
+        checkOut: { type: 'string', description: 'Check-out date, YYYY-MM-DD' },
+        guests: { type: 'number', description: 'Number of guests' },
+        roomType: { type: 'string', description: 'Optional specific room type to filter by' },
+      },
+      required: ['checkIn', 'checkOut', 'guests'],
     },
   },
   {
