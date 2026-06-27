@@ -23,9 +23,15 @@ export class Store {
         room_type     TEXT NOT NULL,
         contact_name  TEXT NOT NULL,
         contact_phone TEXT NOT NULL,
+        special_requests TEXT,
         created_at    TEXT NOT NULL
       );
     `);
+    // Migration for databases created before special_requests existed.
+    const cols = this.db.prepare('PRAGMA table_info(leads)').all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === 'special_requests')) {
+      this.db.exec('ALTER TABLE leads ADD COLUMN special_requests TEXT');
+    }
   }
 
   getOrCreateConversation(chatId: number, property: string = ''): Conversation {
@@ -66,12 +72,20 @@ export class Store {
     this.db.prepare('UPDATE conversations SET status = ? WHERE chat_id = ?').run(status, chatId);
   }
 
+  /** Reset a chat to a fresh session: no hotel chosen, active status, empty history. */
+  resetConversation(chatId: number): void {
+    this.getOrCreateConversation(chatId);
+    this.db
+      .prepare("UPDATE conversations SET property = '', status = 'active', history = '[]' WHERE chat_id = ?")
+      .run(chatId);
+  }
+
   saveLead(lead: BookingLead): void {
     this.db
       .prepare(
         `INSERT INTO leads
-        (chat_id, check_in, check_out, guests, room_type, contact_name, contact_phone, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        (chat_id, check_in, check_out, guests, room_type, contact_name, contact_phone, special_requests, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         lead.chatId,
@@ -81,6 +95,7 @@ export class Store {
         lead.roomType,
         lead.contactName,
         lead.contactPhone,
+        lead.specialRequests ?? null,
         lead.createdAt,
       );
   }
@@ -97,6 +112,7 @@ export class Store {
       roomType: r.room_type as string,
       contactName: r.contact_name as string,
       contactPhone: r.contact_phone as string,
+      specialRequests: (r.special_requests as string | null) ?? undefined,
       createdAt: r.created_at as string,
     }));
   }

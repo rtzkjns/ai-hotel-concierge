@@ -25,7 +25,11 @@ export function createBot(): Telegraf {
     propertyList.map((p) => [Markup.button.callback(p.name, `property:${p.key}`)]),
   );
 
-  bot.start((ctx) => ctx.reply(CHOOSE_HOTEL_MESSAGE, hotelKeyboard));
+  // /start always begins a fresh session and re-asks which hotel.
+  bot.start((ctx) => {
+    store.resetConversation(ctx.chat.id);
+    return ctx.reply(CHOOSE_HOTEL_MESSAGE, hotelKeyboard);
+  });
 
   // Guest picked a hotel from the inline keyboard.
   bot.action(/^property:(.+)$/, async (ctx) => {
@@ -72,7 +76,8 @@ export function createBot(): Telegraf {
           bot,
           `📋 New booking lead — ${prop.name} (chat ${chatId}):\n` +
             `${args.contactName} (${args.contactPhone})\n` +
-            `${args.checkIn} → ${args.checkOut}, ${args.guests} guest(s), ${args.roomType}`,
+            `${args.checkIn} → ${args.checkOut}, ${args.guests} guest(s), ${args.roomType}` +
+            (args.specialRequests ? `\nNotes: ${args.specialRequests}` : ''),
         );
       },
       onEscalate: (reason, summary) => {

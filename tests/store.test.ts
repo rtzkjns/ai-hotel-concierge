@@ -36,7 +36,18 @@ describe('Store', () => {
     expect(store.getOrCreateConversation(111, 'astana').status).toBe('handed_off');
   });
 
-  it('saves a booking lead', () => {
+  it('resetConversation clears hotel, status, and history', () => {
+    store.getOrCreateConversation(333, 'almaty');
+    store.appendMessage(333, { role: 'user', content: 'hi' });
+    store.setStatus(333, 'handed_off');
+    store.resetConversation(333);
+    const convo = store.getOrCreateConversation(333);
+    expect(convo.property).toBe('');
+    expect(convo.status).toBe('active');
+    expect(convo.history).toEqual([]);
+  });
+
+  it('saves a booking lead with special requests', () => {
     store.saveLead({
       chatId: 111,
       checkIn: '2026-07-01',
@@ -45,10 +56,26 @@ describe('Store', () => {
       roomType: 'Comfort',
       contactName: 'Aibek',
       contactPhone: '+7700',
+      specialRequests: 'Traveling with a dog and an infant; needs a cot; asked about airport transfer',
       createdAt: new Date().toISOString(),
     });
     const leads = store.listLeads();
     expect(leads).toHaveLength(1);
     expect(leads[0].contactName).toBe('Aibek');
+    expect(leads[0].specialRequests).toContain('dog');
+  });
+
+  it('saves a booking lead without special requests', () => {
+    store.saveLead({
+      chatId: 112,
+      checkIn: '2026-08-01',
+      checkOut: '2026-08-02',
+      guests: 1,
+      roomType: 'Standard',
+      contactName: 'Dana',
+      contactPhone: '+7701',
+      createdAt: new Date().toISOString(),
+    });
+    expect(store.listLeads()[0].specialRequests).toBeUndefined();
   });
 });

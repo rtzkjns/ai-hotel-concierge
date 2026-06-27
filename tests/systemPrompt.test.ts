@@ -28,4 +28,14 @@ describe('buildSystemPrompt', () => {
   it('forbids inventing facts and prices', () => {
     expect(prompt).toMatch(/do not (make up|invent)/i);
   });
+
+  it('tells the bot to escalate sparingly, not for missing facts', () => {
+    expect(prompt).toMatch(/sparingly/i);
+    expect(prompt).toMatch(/not a reason to escalate/i);
+  });
+
+  it('tells the bot to capture special requests instead of abandoning big requests', () => {
+    expect(prompt).toMatch(/specialRequests/);
+    expect(prompt).toMatch(/multi-part/i);
+  });
 });

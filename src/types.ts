@@ -22,5 +22,6 @@ export interface BookingLead {
   roomType: string;
   contactName: string;
   contactPhone: string;
+  specialRequests?: string;
   createdAt: string; // ISO timestamp
 }

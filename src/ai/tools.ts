@@ -7,6 +7,7 @@ export interface BookingLeadArgs {
   roomType: string;
   contactName: string;
   contactPhone: string;
+  specialRequests?: string;
 }
 
 export interface EscalateArgs {
@@ -29,6 +30,12 @@ export const toolDefinitions: Anthropic.Tool[] = [
         roomType: { type: 'string', description: 'Requested room type' },
         contactName: { type: 'string', description: 'Guest name' },
         contactPhone: { type: 'string', description: 'Guest phone number' },
+        specialRequests: {
+          type: 'string',
+          description:
+            'Any special requests or open questions to pass to the team (pets, infant/cot, ' +
+            'airport transfer, accessibility, discounts, etc.). Omit if none.',
+        },
       },
       required: ['checkIn', 'checkOut', 'guests', 'roomType', 'contactName', 'contactPhone'],
     },
