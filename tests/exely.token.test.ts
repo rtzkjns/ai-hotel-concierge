@@ -18,7 +18,7 @@ describe('ExelyTokenManager', () => {
     expect(await mgr.getToken()).toBe('JWT123'); // cached
     expect(fetchFn).toHaveBeenCalledTimes(1);
 
-    const [url, init] = fetchFn.mock.calls[0];
+    const [url, init] = (fetchFn.mock.calls as unknown as Array<[string, RequestInit]>)[0];
     expect(url).toBe(cfg.authUrl);
     expect(init.method).toBe('POST');
     expect(String(init.body)).toContain('grant_type=client_credentials');

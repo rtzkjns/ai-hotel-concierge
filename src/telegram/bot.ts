@@ -6,6 +6,7 @@ import { buildSystemPrompt } from '../ai/systemPrompt';
 import { properties, propertyList } from '../knowledge';
 import { generateReply } from '../ai/orchestrator';
 import type { BookingLeadArgs } from '../ai/tools';
+import { createAvailabilityProvider } from '../integrations/exely';
 
 const CHOOSE_HOTEL_MESSAGE =
   'Сәлеметсіз бе! Здравствуйте! Hello!\n' +
@@ -15,6 +16,7 @@ export function createBot(): Telegraf {
   const bot = new Telegraf(config.telegramBotToken);
   const store = new Store(config.dbPath);
   const anthropic = new Anthropic({ apiKey: config.anthropicApiKey });
+  const availabilityProvider = createAvailabilityProvider(config.exely);
 
   // Precompute one system prompt per property.
   const systemPrompts: Record<string, string> = Object.fromEntries(
@@ -88,6 +90,8 @@ export function createBot(): Telegraf {
             `--- Conversation ---\n${transcript}`,
         );
       },
+      checkAvailability: (args) =>
+        availabilityProvider.checkAvailability({ ...args, property: prop.key }),
     });
 
     if (reply) {
