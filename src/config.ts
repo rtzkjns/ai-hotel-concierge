@@ -12,4 +12,9 @@ export const config = {
   staffGroupChatId: required('STAFF_GROUP_CHAT_ID'),
   anthropicModel: process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-6',
   dbPath: process.env.DB_PATH ?? './kazzhol.db',
+  exely: {
+    clientId: process.env.EXELY_CLIENT_ID,
+    clientSecret: process.env.EXELY_CLIENT_SECRET,
+    authUrl: process.env.EXELY_AUTH_URL ?? 'https://connect.hopenapi.com/auth/token',
+  },
 };
