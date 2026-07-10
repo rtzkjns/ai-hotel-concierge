@@ -13,6 +13,7 @@ export class RateLimiter {
   allow(key: string): boolean {
     const t = this.now();
     const recent = (this.hits.get(key) ?? []).filter((hit) => hit > t - WINDOW_MS);
+    if (recent.length === 0) this.hits.delete(key); // evict idle senders to bound memory
     if (recent.length >= this.maxPerMinute) {
       this.hits.set(key, recent);
       return false;

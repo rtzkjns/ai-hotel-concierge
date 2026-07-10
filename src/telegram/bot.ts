@@ -7,6 +7,7 @@ import { properties, propertyList } from '../knowledge';
 import { generateReply } from '../ai/orchestrator';
 import type { BookingLeadArgs } from '../ai/tools';
 import { createAvailabilityProvider } from '../integrations/exely';
+import { maskPII } from '../core/pii';
 
 const CHOOSE_HOTEL_MESSAGE =
   'Сәлеметсіз бе! Здравствуйте! Hello!\n' +
@@ -86,18 +87,22 @@ export function createBot(): Telegraf {
         });
         notifyStaff(
           bot,
-          `📋 New booking lead — ${prop.name} (chat ${chatId}):\n` +
-            `${args.contactName} (${args.contactPhone})\n` +
-            `${args.checkIn} → ${args.checkOut}, ${args.guests} guest(s), ${args.roomType}` +
-            (args.specialRequests ? `\nNotes: ${args.specialRequests}` : ''),
+          maskPII(
+            `📋 New booking lead — ${prop.name} (chat ${chatId}):\n` +
+              `${args.contactName} (${args.contactPhone})\n` +
+              `${args.checkIn} → ${args.checkOut}, ${args.guests} guest(s), ${args.roomType}` +
+              (args.specialRequests ? `\nNotes: ${args.specialRequests}` : ''),
+          ),
         );
       },
       onEscalate: (reason, summary) => {
         const transcript = updated.history.map((m) => `${m.role}: ${m.content}`).join('\n');
         notifyStaff(
           bot,
-          `🚨 Handoff needed — ${prop.name} (chat ${chatId})\nReason: ${reason}\n${summary}\n\n` +
-            `--- Conversation ---\n${transcript}`,
+          maskPII(
+            `🚨 Handoff needed — ${prop.name} (chat ${chatId})\nReason: ${reason}\n${summary}\n\n` +
+              `--- Conversation ---\n${transcript}`,
+          ),
         );
       },
       checkAvailability: (args) =>

@@ -32,8 +32,14 @@ export interface MetricsSummary {
   p95ReplyMs: number;
 }
 
+// The hotels operate at UTC+5 (Asia/Almaty, no DST): "today" starts at local midnight.
+const ALMATY_OFFSET_MS = 5 * 60 * 60 * 1000;
+
 export function metricsSummary(store: EventSource, now = new Date()): MetricsSummary {
-  const startOfDayIso = `${now.toISOString().slice(0, 10)}T00:00:00.000Z`;
+  const localDay = new Date(now.getTime() + ALMATY_OFFSET_MS).toISOString().slice(0, 10);
+  const startOfDayIso = new Date(
+    Date.parse(`${localDay}T00:00:00.000Z`) - ALMATY_OFFSET_MS,
+  ).toISOString();
   const events = store.listEvents(startOfDayIso);
 
   const dialogs = new Set<string>();

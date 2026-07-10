@@ -17,6 +17,10 @@ describe('maskPII', () => {
     );
   });
 
+  it('masks a paren-formatted phone (double separator) as one sequence', () => {
+    expect(maskPII('+7 (776) 412 63 53')).toBe('+7 (7••) ••• •• 53');
+  });
+
   it('masks a bare 12-digit IIN completely', () => {
     expect(maskPII('ИИН 990101300123')).toBe('ИИН ••••');
   });

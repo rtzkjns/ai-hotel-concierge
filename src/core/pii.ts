@@ -11,9 +11,9 @@
 
 const EMAIL_RE = /([A-Za-z0-9._%+-])[A-Za-z0-9._%+-]*@([A-Za-z0-9.-]+\.[A-Za-z]{2,})/g;
 
-// One digit followed by 6-14 more digits, each optionally preceded by a single
-// space/dash/paren separator, with an optional leading '+'. Total digits: 7-15.
-const DIGIT_SEQUENCE_RE = /\+?\d(?:[ \-()]?\d){6,14}/g;
+// One digit followed by 6-14 more digits, each optionally preceded by up to two
+// space/dash/paren separators (covers '+7 (776) 412 63 53'), optional leading '+'.
+const DIGIT_SEQUENCE_RE = /\+?\d(?:[ \-()]{0,2}\d){6,14}/g;
 
 const ISO_DATE_RE = /\d{4}-\d{2}-\d{2}/;
 
