@@ -1,4 +1,7 @@
 // Boot: store → integrations → engine → channel adapters → fastify server.
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
 import { InstagramAdapter } from './channels/instagram';
 import { TelegramChannel } from './channels/telegram';
@@ -44,6 +47,17 @@ function createStaffNotifier(): StaffNotifier {
   };
 }
 
+/** The research-backed texting style guide, embedded into every system prompt. */
+function loadStyleGuide(): string | undefined {
+  try {
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+    return readFileSync(join(root, 'docs', 'STYLE-GUIDE.md'), 'utf8');
+  } catch {
+    console.warn('docs/STYLE-GUIDE.md not found — running on the prompt-embedded style rules only.');
+    return undefined;
+  }
+}
+
 async function main(): Promise<void> {
   const store = new Store(config.dbPath);
   const anthropic = new Anthropic({ apiKey: config.anthropicApiKey });
@@ -87,6 +101,7 @@ async function main(): Promise<void> {
     staffNotifier: createStaffNotifier(),
     rateLimiter: new RateLimiter(),
     phoneNumberIdToProperty,
+    styleGuide: loadStyleGuide(),
   });
 
   const channels = enabledChannels();
