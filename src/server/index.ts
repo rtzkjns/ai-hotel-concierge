@@ -29,6 +29,15 @@ export interface ServerDeps {
 export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
 
+  // A live WhatsApp channel without an app secret accepts unsigned (spoofable)
+  // webhooks — loud warning so a prod misconfiguration can't stay silent.
+  if (deps.adapters.whatsapp && !deps.config.whatsapp.appSecret) {
+    console.warn(
+      'WARNING: WhatsApp channel is live but WHATSAPP_APP_SECRET is not set — ' +
+        'webhook signatures are NOT verified; set the app secret before production.',
+    );
+  }
+
   // phone_number_id → property key (config maps the other way around).
   const propertyByPhoneId: Record<string, string> = Object.fromEntries(
     Object.entries(deps.config.whatsapp.phoneNumberIds).map(([property, id]) => [id, property]),
@@ -38,6 +47,17 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
 
   // Meta webhook verification handshake.
   app.get('/webhooks/whatsapp', async (req, reply) => {
+    const q = req.query as Record<string, string | undefined>;
+    const verifyToken = deps.config.whatsapp.verifyToken;
+    if (q['hub.mode'] === 'subscribe' && verifyToken && q['hub.verify_token'] === verifyToken) {
+      return reply.code(200).type('text/plain').send(q['hub.challenge'] ?? '');
+    }
+    return reply.code(403).send('forbidden');
+  });
+
+  // Instagram uses the same Meta-app verification handshake (needed to ever
+  // subscribe the webhook; shares the WhatsApp verify token — one Meta app).
+  app.get('/webhooks/instagram', async (req, reply) => {
     const q = req.query as Record<string, string | undefined>;
     const verifyToken = deps.config.whatsapp.verifyToken;
     if (q['hub.mode'] === 'subscribe' && verifyToken && q['hub.verify_token'] === verifyToken) {
@@ -72,11 +92,12 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
       });
     });
 
-    // Instagram: acknowledge and count always; full processing only with Meta creds.
+    // Instagram: always acknowledge; count and process only when the channel is
+    // configured (anonymous unsigned POSTs must not grow the events table).
     scope.post('/webhooks/instagram', async (req, reply) => {
-      track(deps.store, 'ig_received', { channel: 'instagram' });
       await reply.code(200).send('');
       if (!deps.adapters.instagram) return;
+      track(deps.store, 'ig_received', { channel: 'instagram' });
       processInstagram(deps, typeof req.body === 'string' ? req.body : '').catch((err) => {
         console.error('instagram webhook processing failed:', maskPII(errorMessage(err)));
       });

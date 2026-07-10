@@ -344,7 +344,7 @@ describe('buildServer', () => {
     await app.close();
   });
 
-  it('POST /webhooks/instagram always answers 200 and tracks ig_received', async () => {
+  it('POST /webhooks/instagram answers 200 but records nothing while unconfigured (spam guard)', async () => {
     const { app, store } = await makeServer();
     const res = await app.inject({
       method: 'POST',
@@ -353,7 +353,24 @@ describe('buildServer', () => {
       headers: { 'content-type': 'application/json' },
     });
     expect(res.statusCode).toBe(200);
-    expect(store.events).toContain('ig_received');
+    // Anonymous unsigned POSTs must not grow the append-only events table.
+    expect(store.events).not.toContain('ig_received');
+    await app.close();
+  });
+
+  it('GET /webhooks/instagram performs the Meta verify handshake', async () => {
+    const { app } = await makeServer();
+    const ok = await app.inject({
+      method: 'GET',
+      url: '/webhooks/instagram?hub.mode=subscribe&hub.verify_token=verify-me&hub.challenge=ig123',
+    });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.body).toBe('ig123');
+    const bad = await app.inject({
+      method: 'GET',
+      url: '/webhooks/instagram?hub.mode=subscribe&hub.verify_token=wrong&hub.challenge=ig123',
+    });
+    expect(bad.statusCode).toBe(403);
     await app.close();
   });
 });
