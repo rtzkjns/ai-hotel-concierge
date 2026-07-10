@@ -20,7 +20,10 @@ export function createBot(): Telegraf {
   const bot = new Telegraf(config.telegram.botToken);
   const store = new Store(config.dbPath);
   const anthropic = new Anthropic({ apiKey: config.anthropicApiKey });
-  const availabilityProvider = createAvailabilityProvider(config.exely);
+  const availabilityProvider = createAvailabilityProvider(
+    config.exely,
+    (key) => properties[key]?.exelyPropertyId,
+  );
 
   // Precompute one system prompt per property (each knows its sister hotels).
   const systemPrompts: Record<string, string> = Object.fromEntries(

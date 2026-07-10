@@ -14,6 +14,14 @@ export class StubAvailabilityProvider implements AvailabilityProvider {
       pricePerNight: BASE[roomType] ?? 30000,
       currency: 'KZT',
       notes: 'STUB DATA — not real availability',
+      // Live-booking fields are unknown on the stub.
+      roomTypeId: null,
+      ratePlanId: null,
+      ratePlanName: null,
+      totalPrice: null,
+      checksum: null,
+      placements: [],
+      bookingFormLink: null,
     }));
     return {
       property: query.property,
