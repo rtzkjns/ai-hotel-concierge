@@ -1,23 +1,32 @@
 import type { AvailabilityProvider } from './provider';
+import { ExelyHttp } from './http';
+import { LiveAvailabilityProvider, type PropertyIdResolver } from './live';
 import { StubAvailabilityProvider } from './stub';
+import { ExelyTokenManager } from './token';
 
 export interface ExelyConfig {
   clientId?: string;
   clientSecret?: string;
   authUrl: string;
+  baseUrl: string;
 }
 
-export function createAvailabilityProvider(cfg: ExelyConfig): AvailabilityProvider {
+export function createAvailabilityProvider(
+  cfg: ExelyConfig,
+  propertyIdResolver: PropertyIdResolver,
+): AvailabilityProvider {
   if (cfg.clientId && cfg.clientSecret) {
-    // Credentials are present but the live Exely availability client is built in the
-    // follow-up plan (needs the Exely Connect Swagger for the availability endpoint).
-    throw new Error(
-      'Exely live availability provider not implemented yet — see the follow-up plan. ' +
-        'Remove EXELY_CLIENT_ID/SECRET to run on the stub.',
-    );
+    const tokens = new ExelyTokenManager({
+      clientId: cfg.clientId,
+      clientSecret: cfg.clientSecret,
+      authUrl: cfg.authUrl,
+    });
+    const http = new ExelyHttp({ baseUrl: cfg.baseUrl }, tokens);
+    return new LiveAvailabilityProvider(http, propertyIdResolver);
   }
   return new StubAvailabilityProvider();
 }
 
 export type { AvailabilityProvider } from './provider';
 export type { AvailabilityQuery, AvailabilityResult, RoomOffer } from './types';
+export type { PropertyIdResolver } from './live';

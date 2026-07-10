@@ -1,0 +1,84 @@
+// Low-level Exely Connect API client (Search + Content + Reservation).
+// Port of kazzhol-portal src/Integrations/Exely/Client.php.
+
+/** Exely SLA: answer within 10s or treat the call as failed. */
+const REQUEST_TIMEOUT_MS = 10_000;
+const ERROR_BODY_MAX_CHARS = 300;
+
+export interface ExelyHttpConfig {
+  baseUrl: string;
+}
+
+export interface TokenSource {
+  getToken(): Promise<string>;
+}
+
+export class ExelyHttp {
+  private readonly base: string;
+
+  constructor(
+    cfg: ExelyHttpConfig,
+    private readonly tokens: TokenSource,
+    private readonly fetchFn: typeof fetch = fetch,
+  ) {
+    this.base = cfg.baseUrl.replace(/\/+$/, '');
+  }
+
+  private async request(method: string, path: string, body?: unknown): Promise<unknown> {
+    const token = await this.tokens.getToken();
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/json',
+    };
+    const init: RequestInit = {
+      method,
+      headers,
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    };
+    if (body !== undefined) {
+      headers['Content-Type'] = 'application/json';
+      init.body = JSON.stringify(body);
+    }
+    const res = await this.fetchFn(this.base + path, init);
+    const raw = await res.text();
+    if (!res.ok) {
+      // NEVER include the bearer token here; only method/path/status/body excerpt.
+      throw new Error(
+        `Exely ${method} ${path} → HTTP ${res.status}: ${raw.slice(0, ERROR_BODY_MAX_CHARS)}`,
+      );
+    }
+    return raw ? (JSON.parse(raw) as unknown) : {};
+  }
+
+  /** Availability + prices search; returns roomStays with price and bookingFormLink. */
+  search(
+    propertyId: string,
+    arrival: string,
+    departure: string,
+    adults: number,
+    childAges: number[] = [],
+  ): Promise<unknown> {
+    return this.request('POST', '/api/search/v1/properties/room-stays/search', {
+      propertyIds: [propertyId],
+      adults,
+      childAges,
+      arrivalDate: arrival,
+      departureDate: departure,
+    });
+  }
+
+  /** Property catalog: room types, rate plans, services, photos. */
+  content(propertyId: string): Promise<unknown> {
+    return this.request('GET', `/api/content/v1/properties/${encodeURIComponent(propertyId)}`);
+  }
+
+  /** POST to the Reservation API ({base}/api/reservation{path}). */
+  resPost(path: string, body: unknown): Promise<unknown> {
+    return this.request('POST', `/api/reservation${path}`, body);
+  }
+
+  /** GET from the Reservation API. */
+  resGet(path: string): Promise<unknown> {
+    return this.request('GET', `/api/reservation${path}`);
+  }
+}

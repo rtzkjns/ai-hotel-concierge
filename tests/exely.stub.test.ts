@@ -18,6 +18,14 @@ describe('StubAvailabilityProvider', () => {
     for (const offer of result.offers) {
       expect(typeof offer.roomType).toBe('string');
       expect(offer.currency).toBe('KZT');
+      // Live-booking fields exist on the shared contract but are empty on the stub.
+      expect(offer.roomTypeId).toBeNull();
+      expect(offer.ratePlanId).toBeNull();
+      expect(offer.ratePlanName).toBeNull();
+      expect(offer.totalPrice).toBeNull();
+      expect(offer.checksum).toBeNull();
+      expect(offer.placements).toEqual([]);
+      expect(offer.bookingFormLink).toBeNull();
     }
     // Deterministic: same query → same prices.
     const again = await provider.checkAvailability({

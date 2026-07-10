@@ -38,7 +38,21 @@ describe('generateReply with check_availability', () => {
       property: 'astana',
       checkIn: '2026-08-01',
       checkOut: '2026-08-03',
-      offers: [{ roomType: 'Standard', available: true, pricePerNight: 25000, currency: 'KZT' }],
+      offers: [
+        {
+          roomType: 'Standard',
+          available: true,
+          pricePerNight: 25000,
+          currency: 'KZT',
+          roomTypeId: null,
+          ratePlanId: null,
+          ratePlanName: null,
+          totalPrice: null,
+          checksum: null,
+          placements: [],
+          bookingFormLink: null,
+        },
+      ],
       source: 'stub',
     };
     const checkAvailability = vi.fn(async () => result);
