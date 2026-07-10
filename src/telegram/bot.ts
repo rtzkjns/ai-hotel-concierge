@@ -13,7 +13,10 @@ const CHOOSE_HOTEL_MESSAGE =
   'Выберите отель / Қонақ үйді таңдаңыз / Choose a hotel:';
 
 export function createBot(): Telegraf {
-  const bot = new Telegraf(config.telegramBotToken);
+  if (!config.telegram.botToken) {
+    throw new Error('TELEGRAM_BOT_TOKEN must be set to run the Telegram bot.');
+  }
+  const bot = new Telegraf(config.telegram.botToken);
   const store = new Store(config.dbPath);
   const anthropic = new Anthropic({ apiKey: config.anthropicApiKey });
   const availabilityProvider = createAvailabilityProvider(config.exely);
@@ -112,7 +115,12 @@ export function createBot(): Telegraf {
 }
 
 function notifyStaff(bot: Telegraf<Context>, message: string): void {
-  bot.telegram.sendMessage(config.staffGroupChatId, message).catch((err) => {
+  const staffChatId = config.telegram.staffGroupChatId;
+  if (!staffChatId) {
+    console.warn('STAFF_GROUP_CHAT_ID is not set — staff notification skipped.');
+    return;
+  }
+  bot.telegram.sendMessage(staffChatId, message).catch((err) => {
     console.error('Failed to notify staff group:', err);
   });
 }
