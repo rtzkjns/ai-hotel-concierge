@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kazzhol — чат с ассистентом</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    background: #eef1f4; color: #1c2430;
+    display: flex; justify-content: center;
+  }
+  .chat {
+    width: 100%; max-width: 480px; height: 100dvh;
+    display: flex; flex-direction: column; background: #fff;
+    box-shadow: 0 0 24px rgba(20, 40, 70, .08);
+  }
+  header {
+    padding: 14px 16px 10px; background: #14385f; color: #fff;
+  }
+  header h1 { font-size: 17px; font-weight: 600; }
+  header .note { font-size: 11px; opacity: .75; margin-top: 2px; }
+  .log {
+    flex: 1; overflow-y: auto; padding: 14px 12px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .bubble {
+    max-width: 82%; padding: 9px 13px; border-radius: 16px;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .bot { align-self: flex-start; background: #f0f3f7; border-bottom-left-radius: 5px; }
+  .guest { align-self: flex-end; background: #14385f; color: #fff; border-bottom-right-radius: 5px; }
+  .system { align-self: center; font-size: 12px; color: #7a8698; }
+  .typing { align-self: flex-start; font-size: 12px; color: #7a8698; padding: 2px 13px; display: none; }
+  .typing.on { display: block; }
+  .picker { padding: 6px 12px 10px; display: flex; flex-direction: column; gap: 8px; }
+  .picker.hidden { display: none; }
+  .picker button {
+    padding: 11px 14px; font-size: 15px; border: 1px solid #c9d4e2; border-radius: 12px;
+    background: #f7fafd; color: #14385f; cursor: pointer; text-align: left;
+  }
+  .picker button:hover { background: #ecf3fb; }
+  form {
+    display: flex; gap: 8px; padding: 10px 12px;
+    border-top: 1px solid #e3e8ef; background: #fff;
+  }
+  form input {
+    flex: 1; padding: 10px 14px; font-size: 15px;
+    border: 1px solid #c9d4e2; border-radius: 22px; outline: none;
+  }
+  form input:focus { border-color: #14385f; }
+  form button {
+    padding: 10px 18px; font-size: 15px; border: 0; border-radius: 22px;
+    background: #14385f; color: #fff; cursor: pointer;
+  }
+  form button:disabled { opacity: .5; cursor: default; }
+</style>
+</head>
+<body>
+<div class="chat">
+  <header>
+    <h1>Kazzhol — чат с ассистентом</h1>
+    <div class="note">Отвечаем по-русски · қазақша · English · 中文</div>
+  </header>
+  <div class="log" id="log"></div>
+  <div class="typing" id="typing">печатает…</div>
+  <div class="picker" id="picker">
+    <div class="system">Выберите отель / Қонақ үйді таңдаңыз / Choose a hotel / 请选择酒店</div>
+    <button data-key="astana">Hotel Kazzhol Astana</button>
+    <button data-key="almaty">Hotel Kazzhol Almaty</button>
+    <button data-key="park_almaty">Hotel Kazzhol Park Almaty</button>
+  </div>
+  <form id="form" autocomplete="off">
+    <input id="input" placeholder="Напишите сообщение…" maxlength="4000">
+    <button id="send" type="submit">➤</button>
+  </form>
+</div>
+<script>
+(function () {
+  'use strict';
+  var TOKEN = '%%TOKEN%%';
+  var log = document.getElementById('log');
+  var typing = document.getElementById('typing');
+  var picker = document.getElementById('picker');
+  var form = document.getElementById('form');
+  var input = document.getElementById('input');
+  var sendBtn = document.getElementById('send');
+  var ws = null;
+  var ready = false;
+  var reconnected = false;
+  var senderId = null;
+  try { senderId = localStorage.getItem('kazzhol_widget_sender'); } catch (e) {}
+
+  function bubble(cls, text) {
+    var el = document.createElement('div');
+    el.className = 'bubble ' + cls;
+    el.textContent = text;
+    log.appendChild(el);
+    log.scrollTop = log.scrollHeight;
+  }
+  function system(text) {
+    var el = document.createElement('div');
+    el.className = 'system';
+    el.textContent = text;
+    log.appendChild(el);
+    log.scrollTop = log.scrollHeight;
+  }
+  function setTyping(on) {
+    typing.className = on ? 'typing on' : 'typing';
+    if (on) log.scrollTop = log.scrollHeight;
+  }
+
+  function connect() {
+    var proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
+    ws = new WebSocket(proto + location.host + '/ws/widget');
+    ws.onopen = function () {
+      var hello = { type: 'hello', token: TOKEN };
+      if (senderId) hello.senderId = senderId;
+      ws.send(JSON.stringify(hello));
+    };
+    ws.onmessage = function (ev) {
+      var m;
+      try { m = JSON.parse(ev.data); } catch (e) { return; }
+      if (m.type === 'session') {
+        ready = true;
+        senderId = m.senderId;
+        try { localStorage.setItem('kazzhol_widget_sender', senderId); } catch (e) {}
+        if (m.property) picker.className = 'picker hidden';
+      } else if (m.type === 'hotel') {
+        picker.className = 'picker hidden';
+        system(m.name + ' — на связи. Спрашивайте!');
+      } else if (m.type === 'typing') {
+        setTyping(true);
+      } else if (m.type === 'reply') {
+        bubble('bot', m.text);
+      } else if (m.type === 'idle') {
+        setTyping(false);
+      }
+    };
+    ws.onclose = function (ev) {
+      ready = false;
+      setTyping(false);
+      if (ev.code === 4001) {
+        system('Сессия устарела — обновите страницу / Please refresh the page');
+        sendBtn.disabled = true;
+        return;
+      }
+      if (!reconnected) {
+        reconnected = true;
+        setTimeout(connect, 1000);
+      } else {
+        system('Соединение потеряно — обновите страницу / Connection lost, please refresh');
+        sendBtn.disabled = true;
+      }
+    };
+  }
+
+  picker.addEventListener('click', function (ev) {
+    var key = ev.target && ev.target.getAttribute && ev.target.getAttribute('data-key');
+    if (!key || !ready) return;
+    ws.send(JSON.stringify({ type: 'pick_hotel', property: key }));
+  });
+
+  form.addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    var text = input.value.trim();
+    if (!text || !ready || ws.readyState !== 1) return;
+    bubble('guest', text);
+    ws.send(JSON.stringify({ type: 'msg', text: text }));
+    input.value = '';
+    input.focus();
+  });
+
+  connect();
+})();
+</script>
+</body>
+</html>

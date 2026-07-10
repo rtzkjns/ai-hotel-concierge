@@ -1,23 +1,30 @@
 export interface Property {
   key: string;
   name: string;
+  /** Exely Connect property id, when this hotel is wired to the live API. */
+  exelyPropertyId?: string;
+  /** Guest-facing WhatsApp number. */
+  whatsapp?: string;
   knowledge: string;
 }
 
 // Addresses, restaurant names, amenities, and WhatsApp numbers below are taken from the
-// official kazzhol.com pages. PRICES are public-research estimates and MUST be confirmed with
-// the owner before the live pitch.
+// official kazzhol.com pages. Indicative rates are public-research estimates kept only as a
+// rough fallback anchor; real prices always come from the live availability tool.
 
 const astana: Property = {
   key: 'astana',
   name: 'Hotel Kazzhol Astana',
+  whatsapp: '+7 776 412 6353',
   knowledge: `
 PROPERTY: Hotel Kazzhol Astana — a 4-star business hotel in Astana, Kazakhstan.
 
 ADDRESS: pr. Balkantau 213, Astana. Roughly 10 minutes by car from the Bayterek monument.
 CHECK-IN / CHECK-OUT: Check-in from 14:00, check-out until 12:00.
 ROOMS: Standard, Comfort, and Suite rooms. Indicative rates from about 25,000 KZT (~USD 55)
-per night; exact prices depend on dates and room type.
+per night. PRICES: always confirm via the live availability tool (check_availability); the
+indicative figure is only a rough anchor when the tool is unavailable and must be presented
+as approximate, never as a quote.
 DINING: On-site restaurant "Fergana".
 AMENITIES: Free Wi-Fi throughout, breakfast available, conference / meeting halls, parking,
 24-hour front desk.
@@ -31,13 +38,17 @@ or phone. This assistant can take a booking request and the team will confirm av
 const almaty: Property = {
   key: 'almaty',
   name: 'Hotel Kazzhol Almaty',
+  exelyPropertyId: '801',
+  whatsapp: '+7 708 709 3000',
   knowledge: `
 PROPERTY: Hotel Kazzhol Almaty — a modern business hotel in the heart of Almaty, Kazakhstan.
 
 ADDRESS: Gogol Street 127/1, Almaty.
 CHECK-IN / CHECK-OUT: Check-in from 14:00, check-out until 12:00.
 ROOMS: Standard, Comfort, and Suite rooms. Indicative rates from about 28,000 KZT (~USD 60)
-per night; exact prices depend on dates and room type.
+per night. PRICES: always confirm via the live availability tool (check_availability); the
+indicative figure is only a rough anchor and must be presented as approximate, never as a
+quote.
 DINING: On-site restaurant serving Kazakh and European cuisine.
 AMENITIES: AquaFit wellness complex with a swimming pool, free Wi-Fi, breakfast available,
 conference / meeting halls, parking, 24-hour front desk.
@@ -51,13 +62,16 @@ or phone. This assistant can take a booking request and the team will confirm av
 const parkAlmaty: Property = {
   key: 'park_almaty',
   name: 'Hotel Kazzhol Park Almaty',
+  whatsapp: '+7 708 906 0661',
   knowledge: `
 PROPERTY: Hotel Kazzhol Park Almaty — a 4-star hotel in Almaty, Kazakhstan, with 112 rooms.
 
 LOCATION: Almaty.
 CHECK-IN / CHECK-OUT: Check-in from 14:00, check-out until 12:00.
 ROOMS: 112 rooms across Standard, Comfort, and Suite categories. Indicative rates from about
-38,000 KZT (~USD 83) per night; exact prices depend on dates and room type.
+38,000 KZT (~USD 83) per night. PRICES: always confirm via the live availability tool
+(check_availability); the indicative figure is only a rough anchor and must be presented as
+approximate, never as a quote.
 DINING: On-site restaurant.
 AMENITIES: Free Wi-Fi, breakfast available, conference / meeting rooms, parking,
 24-hour front desk.

@@ -33,12 +33,26 @@ function fakeClient(): AnthropicLike {
 }
 
 describe('generateReply with check_availability', () => {
-  it('calls the availability dep and feeds the result back to the model', async () => {
+  it('calls the injected handler and feeds the availability JSON back to the model', async () => {
     const result: AvailabilityResult = {
       property: 'astana',
       checkIn: '2026-08-01',
       checkOut: '2026-08-03',
-      offers: [{ roomType: 'Standard', available: true, pricePerNight: 25000, currency: 'KZT' }],
+      offers: [
+        {
+          roomType: 'Standard',
+          available: true,
+          pricePerNight: 25000,
+          currency: 'KZT',
+          roomTypeId: null,
+          ratePlanId: null,
+          ratePlanName: null,
+          totalPrice: null,
+          checksum: null,
+          placements: [],
+          bookingFormLink: null,
+        },
+      ],
       source: 'stub',
     };
     const checkAvailability = vi.fn(async () => result);
@@ -48,9 +62,7 @@ describe('generateReply with check_availability', () => {
       client,
       model: 'test-model',
       systemPrompt: 'sp',
-      onBookingLead: vi.fn(),
-      onEscalate: vi.fn(),
-      checkAvailability,
+      tools: { check_availability: checkAvailability },
     });
 
     expect(checkAvailability).toHaveBeenCalledWith({
@@ -59,6 +71,7 @@ describe('generateReply with check_availability', () => {
       guests: 2,
     });
     expect(out.reply).toBe('Standard rooms are available.');
+    expect(out.toolsUsed).toEqual(['check_availability']);
     // The second model call must include a tool_result carrying the availability JSON.
     const secondCallArgs = (client.messages.create as ReturnType<typeof vi.fn>).mock.calls[1][0];
     const lastMsg = secondCallArgs.messages.at(-1);
