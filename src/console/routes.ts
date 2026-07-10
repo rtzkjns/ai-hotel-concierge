@@ -20,6 +20,7 @@ import {
   createSessionFor,
   csrfTokenFor,
   FORBIDDEN_HTML,
+  hashPassword,
   requireAuth,
   requireRole,
   SESSION_COOKIE,
@@ -31,6 +32,9 @@ import {
 
 /** SLA target from the ТЗ: first reaction within 5 seconds. */
 const SLA_TARGET_MS = 5000;
+
+// Verified for unknown logins so every login attempt pays the same scrypt cost.
+const DUMMY_PASS_HASH = hashPassword('__dummy_timing_padding__');
 const SNIPPET_CHARS = 80;
 
 /** The subset of Store the console needs (structural, for easy faking). */
@@ -40,6 +44,7 @@ export interface ConsoleStore extends SessionStore {
   listConversations(activeWithinDays?: number): Conversation[];
   getConversation(id: string): Conversation | null;
   setStatus(id: string, status: ConversationStatus): void;
+  setTakenBy(id: string, login: string | null): void;
   appendMessage(id: string, message: ChatMessage): void;
   listLeads(): BookingLead[];
   listBookings(): Booking[];
@@ -222,13 +227,18 @@ export async function registerConsoleRoutes(
       const login = typeof body.login === 'string' ? body.login.trim() : '';
       const password = typeof body.password === 'string' ? body.password : '';
       const staff = login ? store.findStaffByLogin(login) : null;
-      if (!staff || !verifyPassword(password, staff.passHash)) {
+      // Unknown logins still pay the scrypt cost — no login-existence timing oracle.
+      const hashToCheck = staff?.passHash ?? DUMMY_PASS_HASH;
+      const passwordOk = verifyPassword(password, hashToCheck);
+      if (!staff || !passwordOk) {
         return sendHtml(reply, loginPage('Неверный логин или пароль'), 401);
       }
       const token = createSessionFor(store, staff.id);
       reply.setCookie(SESSION_COOKIE, token, {
         httpOnly: true,
         sameSite: 'lax',
+        // localhost is a secure context in modern browsers, so dev login still works.
+        secure: true,
         path: '/',
         maxAge: Math.floor(SESSION_TTL_MS / 1000),
       });
@@ -277,7 +287,12 @@ export async function registerConsoleRoutes(
     scope.get('/console/chats', async (req, reply) => {
       const staff = req.staff!;
       let convos = store.listConversations();
-      if (staff.role !== 'admin') convos = convos.filter((c) => c.status === 'handed_off');
+      // Non-admins see only handed-off chats that are unclaimed or their own.
+      if (staff.role !== 'admin') {
+        convos = convos.filter(
+          (c) => c.status === 'handed_off' && (c.takenBy === null || c.takenBy === staff.login),
+        );
+      }
       const rows = convos
         .map((c) => {
           const last = c.history[c.history.length - 1];
@@ -312,7 +327,10 @@ export async function registerConsoleRoutes(
         await sendHtml(reply, page('Не найдено', '<h1>Диалог не найден</h1>', { staff: req.staff, csrf: csrfTokenFor(req.sessionToken!) }), 404);
         return null;
       }
-      if (req.staff!.role !== 'admin' && convo.status !== 'handed_off') {
+      const notOwn =
+        convo.status !== 'handed_off' ||
+        (convo.takenBy !== null && convo.takenBy !== req.staff!.login);
+      if (req.staff!.role !== 'admin' && notOwn) {
         await reply.code(403).type('text/html; charset=utf-8').send(FORBIDDEN_HTML);
         return null;
       }
@@ -356,6 +374,7 @@ export async function registerConsoleRoutes(
       const convo = await chatAccess(req, reply);
       if (!convo) return;
       store.setStatus(convo.id, 'handed_off');
+      store.setTakenBy(convo.id, req.staff!.login);
       store.recordEvent('takeover', {
         conversationId: convo.id,
         property: convo.property,
@@ -369,6 +388,7 @@ export async function registerConsoleRoutes(
       const convo = await chatAccess(req, reply);
       if (!convo) return;
       store.setStatus(convo.id, 'active');
+      store.setTakenBy(convo.id, null);
       store.recordEvent('release', {
         conversationId: convo.id,
         property: convo.property,
@@ -538,6 +558,14 @@ export async function registerConsoleRoutes(
           reply,
           deletionForm(req.staff!, csrf, 'Укажите ID диалога и поставьте галочку подтверждения.'),
           400,
+        );
+      }
+      // An erasure request must never report false success on a typo'd id.
+      if (!store.getConversation(conversationId)) {
+        return sendHtml(
+          reply,
+          deletionForm(req.staff!, csrf, `Диалог «${conversationId}» не найден — ничего не удалено.`),
+          404,
         );
       }
       store.deletePersonalData(conversationId);

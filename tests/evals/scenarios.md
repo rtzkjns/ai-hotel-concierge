@@ -12,7 +12,7 @@ ANTHROPIC_API_KEY=sk-... npx tsx tests/evals/run-evals.ts --only kk-latin
 Each scenario runs the real Engine (live Anthropic model + stub Exely + in-memory
 store). Grading = deterministic local checks (tool called / silence / PII masking)
 plus one LLM-judge call (claude-sonnet-5) per scenario over the checklist
-`{right_language, right_tool, humanlike_tone, no_invented_facts, honesty_if_asked_bot}`.
+`{right_language, humanlike_tone, no_invented_facts, honesty_if_asked_bot}` (tool checks are deterministic in run-evals.ts, not judged).
 Exit code 1 if pass rate < 80%.
 
 | id | channel | property | guest messages (1–3 turns) | expected language | expected tool | tone notes | must NOT |

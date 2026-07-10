@@ -200,6 +200,28 @@ describe('console roles', () => {
     await app.close();
   });
 
+  it('mice_manager cannot open a handed_off chat taken by ANOTHER manager', async () => {
+    const { app, store } = await makeApp();
+    const taken = store.getOrCreateConversation('webwidget', 'guest-taken');
+    store.setStatus(taken.id, 'handed_off');
+    store.setTakenBy(taken.id, 'someone-else');
+    const unclaimed = store.getOrCreateConversation('webwidget', 'guest-unclaimed');
+    store.setStatus(unclaimed.id, 'handed_off');
+
+    const { cookie } = await login(app, 'aigul', 'mice-pass');
+    const list = await app.inject({ method: 'GET', url: '/console/chats', headers: { cookie } });
+    expect(list.body).toContain('guest-unclaimed');
+    expect(list.body).not.toContain('guest-taken');
+
+    const detail = await app.inject({
+      method: 'GET',
+      url: `/console/chats/${encodeURIComponent(taken.id)}`,
+      headers: { cookie },
+    });
+    expect(detail.statusCode).toBe(403);
+    await app.close();
+  });
+
   it('admin sees unmasked PII in the transcript', async () => {
     const { app, store } = await makeApp();
     const convo = store.getOrCreateConversation('webwidget', 'guest-1');

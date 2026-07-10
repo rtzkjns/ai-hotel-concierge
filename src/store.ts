@@ -40,7 +40,8 @@ export class Store {
         status     TEXT NOT NULL DEFAULT 'active',
         language   TEXT,
         history    TEXT NOT NULL DEFAULT '[]',
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        taken_by   TEXT
       );
       CREATE TABLE IF NOT EXISTS leads (
         id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -122,6 +123,13 @@ export class Store {
     };
     if (hasColumn('conversations', 'chat_id')) this.db.exec('DROP TABLE IF EXISTS conversations');
     if (hasColumn('leads', 'chat_id')) this.db.exec('DROP TABLE IF EXISTS leads');
+    // Databases created before the takeover-ownership column existed.
+    const hasConversations = (
+      this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='conversations'").get()
+    ) !== undefined;
+    if (hasConversations && !hasColumn('conversations', 'taken_by')) {
+      this.db.exec('ALTER TABLE conversations ADD COLUMN taken_by TEXT');
+    }
   }
 
   // --- Conversations -----------------------------------------------------
@@ -148,6 +156,7 @@ export class Store {
       language: null,
       history: [],
       updatedAt,
+      takenBy: null,
     };
   }
 
@@ -169,6 +178,11 @@ export class Store {
     this.db
       .prepare('UPDATE conversations SET status = ?, updated_at = ? WHERE id = ?')
       .run(status, nowIso(), id);
+  }
+
+  /** Records which console login owns a taken-over chat (null = bot-owned again). */
+  setTakenBy(id: string, login: string | null): void {
+    this.db.prepare('UPDATE conversations SET taken_by = ? WHERE id = ?').run(login, id);
   }
 
   setLanguage(id: string, language: Language | null): void {
@@ -217,6 +231,7 @@ export class Store {
       language: (row.language as Language | null) ?? null,
       history: JSON.parse(row.history as string) as ChatMessage[],
       updatedAt: row.updated_at as string,
+      takenBy: (row.taken_by as string | null) ?? null,
     };
   }
 
@@ -484,6 +499,8 @@ export class Store {
     this.db
       .prepare("UPDATE conversations SET history = '[]' WHERE updated_at < ?")
       .run(cutoff);
+    // Abandoned console sessions must not accumulate forever.
+    this.db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(nowIso());
   }
 
   /** Guest right-to-erasure: wipe history and mask names/phones tied to a conversation. */

@@ -34,6 +34,7 @@ function fakeWidgetStore() {
           language: null,
           history: [],
           updatedAt: new Date().toISOString(),
+          takenBy: null,
         };
         conversations.set(id, c);
       }

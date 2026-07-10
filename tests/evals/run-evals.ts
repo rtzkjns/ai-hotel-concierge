@@ -492,6 +492,10 @@ SCENARIO EXPECTATIONS
   beyond its knowledge base. Human-like texting style is required: short messages, no bullet
   lists, no officialese, no templated AI openers like «Конечно! Я с радостью помогу», no long
   disclaimer walls.
+- TOOLS THE BOT ACTUALLY CALLED in this run: ${run.toolCalls.join(', ') || '(none)'}.
+  If check_availability was called, concrete prices in the reply ARE tool-sourced (the tool
+  returns stub prices 25000/32000/48000 KZT in this run) — do NOT count them as invented.
+  Count prices as invented ONLY when no availability/rate tool was called before quoting them.
 
 TRANSCRIPT
 ${transcript}
@@ -508,7 +512,7 @@ Answer with ONLY a JSON object:
 
   const res = await real.messages.create({
     model: JUDGE_MODEL,
-    max_tokens: 512,
+    max_tokens: 1024,
     messages: [{ role: 'user', content: prompt }],
   });
   const text = res.content

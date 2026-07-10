@@ -21,6 +21,8 @@ export interface Conversation {
   language: Language | null;
   history: ChatMessage[];
   updatedAt: string; // ISO timestamp
+  /** Console login of the staff member who took the chat over; null when bot-owned. */
+  takenBy: string | null;
 }
 
 export type LeadKind = 'booking' | 'generic';
