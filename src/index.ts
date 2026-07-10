@@ -1,7 +1,10 @@
 // Boot: store → integrations → engine → channel adapters → fastify server.
 import Anthropic from '@anthropic-ai/sdk';
-import { WhatsAppAdapter } from './channels/whatsapp';
+import { InstagramAdapter } from './channels/instagram';
+import { TelegramChannel } from './channels/telegram';
 import type { StaffNotifier } from './channels/types';
+import { WebWidgetChannel } from './channels/webwidget';
+import { WhatsAppAdapter } from './channels/whatsapp';
 import { config, enabledChannels } from './config';
 import { BookingService } from './core/booking';
 import { Engine } from './core/engine';
@@ -17,7 +20,6 @@ import { createTranscriber } from './integrations/transcribe';
 import { properties } from './knowledge';
 import { buildServer } from './server';
 import { Store } from './store';
-import { createBot } from './telegram/bot';
 
 /** Staff alerts: Telegram staff chat via raw Bot API when configured, console otherwise. */
 function createStaffNotifier(): StaffNotifier {
@@ -89,24 +91,41 @@ async function main(): Promise<void> {
 
   const channels = enabledChannels();
 
-  const adapters: { whatsapp?: WhatsAppAdapter } = {};
+  const adapters: { whatsapp?: WhatsAppAdapter; instagram?: InstagramAdapter } = {};
   if (channels.includes('whatsapp') && config.whatsapp.accessToken) {
     adapters.whatsapp = new WhatsAppAdapter({
       accessToken: config.whatsapp.accessToken,
       phoneNumberIds: config.whatsapp.phoneNumberIds,
     });
   }
+  if (channels.includes('instagram') && config.instagram.accessToken && config.instagram.igId) {
+    adapters.instagram = new InstagramAdapter({
+      accessToken: config.instagram.accessToken,
+      igId: config.instagram.igId,
+    });
+  }
 
-  const app = await buildServer({ engine, adapters, store, config });
+  const widget = new WebWidgetChannel({ engine, store });
+  const app = await buildServer({
+    engine,
+    adapters,
+    store,
+    config,
+    extraRoutes: [(a) => widget.register(a)],
+  });
   await app.listen({ port: config.server.port, host: '0.0.0.0' });
   startRetention(store);
 
-  if (channels.includes('telegram')) {
-    const bot = createBot();
-    void bot.launch();
+  if (channels.includes('telegram') && config.telegram.botToken) {
+    const telegram = new TelegramChannel({
+      botToken: config.telegram.botToken,
+      engine,
+      store,
+    });
+    telegram.launch();
     console.log('Telegram channel: running');
-    process.once('SIGINT', () => bot.stop('SIGINT'));
-    process.once('SIGTERM', () => bot.stop('SIGTERM'));
+    process.once('SIGINT', () => telegram.stop('SIGINT'));
+    process.once('SIGTERM', () => telegram.stop('SIGTERM'));
   }
 
   console.log(

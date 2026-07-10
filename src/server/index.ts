@@ -1,6 +1,7 @@
 // Fastify server: WhatsApp/Instagram webhooks, health check, and extension
 // points for the web widget and staff console (registered via extraRoutes).
 import Fastify, { type FastifyInstance } from 'fastify';
+import type { InstagramAdapter } from '../channels/instagram';
 import type { InboundMessage, OutboundPart } from '../channels/types';
 import { verifySignature, type WhatsAppAdapter } from '../channels/whatsapp';
 import { track, type EventData } from '../core/events';
@@ -12,7 +13,7 @@ export interface EngineLike {
 
 export interface ServerDeps {
   engine: EngineLike;
-  adapters: { whatsapp?: WhatsAppAdapter };
+  adapters: { whatsapp?: WhatsAppAdapter; instagram?: InstagramAdapter };
   store: { recordEvent(type: string, data?: EventData): void };
   config: {
     whatsapp: {
@@ -71,10 +72,14 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
       });
     });
 
-    // Instagram skeleton: acknowledge and count; full processing activates with Meta creds.
-    scope.post('/webhooks/instagram', async (_req, reply) => {
+    // Instagram: acknowledge and count always; full processing only with Meta creds.
+    scope.post('/webhooks/instagram', async (req, reply) => {
       track(deps.store, 'ig_received', { channel: 'instagram' });
-      return reply.code(200).send('');
+      await reply.code(200).send('');
+      if (!deps.adapters.instagram) return;
+      processInstagram(deps, typeof req.body === 'string' ? req.body : '').catch((err) => {
+        console.error('instagram webhook processing failed:', maskPII(errorMessage(err)));
+      });
     });
   });
 
@@ -115,6 +120,25 @@ async function processWhatsApp(
       if (parts && parts.length > 0) await adapter.send(msg.senderId, parts);
     } catch (err) {
       console.error('whatsapp message handling failed:', maskPII(errorMessage(err)));
+    }
+  }
+}
+
+async function processInstagram(deps: ServerDeps, rawBody: string): Promise<void> {
+  const adapter = deps.adapters.instagram;
+  if (!adapter) return;
+  let body: unknown;
+  try {
+    body = JSON.parse(rawBody);
+  } catch {
+    return; // acked already; malformed payloads are simply dropped
+  }
+  for (const msg of adapter.parseWebhook(body)) {
+    try {
+      const parts = await deps.engine.handle(msg);
+      if (parts && parts.length > 0) await adapter.send(msg.senderId, parts);
+    } catch (err) {
+      console.error('instagram message handling failed:', maskPII(errorMessage(err)));
     }
   }
 }
