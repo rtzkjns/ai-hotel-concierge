@@ -84,8 +84,6 @@ async function runTool(
   if (!handler) {
     return { type: 'tool_result', tool_use_id: block.id, content: 'Unknown tool' };
   }
-  toolsUsed.push(block.name);
-
   // Guardrail: a cancellation the guest has not explicitly confirmed never reaches the handler.
   if (block.name === 'cancel_booking') {
     const input = block.input as { confirmedByGuest?: unknown } | null;
@@ -93,6 +91,8 @@ async function runTool(
       return { type: 'tool_result', tool_use_id: block.id, content: CANCEL_CONFIRMATION_REQUIRED };
     }
   }
+  // Counted only for calls that actually reach a handler (telemetry accuracy).
+  toolsUsed.push(block.name);
 
   try {
     const result = await handler(block.input);

@@ -62,14 +62,16 @@ export class LiveAvailabilityProvider implements AvailabilityProvider {
 function normalizeRoomStay(rs: ExelyRoomStay, nights: number): RoomOffer {
   const roomType = rs.roomType ?? {};
   const total = rs.total ?? {};
-  const totalPrice = (total.priceBeforeTax ?? 0) + (total.taxAmount ?? 0);
+  // "null if unknown": a roomStay without any price must never surface as 0 KZT.
+  const hasPrice = total.priceBeforeTax !== undefined || total.taxAmount !== undefined;
+  const totalPrice = hasPrice ? (total.priceBeforeTax ?? 0) + (total.taxAmount ?? 0) : null;
   const placements = (roomType.placements ?? rs.placements ?? [])
     .filter((p) => p.code !== undefined)
     .map((p) => String(p.code));
   return {
     roomType: roomType.name ?? rs.fullPlacementsName ?? 'Room',
     available: (rs.availability ?? 1) > 0,
-    pricePerNight: Math.round(totalPrice / nights),
+    pricePerNight: totalPrice === null ? null : Math.round(totalPrice / nights),
     currency: rs.currencyCode ?? 'KZT',
     roomTypeId: roomType.id !== undefined ? String(roomType.id) : null,
     ratePlanId: rs.ratePlan?.id !== undefined ? String(rs.ratePlan.id) : null,

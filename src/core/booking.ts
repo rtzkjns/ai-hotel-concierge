@@ -55,6 +55,8 @@ export type CreateBookingResult =
 export interface CancelBookingResult {
   ok: boolean;
   error?: string;
+  /** true when the PMS was NOT reached — staff must cancel by hand (lead saved). */
+  localOnly?: boolean;
 }
 
 export interface BookingStatusResult {
@@ -89,6 +91,11 @@ export class BookingService {
     } else if (!offer) {
       reason = 'offer_not_found';
     } else {
+      // Accepted upsells must reach the hotel: Exely has no upsell field we can
+      // set from here, so they travel in the customer comment.
+      const upsellNote = args.upsellAccepted?.length
+        ? `[upsell: ${args.upsellAccepted.join(', ')}] `
+        : '';
       const booking = buildBooking(
         propertyId,
         offer,
@@ -101,12 +108,25 @@ export class BookingService {
           phone: args.guestPhone,
           email: args.guestEmail,
         },
-        args.comment ?? '',
+        `${upsellNote}${args.comment ?? ''}`,
       );
       const placed = await reservation.place(booking);
       if (placed.ok && placed.number) {
         const total = placed.total ?? offer.totalPrice ?? undefined;
         const upsellTaken = (args.upsellAccepted?.length ?? 0) > 0;
+        // The prompt mandates exactly one upsell offer per booking flow, so a
+        // completed booking counts as one offer; acceptance is tracked per item.
+        track(store, 'upsell_offered', {
+          conversationId: args.conversationId,
+          property: args.property,
+        });
+        for (const item of args.upsellAccepted ?? []) {
+          track(store, 'upsell_accepted', {
+            conversationId: args.conversationId,
+            property: args.property,
+            payload: { item },
+          });
+        }
         store.saveBooking({
           conversationId: args.conversationId,
           property: args.property,
@@ -121,7 +141,7 @@ export class BookingService {
           currency: offer.currency,
           guestName: `${args.guestFirstName} ${args.guestLastName}`,
           guestPhone: args.guestPhone,
-          upsellOffered: upsellTaken,
+          upsellOffered: true,
           upsellAccepted: upsellTaken,
           createdAt: new Date().toISOString(),
         });
@@ -153,16 +173,26 @@ export class BookingService {
 
   async cancelBooking(exelyNumber: string, reason = ''): Promise<CancelBookingResult> {
     const { store, reservation, bookingEnabled } = this.deps;
-    if (bookingEnabled && reservation) {
+    const remote = bookingEnabled && !!reservation;
+    if (remote && reservation) {
       try {
         await reservation.cancel(exelyNumber, reason);
       } catch (err) {
         return { ok: false, error: err instanceof Error ? err.message : String(err) };
       }
+    } else {
+      // No PMS access: the booking may still stand in Edelweiss (e.g. it was
+      // made via bookingFormLink). Leave a lead so staff cancel it by hand.
+      store.saveLead({
+        conversationId: '',
+        kind: 'generic',
+        specialRequests: `CANCELLATION REQUEST (manual): booking ${exelyNumber}${reason ? `, reason: ${reason}` : ''} — PMS access disabled, cancel in Edelweiss/Exely by hand`,
+        createdAt: new Date().toISOString(),
+      });
     }
     store.updateBookingStatus(exelyNumber, 'cancelled');
-    track(store, 'booking_cancelled', { payload: { exelyNumber, reason } });
-    return { ok: true };
+    track(store, 'booking_cancelled', { payload: { exelyNumber, reason, remote } });
+    return { ok: true, localOnly: !remote };
   }
 
   async bookingStatus(exelyNumber: string): Promise<BookingStatusResult> {

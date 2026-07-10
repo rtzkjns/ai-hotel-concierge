@@ -23,7 +23,12 @@ export function styleSplit(reply: string): string[] {
       ? [...parts.slice(0, MAX_PARTS - 1), parts.slice(MAX_PARTS - 1).join(' ')]
       : parts;
 
-  return capped.flatMap(splitLongPart);
+  const expanded = capped.flatMap(splitLongPart);
+  // splitLongPart can re-expand a merged tail past 3 — re-cap so a reply is
+  // never more than 3 messages (a long tail stays long rather than multiplying).
+  return expanded.length > MAX_PARTS
+    ? [...expanded.slice(0, MAX_PARTS - 1), expanded.slice(MAX_PARTS - 1).join(' ')]
+    : expanded;
 }
 
 function splitLongPart(part: string): string[] {
