@@ -29,7 +29,8 @@ export function createBot(): Telegraf {
 
   // /start always begins a fresh session and re-asks which hotel.
   bot.start((ctx) => {
-    store.resetConversation(ctx.chat.id);
+    const convo = store.getOrCreateConversation('telegram', String(ctx.chat.id));
+    store.resetConversation(convo.id);
     return ctx.reply(CHOOSE_HOTEL_MESSAGE, hotelKeyboard);
   });
 
@@ -42,7 +43,8 @@ export function createBot(): Telegraf {
       await ctx.answerCbQuery();
       return;
     }
-    store.setProperty(chatId, key);
+    const convo = store.getOrCreateConversation('telegram', String(chatId));
+    store.setProperty(convo.id, key);
     await ctx.answerCbQuery();
     await ctx.reply(
       `${prop.name} — я виртуальный консьерж этого отеля. Чем могу помочь? / How can I help you?`,
@@ -53,7 +55,7 @@ export function createBot(): Telegraf {
     const chatId = ctx.chat.id;
     const text = ctx.message.text;
 
-    const convo = store.getOrCreateConversation(chatId);
+    const convo = store.getOrCreateConversation('telegram', String(chatId));
     // If a human already took over this thread, stay silent.
     if (convo.status === 'handed_off') return;
     // No hotel chosen yet — ask first.
@@ -63,8 +65,8 @@ export function createBot(): Telegraf {
     }
 
     const prop = properties[convo.property];
-    store.appendMessage(chatId, { role: 'user', content: text });
-    const updated = store.getOrCreateConversation(chatId);
+    store.appendMessage(convo.id, { role: 'user', content: text });
+    const updated = store.getOrCreateConversation('telegram', String(chatId));
 
     await ctx.sendChatAction('typing');
 
@@ -73,7 +75,12 @@ export function createBot(): Telegraf {
       model: config.anthropicModel,
       systemPrompt: systemPrompts[prop.key],
       onBookingLead: (args: BookingLeadArgs) => {
-        store.saveLead({ chatId, createdAt: new Date().toISOString(), ...args });
+        store.saveLead({
+          conversationId: convo.id,
+          kind: 'booking',
+          createdAt: new Date().toISOString(),
+          ...args,
+        });
         notifyStaff(
           bot,
           `📋 New booking lead — ${prop.name} (chat ${chatId}):\n` +
@@ -95,10 +102,10 @@ export function createBot(): Telegraf {
     });
 
     if (reply) {
-      store.appendMessage(chatId, { role: 'assistant', content: reply });
+      store.appendMessage(convo.id, { role: 'assistant', content: reply });
       await ctx.reply(reply);
     }
-    if (handedOff) store.setStatus(chatId, 'handed_off');
+    if (handedOff) store.setStatus(convo.id, 'handed_off');
   });
 
   return bot;
