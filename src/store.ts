@@ -151,6 +151,14 @@ export class Store {
     };
   }
 
+  /** Read-only lookup by id (console pages must never create conversations). */
+  getConversation(id: string): Conversation | null {
+    const row = this.db
+      .prepare('SELECT * FROM conversations WHERE id = ?')
+      .get(id) as Record<string, unknown> | undefined;
+    return row ? this.mapConversation(row) : null;
+  }
+
   setProperty(id: string, property: string): void {
     this.db
       .prepare('UPDATE conversations SET property = ?, updated_at = ? WHERE id = ?')

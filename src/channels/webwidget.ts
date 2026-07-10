@@ -47,7 +47,33 @@ export class WebWidgetChannel {
    */
   private readonly tokens = new Map<string, { expiry: number; boundSenderId: string | null }>();
 
+  /** Live sockets per senderId, so staff-console replies can reach an open widget. */
+  private readonly liveSockets = new Map<string, Set<WidgetSocket>>();
+
   constructor(private readonly deps: WebWidgetDeps) {}
+
+  /** Deliver a staff-console reply to the guest's open widget session(s). */
+  pushToGuest(senderId: string, text: string): boolean {
+    const sockets = this.liveSockets.get(senderId);
+    if (!sockets || sockets.size === 0) return false;
+    for (const socket of sockets) {
+      try {
+        socket.send(JSON.stringify({ type: 'reply', text }));
+      } catch {
+        // A dying socket must not fail the push; close cleanup removes it.
+      }
+    }
+    return true;
+  }
+
+  /** Called when a socket closes; keeps liveSockets bounded. */
+  detach(session: WidgetSession, socket: WidgetSocket): void {
+    if (!session.senderId) return;
+    const sockets = this.liveSockets.get(session.senderId);
+    if (!sockets) return;
+    sockets.delete(socket);
+    if (sockets.size === 0) this.liveSockets.delete(session.senderId);
+  }
 
   /** Issue a page-load token, pruning expired ones so the map stays bounded. */
   issueToken(): string {
@@ -89,6 +115,9 @@ export class WebWidgetChannel {
       session.authed = true;
       session.senderId = claimedSenderId ?? randomUUID();
       this.bindToken(msg.token as string, session.senderId);
+      let live = this.liveSockets.get(session.senderId);
+      if (!live) this.liveSockets.set(session.senderId, (live = new Set()));
+      live.add(socket);
       const convo = this.deps.store.getOrCreateConversation('webwidget', session.senderId);
       socket.send(
         JSON.stringify({
@@ -142,6 +171,7 @@ export class WebWidgetChannel {
       socket.on('message', (data: Buffer) => {
         void this.onMessage(session, data.toString(), socket).catch(() => {});
       });
+      socket.on('close', () => this.detach(session, socket));
     });
   }
 

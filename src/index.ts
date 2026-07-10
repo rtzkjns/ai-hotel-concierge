@@ -9,7 +9,10 @@ import type { StaffNotifier } from './channels/types';
 import { WebWidgetChannel } from './channels/webwidget';
 import { WhatsAppAdapter } from './channels/whatsapp';
 import { config, enabledChannels } from './config';
+import { hashPassword } from './console/auth';
+import { registerConsoleRoutes, type SendToConversation } from './console/routes';
 import { BookingService } from './core/booking';
+import { metricsSummary } from './core/events';
 import { Engine } from './core/engine';
 import { RateLimiter } from './core/rateLimit';
 import { startRetention } from './core/retention';
@@ -60,6 +63,13 @@ function loadStyleGuide(): string | undefined {
 
 async function main(): Promise<void> {
   const store = new Store(config.dbPath);
+
+  // First boot: seed the console admin account from env, if configured.
+  if (store.countStaff() === 0 && config.console.adminPassword) {
+    store.createStaff(config.console.adminLogin, hashPassword(config.console.adminPassword), 'admin');
+    console.log('console admin seeded');
+  }
+
   const anthropic = new Anthropic({ apiKey: config.anthropicApiKey });
 
   const propertyIdResolver = (key: string): string | undefined =>
@@ -121,26 +131,58 @@ async function main(): Promise<void> {
   }
 
   const widget = new WebWidgetChannel({ engine, store });
+
+  // Staff replies from the console go out through whatever channel the
+  // conversation lives on; assigned below once the Telegram channel exists.
+  let telegram: TelegramChannel | undefined;
+  const sendToConversation: SendToConversation = async (convo, text) => {
+    const parts = [{ text, delayMs: 0 }];
+    switch (convo.channel) {
+      case 'whatsapp':
+        if (!adapters.whatsapp) return { ok: false, error: 'WhatsApp is not configured' };
+        await adapters.whatsapp.send(convo.senderId, parts);
+        return { ok: true };
+      case 'telegram':
+        if (!telegram) return { ok: false, error: 'Telegram is not running' };
+        await telegram.bot.telegram.sendMessage(Number(convo.senderId), text);
+        return { ok: true };
+      case 'webwidget':
+        return widget.pushToGuest(convo.senderId, text)
+          ? { ok: true }
+          : { ok: false, error: 'guest offline (widget closed)' };
+      case 'instagram':
+        if (!adapters.instagram) return { ok: false, error: 'Instagram is not configured' };
+        await adapters.instagram.send(convo.senderId, parts);
+        return { ok: true };
+      default:
+        return { ok: false, error: 'unknown channel' };
+    }
+  };
+
   const app = await buildServer({
     engine,
     adapters,
     store,
     config,
-    extraRoutes: [(a) => widget.register(a)],
+    extraRoutes: [
+      (a) => widget.register(a),
+      (a) => registerConsoleRoutes(a, { store, metricsSummary, sendToConversation }),
+    ],
   });
   await app.listen({ port: config.server.port, host: '0.0.0.0' });
   startRetention(store);
 
   if (channels.includes('telegram') && config.telegram.botToken) {
-    const telegram = new TelegramChannel({
+    const tg = new TelegramChannel({
       botToken: config.telegram.botToken,
       engine,
       store,
     });
-    telegram.launch();
+    telegram = tg;
+    tg.launch();
     console.log('Telegram channel: running');
-    process.once('SIGINT', () => telegram.stop('SIGINT'));
-    process.once('SIGTERM', () => telegram.stop('SIGTERM'));
+    process.once('SIGINT', () => tg.stop('SIGINT'));
+    process.once('SIGTERM', () => tg.stop('SIGTERM'));
   }
 
   console.log(
