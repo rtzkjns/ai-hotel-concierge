@@ -195,6 +195,18 @@ describe('Engine.handle', () => {
     expect(deps.client.messages.create).not.toHaveBeenCalled();
   });
 
+  it('still records the guest message in the transcript while handed off', async () => {
+    const { engine, store } = makeEngine();
+    const convo = withProperty(store, 'telegram', '1', 'almaty');
+    convo.status = 'handed_off';
+
+    await engine.handle(textMsg('ало, вы тут?'));
+
+    const history = store.conversations.get('telegram:1')!.history;
+    expect(history[history.length - 1]).toEqual({ role: 'user', content: 'ало, вы тут?' });
+    expect(store.events.some((e) => e.type === 'message_in')).toBe(true);
+  });
+
   it('drops rate-limited senders with a rate_limited event and no model call', async () => {
     const { engine, store, deps } = makeEngine({ rateLimiter: { allow: () => false } });
     withProperty(store, 'telegram', '1', 'almaty');

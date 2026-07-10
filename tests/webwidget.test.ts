@@ -136,6 +136,30 @@ describe('WebWidgetChannel protocol', () => {
     expect((socket.sent[0] as { senderId: string }).senderId).toBe('returning-guest-123');
   });
 
+  it('a used token cannot mint a second senderId (rate-limit bypass guard)', async () => {
+    const { channel } = makeWidget();
+    const token = channel.issueToken();
+
+    // First hello binds the token to the fresh senderId.
+    const first = fakeSocket();
+    await channel.onMessage(channel.newSession(), JSON.stringify({ type: 'hello', token }), first);
+    const boundSenderId = (first.sent[0] as { senderId: string }).senderId;
+
+    // Same token + same senderId = legit reconnect.
+    const reconnect = fakeSocket();
+    await channel.onMessage(
+      channel.newSession(),
+      JSON.stringify({ type: 'hello', token, senderId: boundSenderId }),
+      reconnect,
+    );
+    expect(reconnect.closes).toEqual([]);
+
+    // Same token without the bound senderId (would mint a fresh one) → rejected.
+    const thief = fakeSocket();
+    await channel.onMessage(channel.newSession(), JSON.stringify({ type: 'hello', token }), thief);
+    expect(thief.closes).toEqual([{ code: 4001 }]);
+  });
+
   it('pick_hotel → msg round trip: property set, typing then paced replies', async () => {
     const engine = fakeEngine([
       { text: 'добрый день!', delayMs: 0 },
