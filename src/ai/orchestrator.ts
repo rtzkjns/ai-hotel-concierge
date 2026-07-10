@@ -1,7 +1,6 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import type { ChatMessage } from '../types';
-import { toolDefinitions, type BookingLeadArgs, type EscalateArgs, type CheckAvailabilityArgs } from './tools';
-import type { AvailabilityResult } from '../integrations/exely/types';
+import { toolDefinitions } from './tools';
 
 export interface AnthropicLike {
   messages: {
@@ -9,29 +8,41 @@ export interface AnthropicLike {
   };
 }
 
+/** Tool handlers are injected generically so the orchestrator stays integration-free. */
+export type ToolHandlers = Record<string, (input: unknown) => Promise<unknown>>;
+
 export interface GenerateDeps {
   client: AnthropicLike;
   model: string;
   systemPrompt: string;
-  onBookingLead: (args: BookingLeadArgs) => Promise<void> | void;
-  onEscalate: (reason: string, summary: string) => Promise<void> | void;
-  checkAvailability: (args: CheckAvailabilityArgs) => Promise<AvailabilityResult>;
+  tools: ToolHandlers;
 }
+
+export interface GenerateResult {
+  reply: string;
+  handedOff: boolean;
+  toolsUsed: string[];
+}
+
+// Capped to avoid infinite loops on a misbehaving model.
+const MAX_ROUNDS = 8;
+
+const CANCEL_CONFIRMATION_REQUIRED =
+  'CONFIRMATION_REQUIRED: ask the guest to explicitly confirm the cancellation first';
 
 export async function generateReply(
   history: ChatMessage[],
   deps: GenerateDeps,
-): Promise<{ reply: string; handedOff: boolean }> {
+): Promise<GenerateResult> {
   const messages: Anthropic.MessageParam[] = history.map((m) => ({
     role: m.role,
     content: m.content,
   }));
 
   let handedOff = false;
+  const toolsUsed: string[] = [];
 
-  // Tool-use loop: keep going until Claude stops requesting tools.
-  // Capped to avoid infinite loops on a misbehaving model.
-  for (let turn = 0; turn < 5; turn++) {
+  for (let round = 0; round < MAX_ROUNDS; round++) {
     const response = await deps.client.messages.create({
       model: deps.model,
       max_tokens: 1024,
@@ -46,7 +57,7 @@ export async function generateReply(
         .map((b) => b.text)
         .join('\n')
         .trim();
-      return { reply: text, handedOff };
+      return { reply: text, handedOff, toolsUsed };
     }
 
     // Echo the assistant turn (with tool_use blocks) back into the conversation.
@@ -55,30 +66,50 @@ export async function generateReply(
     const toolResults: Anthropic.ToolResultBlockParam[] = [];
     for (const block of response.content) {
       if (block.type !== 'tool_use') continue;
-      if (block.name === 'capture_booking_lead') {
-        await deps.onBookingLead(block.input as BookingLeadArgs);
-        toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: 'Lead saved.' });
-      } else if (block.name === 'escalate_to_human') {
-        const args = block.input as EscalateArgs;
-        await deps.onEscalate(args.reason, args.summary);
-        handedOff = true;
-        toolResults.push({
-          type: 'tool_result',
-          tool_use_id: block.id,
-          content: 'Escalated to staff.',
-        });
-      } else if (block.name === 'check_availability') {
-        const args = block.input as CheckAvailabilityArgs;
-        const availability = await deps.checkAvailability(args);
-        toolResults.push({
-          type: 'tool_result',
-          tool_use_id: block.id,
-          content: JSON.stringify(availability),
-        });
-      }
+      toolResults.push(await runTool(block, deps.tools, toolsUsed, () => (handedOff = true)));
     }
     messages.push({ role: 'user', content: toolResults });
   }
 
-  return { reply: 'Our team will get back to you shortly.', handedOff };
+  return { reply: 'Our team will get back to you shortly.', handedOff, toolsUsed };
+}
+
+async function runTool(
+  block: Anthropic.ToolUseBlock,
+  tools: ToolHandlers,
+  toolsUsed: string[],
+  markHandedOff: () => void,
+): Promise<Anthropic.ToolResultBlockParam> {
+  const handler = tools[block.name];
+  if (!handler) {
+    return { type: 'tool_result', tool_use_id: block.id, content: 'Unknown tool' };
+  }
+  toolsUsed.push(block.name);
+
+  // Guardrail: a cancellation the guest has not explicitly confirmed never reaches the handler.
+  if (block.name === 'cancel_booking') {
+    const input = block.input as { confirmedByGuest?: unknown } | null;
+    if (input?.confirmedByGuest !== true) {
+      return { type: 'tool_result', tool_use_id: block.id, content: CANCEL_CONFIRMATION_REQUIRED };
+    }
+  }
+
+  try {
+    const result = await handler(block.input);
+    if (block.name === 'escalate_to_human') markHandedOff();
+    return {
+      type: 'tool_result',
+      tool_use_id: block.id,
+      content: JSON.stringify(result) ?? 'null',
+    };
+  } catch (err) {
+    // Feed the failure back so the model can apologize like a human and try another way.
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      type: 'tool_result',
+      tool_use_id: block.id,
+      content: JSON.stringify({ error: message }),
+      is_error: true,
+    };
+  }
 }

@@ -4,8 +4,8 @@ import { config } from '../config';
 import { Store } from '../store';
 import { buildSystemPrompt } from '../ai/systemPrompt';
 import { properties, propertyList } from '../knowledge';
-import { generateReply } from '../ai/orchestrator';
-import type { BookingLeadArgs } from '../ai/tools';
+import { generateReply, type ToolHandlers } from '../ai/orchestrator';
+import type { CaptureLeadInput, CheckAvailabilityInput, EscalateInput } from '../ai/tools';
 import { createAvailabilityProvider } from '../integrations/exely';
 import { maskPII } from '../core/pii';
 
@@ -74,39 +74,58 @@ export function createBot(): Telegraf {
 
     await ctx.sendChatAction('typing');
 
-    const { reply, handedOff } = await generateReply(updated.history, {
-      client: anthropic,
-      model: config.anthropicModel,
-      systemPrompt: systemPrompts[prop.key],
-      onBookingLead: (args: BookingLeadArgs) => {
+    // Minimal handler set for the current Telegram bot; the full set (booking,
+    // MICE, payments, ...) is wired by the channel engine in a later batch.
+    const tools: ToolHandlers = {
+      check_availability: async (input) => {
+        const args = input as CheckAvailabilityInput;
+        return availabilityProvider.checkAvailability({
+          checkIn: args.checkIn,
+          checkOut: args.checkOut,
+          guests: args.guests,
+          property: args.property ?? prop.key,
+        });
+      },
+      capture_lead: async (input) => {
+        const args = input as CaptureLeadInput;
         store.saveLead({
           conversationId: convo.id,
-          kind: 'booking',
+          kind: 'generic',
+          contactName: args.contactName,
+          contactPhone: args.contactPhone,
+          specialRequests: args.summary,
           createdAt: new Date().toISOString(),
-          ...args,
         });
         notifyStaff(
           bot,
           maskPII(
-            `📋 New booking lead — ${prop.name} (chat ${chatId}):\n` +
-              `${args.contactName} (${args.contactPhone})\n` +
-              `${args.checkIn} → ${args.checkOut}, ${args.guests} guest(s), ${args.roomType}` +
-              (args.specialRequests ? `\nNotes: ${args.specialRequests}` : ''),
+            `📋 New lead — ${prop.name} (chat ${chatId}):\n${args.summary}` +
+              (args.contactName ? `\nName: ${args.contactName}` : '') +
+              (args.contactPhone ? `\nPhone: ${args.contactPhone}` : ''),
           ),
         );
+        return { ok: true };
       },
-      onEscalate: (reason, summary) => {
+      escalate_to_human: async (input) => {
+        const args = input as EscalateInput;
         const transcript = updated.history.map((m) => `${m.role}: ${m.content}`).join('\n');
         notifyStaff(
           bot,
           maskPII(
-            `🚨 Handoff needed — ${prop.name} (chat ${chatId})\nReason: ${reason}\n${summary}\n\n` +
+            `🚨 Handoff needed — ${prop.name} (chat ${chatId})\n` +
+              `Type: ${args.type}\nReason: ${args.reason}\n${args.summary}\n\n` +
               `--- Conversation ---\n${transcript}`,
           ),
         );
+        return { ok: true };
       },
-      checkAvailability: (args) =>
-        availabilityProvider.checkAvailability({ ...args, property: prop.key }),
+    };
+
+    const { reply, handedOff } = await generateReply(updated.history, {
+      client: anthropic,
+      model: config.anthropicModel,
+      systemPrompt: systemPrompts[prop.key],
+      tools,
     });
 
     if (reply) {
