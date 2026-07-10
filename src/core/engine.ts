@@ -59,6 +59,13 @@ const AUDIO_FALLBACK: Record<Language, string> = {
   zh: '抱歉，语音消息我听不了，麻烦您用文字发一下，我马上回复',
 };
 
+const UNSUPPORTED_FALLBACK: Record<Language, string> = {
+  ru: 'такой тип сообщения пока не открывается у меня( напишите, пожалуйста, текстом',
+  kk: 'бұндай хабарлама түрі менде ашылмайды( мәтінмен жазып жіберіңізші',
+  en: "I can't open that type of message — could you send it as text, please?",
+  zh: '这种消息类型我打不开，麻烦您用文字发一下',
+};
+
 const ERROR_FALLBACK: Record<Language, string> = {
   ru: 'что-то я подвис, дайте минутку — уже чиню',
   kk: 'сәл қатып қалдым, бір минут беріңізші — қазір реттеймін',
@@ -107,6 +114,8 @@ export interface EngineDeps {
 
 export class Engine {
   private readonly systemPrompts: Record<string, string>;
+  /** Per-conversation promise chain: messages from one sender never interleave. */
+  private readonly queues = new Map<string, Promise<unknown>>();
 
   constructor(private readonly deps: EngineDeps) {
     this.systemPrompts = Object.fromEntries(
@@ -123,8 +132,24 @@ export class Engine {
   /**
    * Full pipeline for one inbound message. Returns the parts to send,
    * or null when the bot must stay silent (limits, spam, human owns the chat).
+   * Serialized per sender: a burst of messages is processed strictly in order
+   * over a consistent history instead of racing.
    */
-  async handle(msg: InboundMessage): Promise<OutboundPart[] | null> {
+  handle(msg: InboundMessage): Promise<OutboundPart[] | null> {
+    const key = `${msg.channel}:${msg.senderId}`;
+    const prev = this.queues.get(key) ?? Promise.resolve();
+    const run = prev.then(() => this.handleNow(msg));
+    // Keep the chain alive on failure, and drop the map entry once idle.
+    this.queues.set(
+      key,
+      run.catch(() => undefined).finally(() => {
+        if (this.queues.get(key) === run) this.queues.delete(key);
+      }),
+    );
+    return run;
+  }
+
+  private async handleNow(msg: InboundMessage): Promise<OutboundPart[] | null> {
     const start = Date.now();
     const { store, rateLimiter, transcriber } = this.deps;
 
@@ -146,16 +171,38 @@ export class Engine {
       }
     }
 
-    // A human took this chat over — the bot stays silent until it is handed back.
-    if (convo.status === 'handed_off') return null;
+    // A human took this chat over — the bot stays silent until it is handed back,
+    // but the guest's words must still land in the transcript the manager reads.
+    if (convo.status === 'handed_off') {
+      if (msg.text !== undefined && msg.text.trim() !== '') {
+        store.appendMessage(convo.id, { role: 'user', content: msg.text });
+        track(store, 'message_in', {
+          conversationId: convo.id,
+          property: convo.property,
+          channel: msg.channel,
+          payload: { language: convo.language, handedOff: true },
+        });
+      }
+      return null;
+    }
 
     const hinted = this.resolveProperty(msg.propertyHint);
     if (hinted && hinted !== convo.property) {
       store.setProperty(convo.id, hinted);
       convo.property = hinted;
     }
-    // No hotel yet (telegram/webwidget before selection) — ask, without burning a model call.
+    // No hotel yet (telegram/webwidget before selection) — ask, without burning a
+    // model call. The message itself is kept so the bot answers it right after
+    // the guest picks a hotel («есть номера на завтра?» is not lost).
     if (!convo.property || !properties[convo.property]) {
+      if (msg.text !== undefined && msg.text.trim() !== '') {
+        store.appendMessage(convo.id, { role: 'user', content: msg.text });
+        track(store, 'message_in', {
+          conversationId: convo.id,
+          channel: msg.channel,
+          payload: { language: convo.language, preSelection: true },
+        });
+      }
       return [{ text: HOTEL_SELECTOR_MESSAGE, delayMs: 0 }];
     }
 
@@ -168,6 +215,11 @@ export class Engine {
       text = transcribed;
     }
     if (text === undefined || text.trim() === '') return null;
+    // Media the parser could not represent (stickers, images, ...) gets a fixed
+    // canned reply — deterministic and free, no model call.
+    if (text.startsWith('[unsupported message type')) {
+      return [{ text: UNSUPPORTED_FALLBACK[convo.language ?? 'ru'], delayMs: 0 }];
+    }
 
     const language = detectLanguage(text);
     if (language) {

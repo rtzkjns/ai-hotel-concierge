@@ -39,19 +39,24 @@ export interface WidgetSession {
 }
 
 export class WebWidgetChannel {
-  /** Anti-bot tokens embedded in served pages: token → expiry epoch ms. */
-  private readonly tokens = new Map<string, number>();
+  /**
+   * Anti-bot tokens embedded in served pages: token → {expiry, boundSenderId}.
+   * A token authenticates ONE senderId: the first successful hello binds it, so
+   * a scraped token can't mint unlimited fresh senderIds (rate-limit bypass);
+   * reconnects with the same token+senderId keep working.
+   */
+  private readonly tokens = new Map<string, { expiry: number; boundSenderId: string | null }>();
 
   constructor(private readonly deps: WebWidgetDeps) {}
 
   /** Issue a page-load token, pruning expired ones so the map stays bounded. */
   issueToken(): string {
     const now = this.now();
-    for (const [token, expiry] of this.tokens) {
-      if (expiry <= now) this.tokens.delete(token);
+    for (const [token, entry] of this.tokens) {
+      if (entry.expiry <= now) this.tokens.delete(token);
     }
     const token = randomUUID();
-    this.tokens.set(token, now + TOKEN_TTL_MS);
+    this.tokens.set(token, { expiry: now + TOKEN_TTL_MS, boundSenderId: null });
     return token;
   }
 
@@ -76,12 +81,14 @@ export class WebWidgetChannel {
     }
 
     if (!session.authed) {
-      if (msg.type !== 'hello' || !this.isValidToken(msg.token)) {
+      const claimedSenderId = this.acceptSenderId(msg.senderId);
+      if (msg.type !== 'hello' || !this.consumeToken(msg.token, claimedSenderId)) {
         socket.close(4001, 'invalid token');
         return;
       }
       session.authed = true;
-      session.senderId = this.acceptSenderId(msg.senderId) ?? randomUUID();
+      session.senderId = claimedSenderId ?? randomUUID();
+      this.bindToken(msg.token as string, session.senderId);
       const convo = this.deps.store.getOrCreateConversation('webwidget', session.senderId);
       socket.send(
         JSON.stringify({
@@ -142,10 +149,17 @@ export class WebWidgetChannel {
     return this.deps.now?.() ?? Date.now();
   }
 
-  private isValidToken(token: unknown): boolean {
+  /** Valid = unexpired AND (unused, or already bound to the same senderId — a reconnect). */
+  private consumeToken(token: unknown, claimedSenderId: string | null): boolean {
     if (typeof token !== 'string') return false;
-    const expiry = this.tokens.get(token);
-    return expiry !== undefined && expiry > this.now();
+    const entry = this.tokens.get(token);
+    if (entry === undefined || entry.expiry <= this.now()) return false;
+    return entry.boundSenderId === null || entry.boundSenderId === claimedSenderId;
+  }
+
+  private bindToken(token: string, senderId: string): void {
+    const entry = this.tokens.get(token);
+    if (entry) entry.boundSenderId = senderId;
   }
 
   private acceptSenderId(value: unknown): string | null {

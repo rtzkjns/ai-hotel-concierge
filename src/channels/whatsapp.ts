@@ -46,6 +46,21 @@ export function verifySignature(
   return timingSafeEqual(expected, given);
 }
 
+/** The Bearer token is only ever sent to Meta-owned media hosts. */
+function isMetaHost(url: string): boolean {
+  try {
+    const host = new URL(url).hostname;
+    return (
+      new URL(url).protocol === 'https:' &&
+      ['facebook.com', 'fbcdn.net', 'fbsbx.com', 'whatsapp.net'].some(
+        (domain) => host === domain || host.endsWith(`.${domain}`),
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
 // Raw webhook shapes (only the fields we read; everything is optional on purpose).
 interface RawWaMessage {
   from?: string;
@@ -152,8 +167,15 @@ export class WhatsAppAdapter implements ChannelAdapter {
       }
       const meta = (await metaRes.json()) as { url?: unknown };
       if (typeof meta.url !== 'string') return null;
+      // Defense-in-depth: the Bearer token goes only to Meta-owned hosts, even
+      // though meta.url comes from Meta's own API response.
+      if (!isMetaHost(meta.url)) {
+        console.warn('WhatsApp media URL points outside Meta domains — refusing to download');
+        return null;
+      }
       const binRes = await this.fetchFn(meta.url, {
         headers: { Authorization: `Bearer ${this.cfg.accessToken}` },
+        redirect: 'error',
       });
       if (!binRes.ok) {
         console.warn(`WhatsApp media download failed: HTTP ${binRes.status}`);

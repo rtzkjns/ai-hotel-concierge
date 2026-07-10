@@ -187,9 +187,9 @@ async function makeServer(opts: { appSecret?: string; engineParts?: OutboundPart
   const store = fakeStore();
   const { fn, calls } = fakeFetch((url) => {
     if (url.endsWith('/media-42')) {
-      return new Response(JSON.stringify({ url: 'https://cdn.example/bin' }), { status: 200 });
+      return new Response(JSON.stringify({ url: 'https://lookaside.fbsbx.com/whatsapp_business/attachments/bin' }), { status: 200 });
     }
-    if (url === 'https://cdn.example/bin') {
+    if (url === 'https://lookaside.fbsbx.com/whatsapp_business/attachments/bin') {
       return new Response(new Uint8Array(Buffer.from('OGGDATA')), { status: 200 });
     }
     return undefined;
