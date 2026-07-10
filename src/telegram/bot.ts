@@ -22,9 +22,12 @@ export function createBot(): Telegraf {
   const anthropic = new Anthropic({ apiKey: config.anthropicApiKey });
   const availabilityProvider = createAvailabilityProvider(config.exely);
 
-  // Precompute one system prompt per property.
+  // Precompute one system prompt per property (each knows its sister hotels).
   const systemPrompts: Record<string, string> = Object.fromEntries(
-    propertyList.map((p) => [p.key, buildSystemPrompt(p.name, p.knowledge)]),
+    propertyList.map((p) => [
+      p.key,
+      buildSystemPrompt(p, { sisterHotels: propertyList.filter((s) => s.key !== p.key) }),
+    ]),
   );
 
   const hotelKeyboard = Markup.inlineKeyboard(
