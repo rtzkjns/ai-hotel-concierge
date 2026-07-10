@@ -236,13 +236,20 @@ export class Engine {
       payload: { language: convo.language },
     });
 
+    // A deterministic per-turn language anchor: prompts alone drift on topics
+    // with strong RU associations (invoices, документы), detection doesn't.
+    const languageHint = convo.language
+      ? `\n\nAUTO-DETECTED LANGUAGE OF THE GUEST'S LATEST MESSAGE: "${convo.language}". ` +
+        'Write your ENTIRE reply in this language.'
+      : '';
+
     let reply: string;
     let handedOff: boolean;
     try {
       const result = await generateReply(history, {
         client: this.deps.client,
         model: this.deps.model,
-        systemPrompt: this.systemPrompts[convo.property],
+        systemPrompt: this.systemPrompts[convo.property] + languageHint,
         tools: this.buildTools(convo, history),
       });
       reply = result.reply;
