@@ -40,22 +40,41 @@ const almaty: Property = {
   name: 'Hotel Kazzhol Almaty',
   exelyPropertyId: '801',
   whatsapp: '+7 708 709 3000',
+  // Facts below marked (Exely) are VERIFIED against the live Exely Content API on 2026-07-12.
   knowledge: `
-PROPERTY: Hotel Kazzhol Almaty — a modern business hotel in the heart of Almaty, Kazakhstan.
+PROPERTY: Hotel Kazzhol Almaty — a modern 4-star business hotel in the heart of Almaty,
+Kazakhstan, combining comfort, national character and a high level of service. (Exely)
 
-ADDRESS: Gogol Street 127/1, Almaty.
-CHECK-IN / CHECK-OUT: Check-in from 14:00, check-out until 12:00.
-ROOMS: Standard, Comfort, and Suite rooms. Indicative rates from about 28,000 KZT (~USD 60)
-per night. PRICES: always confirm via the live availability tool (check_availability); the
-indicative figure is only a rough anchor and must be presented as approximate, never as a
-quote.
-DINING: On-site restaurant serving Kazakh and European cuisine.
-AMENITIES: AquaFit wellness complex with a swimming pool, free Wi-Fi, breakfast available,
-conference / meeting halls, parking, 24-hour front desk.
-CONTACT: WhatsApp +7 708 709 3000; reservations email booking@hotelkazzhol.kz.
+ADDRESS: Gogol Street 127/1, Almaty (050000). Near the business and cultural center. (Exely)
+CHECK-IN / CHECK-OUT: Check-in from 15:00, check-out until 12:00. (Exely)
+ROOM CATEGORIES (Exely; sizes and capacity verified):
+- Standard Double / Standard Twin — 20 m², up to 2 adults. Renovated modern rooms.
+- Comfort DLux Double / Twin — 28 m², 2 adults + extra bed (twin also fits kids 0-12).
+  Located in the new nine-storey building.
+- Deluxe Apartments — 32 m², spacious apartment-style, up to 2 adults + extra.
+- Deluxe Terrace — 28 m², room with its own terrace, up to 2 adults.
+- Junior Suite (King bed or 2 Queen beds) — 32 m², brand-new suites, fits families
+  (2 adults + children 0-12 + extra bed).
+- Family Room — 32 m², two large beds, made for families with children.
+- Business Lux — 60 m², two-room suite, quiet luxury, up to 2 adults + extra.
+PRICES: always confirm via the live availability tool (check_availability); indicative anchor
+is about 28,000 KZT (~USD 60) per night for a Standard — approximate only, never a quote.
+The Best Available Rate includes breakfast and fitness-center access. (Exely)
+DINING: Restaurant "Salt" — Kazakhstani and European cuisine. Bar. Room service. Half-board
+(lunch or dinner) can be added. (Exely)
+WELLNESS: AquaFit complex — swimming pool (free for guests), sauna (free), gym and fitness.
+(Exely)
+AMENITIES: free Wi-Fi, FREE parking, conference halls, laundry & dry-cleaning, luggage room,
+ATM, registration of foreign citizens, smoking and non-smoking rooms, elevator, video
+surveillance, 24-hour front desk. (Exely)
+EXTRAS & TOURS bookable via the hotel: airport/city transfer; day tours — "BUGGY" (Zailiyskiy
+Alatau peaks), trekking to Kok-Zhailau, evening Almaty city tour (3.5h, daily from 18:00);
+fruit & dessert plate to the room. Prices on request — capture a lead, the team confirms.
+CONTACT: WhatsApp +7 708 709 3000; reservations email booking@hotelkazzhol.kz;
+phone +7 (727) 338-38-98. (Exely)
 LANGUAGES SPOKEN BY STAFF: Kazakh, Russian, English.
-BOOKING: For specific dates and live availability the reservations team confirms by message
-or phone. This assistant can take a booking request and the team will confirm availability.
+BOOKING: This assistant books directly (or sends a personal secure payment link); the
+reservations team confirms special cases by message or phone.
 `.trim(),
 };
 
