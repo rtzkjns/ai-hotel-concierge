@@ -361,9 +361,13 @@ export class Engine {
           maskPII(`🏷️ Promo code check — ${hotelName} (${convo.id}): "${input.code}"`),
         );
         return {
-          status: 'PROMO_CHECK_UNAVAILABLE',
+          status: 'PROMO_ENTERED_ON_BOOKING_PAGE',
           instruction:
-            'tell the guest the team will confirm the code and come back to them shortly',
+            'The Exely public API cannot validate promo codes, but the booking page (the ' +
+            'personal link from check_availability/create_booking) has an «Ввести промокод» ' +
+            'button — verified on kazzhol.com. Tell the guest to enter the code there before ' +
+            'paying: if it is active, the discount applies instantly. Also say the team was ' +
+            'notified and will confirm the code separately. Never claim the code definitely works.',
         };
       },
 
