@@ -27,6 +27,7 @@ export function createAvailabilityProvider(
   return new StubAvailabilityProvider();
 }
 
+export { createCabinetProviders, type CabinetProviders } from './router';
 export type { AvailabilityProvider } from './provider';
 export type { AvailabilityQuery, AvailabilityResult, RoomOffer } from './types';
 export type { PropertyIdResolver } from './live';

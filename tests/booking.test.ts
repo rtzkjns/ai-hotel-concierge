@@ -215,6 +215,50 @@ describe('BookingService.cancelBooking', () => {
     expect(store.events).toContain('booking_cancelled');
   });
 
+  it('routes cancel to the cabinet that owns the stored booking (multi-cabinet)', async () => {
+    const almatyHttp = { resPost: vi.fn().mockResolvedValue({}), resGet: vi.fn() };
+    const astanaHttp = { resPost: vi.fn().mockResolvedValue({}), resGet: vi.fn() };
+    const store = fakeStore();
+    // A booking that lives in the Astana cabinet.
+    store.bookings.push({
+      conversationId: 'wa:1',
+      property: 'astana',
+      exelyNumber: 'AST-9',
+      status: 'confirmed',
+      checkIn: '2026-08-10',
+      checkOut: '2026-08-12',
+      guests: 2,
+      roomType: 'Standard',
+      total: 50000,
+      currency: 'KZT',
+      guestName: 'A B',
+      guestPhone: '+7700',
+      upsellOffered: false,
+      upsellAccepted: false,
+      createdAt: '2026-08-01T00:00:00.000Z',
+    });
+    const reservations: Record<string, ExelyReservation> = {
+      almaty: new ExelyReservation(almatyHttp),
+      astana: new ExelyReservation(astanaHttp),
+    };
+    const service = new BookingService({
+      store,
+      provider: fakeProvider([]),
+      reservationFor: (p) => reservations[p],
+      bookingEnabledFor: (p) => p === 'astana',
+      propertyIdResolver: (p) => (p === 'astana' ? '900' : undefined),
+    });
+
+    const result = await service.cancelBooking('AST-9', 'guest asked');
+
+    expect(result.ok).toBe(true);
+    expect(astanaHttp.resPost).toHaveBeenCalledWith('/v1/bookings/AST-9/cancel', {
+      reason: 'guest asked',
+    });
+    expect(almatyHttp.resPost).not.toHaveBeenCalled(); // wrong cabinet never touched
+    expect(store.updateBookingStatus).toHaveBeenCalledWith('AST-9', 'cancelled');
+  });
+
   it('reports the error and keeps the local status when the remote cancel fails', async () => {
     const http = {
       resPost: vi.fn().mockRejectedValue(new Error('Exely POST → HTTP 403: nope')),

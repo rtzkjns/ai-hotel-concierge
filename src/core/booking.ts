@@ -27,9 +27,20 @@ export interface BookingStore {
 export interface BookingServiceDeps {
   store: BookingStore;
   provider: AvailabilityProvider;
-  reservation?: ExelyReservation;
-  bookingEnabled: boolean;
   propertyIdResolver: PropertyIdResolver;
+  /**
+   * Single-cabinet (legacy) reservation client + flag. Used when the per-property
+   * resolvers below are not supplied.
+   */
+  reservation?: ExelyReservation;
+  bookingEnabled?: boolean;
+  /**
+   * Multi-cabinet: resolve the reservation client / booking flag per hotel, so
+   * each property books against its own Exely account. When present, these win
+   * over the single-cabinet fields above.
+   */
+  reservationFor?: (property: string) => ExelyReservation | undefined;
+  bookingEnabledFor?: (property: string) => boolean;
 }
 
 export interface CreateBookingArgs {
@@ -67,8 +78,26 @@ export interface BookingStatusResult {
 export class BookingService {
   constructor(private readonly deps: BookingServiceDeps) {}
 
+  /** The reservation client for a hotel — per-cabinet resolver wins over the legacy single one. */
+  private reservationFor(property: string): ExelyReservation | undefined {
+    return this.deps.reservationFor ? this.deps.reservationFor(property) : this.deps.reservation;
+  }
+
+  private bookingEnabledFor(property: string): boolean {
+    return this.deps.bookingEnabledFor
+      ? this.deps.bookingEnabledFor(property)
+      : (this.deps.bookingEnabled ?? false);
+  }
+
+  /** Resolve which hotel a stored booking belongs to (for cancel/status routing). */
+  private propertyOfBooking(exelyNumber: string): string | undefined {
+    return this.deps.store.listBookings().find((b) => b.exelyNumber === exelyNumber)?.property;
+  }
+
   async createBooking(args: CreateBookingArgs): Promise<CreateBookingResult> {
-    const { store, provider, reservation, bookingEnabled, propertyIdResolver } = this.deps;
+    const { store, provider, propertyIdResolver } = this.deps;
+    const reservation = this.reservationFor(args.property);
+    const bookingEnabled = this.bookingEnabledFor(args.property);
 
     // Always re-search: prices change and a stale checksum is rejected by Exely.
     const availability = await provider.checkAvailability({
@@ -172,7 +201,13 @@ export class BookingService {
   }
 
   async cancelBooking(exelyNumber: string, reason = ''): Promise<CancelBookingResult> {
-    const { store, reservation, bookingEnabled } = this.deps;
+    const { store } = this.deps;
+    // Route to the cabinet that owns this booking (falls back to the legacy client).
+    const property = this.propertyOfBooking(exelyNumber);
+    const reservation = property ? this.reservationFor(property) : this.deps.reservation;
+    const bookingEnabled = property
+      ? this.bookingEnabledFor(property)
+      : (this.deps.bookingEnabled ?? false);
     const remote = bookingEnabled && !!reservation;
     if (remote && reservation) {
       try {
@@ -196,7 +231,12 @@ export class BookingService {
   }
 
   async bookingStatus(exelyNumber: string): Promise<BookingStatusResult> {
-    const { store, reservation, bookingEnabled } = this.deps;
+    const { store } = this.deps;
+    const property = this.propertyOfBooking(exelyNumber);
+    const reservation = property ? this.reservationFor(property) : this.deps.reservation;
+    const bookingEnabled = property
+      ? this.bookingEnabledFor(property)
+      : (this.deps.bookingEnabled ?? false);
     if (bookingEnabled && reservation) {
       try {
         const raw = (await reservation.get(exelyNumber)) as {

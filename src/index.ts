@@ -17,13 +17,9 @@ import { Engine } from './core/engine';
 import { RateLimiter } from './core/rateLimit';
 import { startRetention } from './core/retention';
 import { StubAmoCrm } from './integrations/amocrm';
-import { createAvailabilityProvider } from './integrations/exely';
-import { ExelyHttp } from './integrations/exely/http';
-import { ExelyReservation } from './integrations/exely/reservation';
-import { ExelyTokenManager } from './integrations/exely/token';
+import { createCabinetProviders } from './integrations/exely';
 import { StubPaymentGateway } from './integrations/payments';
 import { createTranscriber } from './integrations/transcribe';
-import { properties } from './knowledge';
 import { buildServer } from './server';
 import { Store } from './store';
 
@@ -72,27 +68,16 @@ async function main(): Promise<void> {
 
   const anthropic = new Anthropic({ apiKey: config.anthropicApiKey });
 
-  const propertyIdResolver = (key: string): string | undefined =>
-    properties[key]?.exelyPropertyId;
-  const availabilityProvider = createAvailabilityProvider(config.exely, propertyIdResolver);
-
-  // Reservation shares the same OAuth credentials as Search; it stays undefined
-  // (→ bookingFormLink fallback) until Exely creds exist.
-  let reservation: ExelyReservation | undefined;
-  if (config.exely.clientId && config.exely.clientSecret) {
-    const tokens = new ExelyTokenManager({
-      clientId: config.exely.clientId,
-      clientSecret: config.exely.clientSecret,
-      authUrl: config.exely.authUrl,
-    });
-    reservation = new ExelyReservation(new ExelyHttp({ baseUrl: config.exely.baseUrl }, tokens));
-  }
+  // Each hotel routes to its OWN Exely cabinet (Astana & Park Almaty are separate
+  // accounts). A hotel with no cabinet configured falls back to stub availability.
+  const cabinets = createCabinetProviders(config.exelyByProperty);
+  const availabilityProvider = cabinets.availability;
   const bookingService = new BookingService({
     store,
     provider: availabilityProvider,
-    reservation,
-    bookingEnabled: config.exely.bookingEnabled,
-    propertyIdResolver,
+    reservationFor: cabinets.reservationFor,
+    bookingEnabledFor: cabinets.bookingEnabledFor,
+    propertyIdResolver: cabinets.propertyIdResolver,
   });
 
   const phoneNumberIdToProperty: Record<string, string> = Object.fromEntries(
