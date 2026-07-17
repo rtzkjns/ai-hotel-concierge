@@ -92,13 +92,22 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
       });
     });
 
-    // Instagram: always acknowledge; count and process only when the channel is
-    // configured (anonymous unsigned POSTs must not grow the events table).
+    // Instagram shares the same Meta app → same app secret. Verify the signature
+    // (401 on mismatch) exactly like WhatsApp; then ack; then process only when
+    // the channel is configured (anonymous unsigned POSTs must not grow events).
     scope.post('/webhooks/instagram', async (req, reply) => {
+      const rawBody = typeof req.body === 'string' ? req.body : '';
+      const appSecret = deps.config.whatsapp.appSecret;
+      if (appSecret) {
+        const header = req.headers['x-hub-signature-256'];
+        if (!verifySignature(rawBody, typeof header === 'string' ? header : undefined, appSecret)) {
+          return reply.code(401).send('invalid signature');
+        }
+      }
       await reply.code(200).send('');
       if (!deps.adapters.instagram) return;
       track(deps.store, 'ig_received', { channel: 'instagram' });
-      processInstagram(deps, typeof req.body === 'string' ? req.body : '').catch((err) => {
+      processInstagram(deps, rawBody).catch((err) => {
         console.error('instagram webhook processing failed:', maskPII(errorMessage(err)));
       });
     });
@@ -159,6 +168,7 @@ async function processInstagram(deps: ServerDeps, rawBody: string): Promise<void
   }
   for (const msg of adapter.parseWebhook(body)) {
     try {
+      await adapter.typing?.(msg.senderId).catch(() => {});
       const parts = await deps.engine.handle(msg);
       if (parts && parts.length > 0) await adapter.send(msg.senderId, parts);
     } catch (err) {
