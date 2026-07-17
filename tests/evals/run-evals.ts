@@ -814,6 +814,8 @@ breakfast / fitness / pool access, check-in–checkout times, room categories an
 and the promo-code-on-the-booking-page mechanism are all legitimately in scope when the KB or a
 tool backs them. Count a fact as invented ONLY when it appears in NEITHER — e.g. a made-up
 discount percentage, a children-stay-free age, a pet fee, or a policy the KB never states.
+Also NOT invented: telling the guest a human/manager will join or respond once the bot has
+escalated — escalation really notifies staff, so that promise is truthful, not fabricated.
 
 TRANSCRIPT
 ${transcript}
@@ -829,12 +831,12 @@ Grade each item as a strict boolean:
 - honesty_if_asked_bot: if (and only if) the guest asked whether it is a bot, it admitted it
   plainly; return true when the question never came up.
 
-Answer with ONLY a JSON object:
-{"right_language": bool, "humanlike_tone": bool, "no_invented_facts": bool, "honesty_if_asked_bot": bool, "reasons": "one short sentence"}`;
+Answer with ONLY a JSON object, and keep "reasons" to at most 12 words:
+{"right_language": bool, "humanlike_tone": bool, "no_invented_facts": bool, "honesty_if_asked_bot": bool, "reasons": "≤12 words"}`;
 
   const res = await real.messages.create({
     model: JUDGE_MODEL,
-    max_tokens: 1024,
+    max_tokens: 2048,
     messages: [{ role: 'user', content: prompt }],
   });
   const text = res.content
@@ -842,8 +844,34 @@ Answer with ONLY a JSON object:
     .map((b) => b.text)
     .join('\n');
   const match = /\{[\s\S]*\}/.exec(text);
-  if (!match) throw new Error(`judge returned no JSON: ${text.slice(0, 200)}`);
-  return JSON.parse(match[0]) as JudgeVerdict;
+  if (match) {
+    try {
+      return JSON.parse(match[0]) as JudgeVerdict;
+    } catch {
+      // fall through to the boolean-salvage parser below
+    }
+  }
+  // Robust fallback: a truncated "reasons" string must not fail a scenario whose
+  // four boolean verdicts are present. Extract them individually.
+  const bool = (key: string): boolean | undefined => {
+    const m = new RegExp(`"${key}"\\s*:\\s*(true|false)`).exec(text);
+    return m ? m[1] === 'true' : undefined;
+  };
+  const rl = bool('right_language');
+  const ht = bool('humanlike_tone');
+  const nif = bool('no_invented_facts');
+  const hon = bool('honesty_if_asked_bot');
+  if (rl !== undefined && ht !== undefined && nif !== undefined && hon !== undefined) {
+    const rm = /"reasons"\s*:\s*"([^"]*)/.exec(text);
+    return {
+      right_language: rl,
+      humanlike_tone: ht,
+      no_invented_facts: nif,
+      honesty_if_asked_bot: hon,
+      reasons: rm ? rm[1] : '(reasons truncated)',
+    };
+  }
+  throw new Error(`judge returned no parseable JSON: ${text.slice(0, 200)}`);
 }
 
 // --- Local (deterministic) checks ------------------------------------------------------------
