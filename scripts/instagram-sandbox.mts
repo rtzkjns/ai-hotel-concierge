@@ -97,7 +97,7 @@ if (!process.env.ANTHROPIC_API_KEY) {
  */
 class MockInstagramAdapter extends InstagramAdapter {
   constructor() {
-    super({ accessToken: 'sandbox-token-never-sent', igId: IG_ID }, async () => {
+    super({ accessToken: 'sandbox-token-never-sent', igIds: { almaty: IG_ID } }, async () => {
       throw new Error('sandbox: outbound call to Meta blocked');
     });
   }

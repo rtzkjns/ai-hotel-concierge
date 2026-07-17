@@ -72,6 +72,15 @@ export function buildConfig(env: NodeJS.ProcessEnv) {
     phoneNumberIds.park_almaty = env.WHATSAPP_PHONE_ID_PARK_ALMATY;
   }
 
+  const instagramIgIds: Record<string, string> = {};
+  if (env.INSTAGRAM_IG_ID_ALMATY) instagramIgIds.almaty = env.INSTAGRAM_IG_ID_ALMATY;
+  if (env.INSTAGRAM_IG_ID_ASTANA) instagramIgIds.astana = env.INSTAGRAM_IG_ID_ASTANA;
+  if (env.INSTAGRAM_IG_ID_PARK_ALMATY) instagramIgIds.park_almaty = env.INSTAGRAM_IG_ID_PARK_ALMATY;
+  // Back-compat: a lone INSTAGRAM_IG_ID maps to Almaty when no per-hotel ids are set.
+  if (Object.keys(instagramIgIds).length === 0 && env.INSTAGRAM_IG_ID) {
+    instagramIgIds.almaty = env.INSTAGRAM_IG_ID;
+  }
+
   return {
     anthropicApiKey: required('ANTHROPIC_API_KEY'),
     anthropicModel: env.ANTHROPIC_MODEL ?? 'claude-sonnet-5',
@@ -88,7 +97,11 @@ export function buildConfig(env: NodeJS.ProcessEnv) {
     },
     instagram: {
       accessToken: env.INSTAGRAM_ACCESS_TOKEN,
+      // Single-account (legacy) id, kept for back-compat.
       igId: env.INSTAGRAM_IG_ID,
+      // Multi-account: one Instagram account per hotel (recipient.id in the
+      // webhook → property), mirroring the WhatsApp phone_number_ids design.
+      igIds: instagramIgIds,
     },
     exely: {
       clientId: env.EXELY_CLIENT_ID,
@@ -131,6 +144,8 @@ export function enabledChannels(cfg: AppConfig = config): Channel[] {
   ) {
     channels.push('whatsapp');
   }
-  if (cfg.instagram.accessToken && cfg.instagram.igId) channels.push('instagram');
+  if (cfg.instagram.accessToken && Object.keys(cfg.instagram.igIds).length > 0) {
+    channels.push('instagram');
+  }
   return channels;
 }

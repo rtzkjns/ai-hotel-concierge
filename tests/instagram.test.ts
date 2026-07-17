@@ -33,9 +33,14 @@ function fakeFetch(routes: (url: string, init?: RequestInit) => Response | undef
   return { fn: fn as unknown as typeof fetch, calls };
 }
 
+const SENDER = `${IG_ID}|${PSID}`; // composite senderId the adapter now uses
+
 function makeAdapter() {
   const { fn, calls } = fakeFetch(() => undefined);
-  return { adapter: new InstagramAdapter({ accessToken: 'ig-token', igId: IG_ID }, fn), calls };
+  return {
+    adapter: new InstagramAdapter({ accessToken: 'ig-token', igIds: { almaty: IG_ID } }, fn),
+    calls,
+  };
 }
 
 const sign = (body: string, secret: string): string =>
@@ -46,12 +51,13 @@ const sign = (body: string, secret: string): string =>
 describe('InstagramAdapter', () => {
   it('send: posts each part to the IG messages endpoint with the Bearer token', async () => {
     const { adapter, calls } = makeAdapter();
-    await adapter.send(PSID, [
+    await adapter.send(SENDER, [
       { text: 'первая', delayMs: 0 },
       { text: 'вторая', delayMs: 0 },
     ]);
     expect(calls.length).toBe(2);
     for (const call of calls) {
+      // The reply goes back from the SAME IG account the guest wrote to.
       expect(call.url).toBe(`https://graph.facebook.com/v23.0/${IG_ID}/messages`);
       expect((call.init?.headers as Record<string, string>).Authorization).toBe('Bearer ig-token');
     }
@@ -62,19 +68,26 @@ describe('InstagramAdapter', () => {
 
   it('typing: posts a typing_on sender action', async () => {
     const { adapter, calls } = makeAdapter();
-    await adapter.typing(PSID);
+    await adapter.typing(SENDER);
     expect(calls.length).toBe(1);
+    expect(calls[0].url).toBe(`https://graph.facebook.com/v23.0/${IG_ID}/messages`);
     expect(JSON.parse(String(calls[0].init?.body))).toEqual({
       recipient: { id: PSID },
       sender_action: 'typing_on',
     });
   });
 
-  it('parseWebhook: a text message becomes an InboundMessage', () => {
+  it('parseWebhook: a text message becomes an InboundMessage tagged with its hotel', () => {
     const { adapter } = makeAdapter();
     const parsed = adapter.parseWebhook(igPayload([textMsg('есть номера?')]));
     expect(parsed).toEqual([
-      { channel: 'instagram', senderId: PSID, text: 'есть номера?', inboundId: 'ig.mid.1' },
+      {
+        channel: 'instagram',
+        senderId: SENDER,
+        text: 'есть номера?',
+        inboundId: 'ig.mid.1',
+        propertyHint: 'almaty',
+      },
     ]);
   });
 
@@ -108,7 +121,7 @@ describe('InstagramAdapter', () => {
   it('send: splits a >1000-char message into multiple posts', async () => {
     const { adapter, calls } = makeAdapter();
     const long = 'а'.repeat(1500);
-    await adapter.send(PSID, [{ text: long, delayMs: 0 }]);
+    await adapter.send(SENDER, [{ text: long, delayMs: 0 }]);
     expect(calls.length).toBe(2);
     const total = calls
       .map((c) => JSON.parse(String(c.init?.body)).message.text.length)
@@ -132,7 +145,7 @@ async function makeServer(opts: { appSecret?: string } = {}) {
   const engine = fakeEngine();
   const store = fakeStore();
   const { fn, calls } = fakeFetch(() => undefined);
-  const adapter = new InstagramAdapter({ accessToken: 'ig-token', igId: IG_ID }, fn);
+  const adapter = new InstagramAdapter({ accessToken: 'ig-token', igIds: { almaty: IG_ID } }, fn);
   const app = await buildServer({
     engine,
     adapters: { instagram: adapter },
@@ -169,9 +182,10 @@ describe('Instagram webhook round-trip', () => {
     await vi.waitFor(() => expect(engine.handle).toHaveBeenCalledTimes(1));
     expect(engine.handle.mock.calls[0][0]).toEqual({
       channel: 'instagram',
-      senderId: PSID,
+      senderId: SENDER,
       text: 'здравствуйте',
       inboundId: 'ig.mid.1',
+      propertyHint: 'almaty',
     });
     await vi.waitFor(() => {
       const bodies = calls.map((c) => JSON.parse(String(c.init?.body)));

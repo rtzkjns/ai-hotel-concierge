@@ -125,5 +125,18 @@ describe('enabledChannels', () => {
       INSTAGRAM_IG_ID: 'ig1',
     });
     expect(enabledChannels(cfg)).toEqual(['webwidget', 'instagram']);
+    // Legacy single id maps to Almaty.
+    expect(cfg.instagram.igIds).toEqual({ almaty: 'ig1' });
+  });
+
+  it('builds per-hotel instagram ig ids and enables the channel', () => {
+    const cfg = buildConfig({
+      ANTHROPIC_API_KEY: 'x',
+      INSTAGRAM_ACCESS_TOKEN: 'a',
+      INSTAGRAM_IG_ID_ALMATY: 'igA',
+      INSTAGRAM_IG_ID_ASTANA: 'igB',
+    });
+    expect(cfg.instagram.igIds).toEqual({ almaty: 'igA', astana: 'igB' });
+    expect(enabledChannels(cfg)).toContain('instagram');
   });
 });

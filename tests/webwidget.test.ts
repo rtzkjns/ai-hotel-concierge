@@ -332,7 +332,10 @@ describe('TelegramChannel', () => {
 
 describe('InstagramAdapter', () => {
   it('parses messaging webhooks into instagram InboundMessages', () => {
-    const adapter = new InstagramAdapter({ accessToken: 'ig-token', igId: '17840000' });
+    const adapter = new InstagramAdapter({
+      accessToken: 'ig-token',
+      igIds: { almaty: '17840000' },
+    });
     const parsed = adapter.parseWebhook({
       object: 'instagram',
       entry: [
@@ -350,7 +353,13 @@ describe('InstagramAdapter', () => {
     });
 
     expect(parsed).toEqual([
-      { channel: 'instagram', senderId: 'guest-9', text: 'hi, any rooms?', inboundId: 'mid.1' },
+      {
+        channel: 'instagram',
+        senderId: '17840000|guest-9',
+        text: 'hi, any rooms?',
+        inboundId: 'mid.1',
+        propertyHint: 'almaty',
+      },
     ]);
     expect(adapter.parseWebhook(null)).toEqual([]);
     expect(adapter.parseWebhook({ entry: [{ messaging: [{ sender: {} }] }] })).toEqual([]);
@@ -362,9 +371,12 @@ describe('InstagramAdapter', () => {
       calls.push({ url: String(url), init });
       return new Response('{}', { status: 200 });
     }) as unknown as typeof fetch;
-    const adapter = new InstagramAdapter({ accessToken: 'ig-token', igId: '17840000' }, fetchFn);
+    const adapter = new InstagramAdapter(
+      { accessToken: 'ig-token', igIds: { almaty: '17840000' } },
+      fetchFn,
+    );
 
-    await adapter.send('guest-9', [{ text: 'hello!', delayMs: 0 }]);
+    await adapter.send('17840000|guest-9', [{ text: 'hello!', delayMs: 0 }]);
 
     expect(calls.length).toBe(1);
     expect(calls[0].url).toBe('https://graph.facebook.com/v23.0/17840000/messages');

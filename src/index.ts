@@ -108,10 +108,10 @@ async function main(): Promise<void> {
       phoneNumberIds: config.whatsapp.phoneNumberIds,
     });
   }
-  if (channels.includes('instagram') && config.instagram.accessToken && config.instagram.igId) {
+  if (channels.includes('instagram') && config.instagram.accessToken) {
     adapters.instagram = new InstagramAdapter({
       accessToken: config.instagram.accessToken,
-      igId: config.instagram.igId,
+      igIds: config.instagram.igIds,
     });
   }
 
