@@ -1,0 +1,29 @@
+# Caddy reverse proxy for the Kazzhol AI bot.
+# Caddy auto-provisions and renews a Let's Encrypt TLS cert (TLS 1.2+, satisfies
+# ТЗ 3.1). Replace bot.kazzhol.com with the real domain/subdomain before deploy.
+#
+# Install:  https://caddyserver.com/docs/install
+# Run:      sudo caddy run --config /etc/caddy/Caddyfile
+# The bot listens on 127.0.0.1:3000 (systemd unit below); Caddy terminates HTTPS.
+
+bot.kazzhol.com {
+	encode zstd gzip
+
+	# WhatsApp/Instagram webhooks + web widget WS + staff console all live on one app.
+	reverse_proxy 127.0.0.1:3000 {
+		# WebSocket (web widget) upgrade passes through by default in Caddy v2.
+		header_up X-Real-IP {remote_host}
+	}
+
+	# Never let the staff console be indexed.
+	header /console* {
+		X-Robots-Tag "noindex, nofollow"
+	}
+
+	log {
+		output file /var/log/caddy/kazzhol-bot.log {
+			roll_size 20mb
+			roll_keep 5
+		}
+	}
+}
