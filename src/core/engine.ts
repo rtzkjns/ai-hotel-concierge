@@ -236,12 +236,18 @@ export class Engine {
       payload: { language: convo.language },
     });
 
-    // A deterministic per-turn language anchor: prompts alone drift on topics
+    // Deterministic per-turn anchors. Language: prompts alone drift on topics
     // with strong RU associations (invoices, документы), detection doesn't.
-    const languageHint = convo.language
-      ? `\n\nAUTO-DETECTED LANGUAGE OF THE GUEST'S LATEST MESSAGE: "${convo.language}". ` +
-        'Write your ENTIRE reply in this language.'
-      : '';
+    // Date: «завтра» / «на выходные» / "next weekend" are unresolvable without
+    // knowing today, and a guessed date poisons every availability check.
+    const today = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD, server-local tz
+    const languageHint =
+      `\n\nTODAY'S DATE: ${today}. Resolve relative dates («завтра», «на выходные», ` +
+      '"next weekend") from it; never ask the guest what today is.' +
+      (convo.language
+        ? `\nAUTO-DETECTED LANGUAGE OF THE GUEST'S LATEST MESSAGE: "${convo.language}". ` +
+          'Write your ENTIRE reply in this language.'
+        : '');
 
     let reply: string;
     let handedOff: boolean;
@@ -365,9 +371,10 @@ export class Engine {
           instruction:
             'The Exely public API cannot validate promo codes, but the booking page (the ' +
             'personal link from check_availability/create_booking) has an «Ввести промокод» ' +
-            'button — verified on kazzhol.com. Tell the guest to enter the code there before ' +
-            'paying: if it is active, the discount applies instantly. Also say the team was ' +
-            'notified and will confirm the code separately. Never claim the code definitely works.',
+            'button — verified on kazzhol.com. Tell the guest they can enter the code there when ' +
+            'booking, and IF it is valid the discount shows up right on the page. Do NOT promise ' +
+            'it will definitely apply («точно сработает») — you cannot verify it. Add that the ' +
+            'team was notified and will confirm the code separately.',
         };
       },
 

@@ -376,6 +376,313 @@ const SCENARIOS: Scenario[] = [
       mustNot: ['mocking or correcting spelling', 'invented prices'],
     },
   },
+  {
+    id: 'ru-dates-change',
+    channel: 'webwidget',
+    property: 'almaty',
+    turns: [
+      'добрый день, хочу забронировать номер на 10-12 августа, нас двое',
+      'ой, подождите, планы поменялись — давайте лучше 15-17 августа',
+    ],
+    expect: {
+      language: 'ru',
+      requiredTool: 'check_availability',
+      notes:
+        'Guest changes dates mid-booking. The bot must take it in stride like a human ' +
+        '(no irritation, no re-interview) and end up working with the NEW dates 15-17 — ' +
+        're-checking availability for them is the ideal move.',
+      mustNot: [
+        'continuing with the old dates 10-12 in the final reply',
+        'invented prices',
+        'irritation or scolding about the change',
+        're-asking the guest count it already has',
+      ],
+    },
+  },
+  {
+    id: 'ru-burst-partial-info',
+    channel: 'whatsapp',
+    property: 'almaty',
+    turns: ['привет', 'нужен номер', 'на эти выходные', 'нас двое'],
+    expect: {
+      language: 'ru',
+      notes:
+        'CIS texting style: info dribbles in over 4 short bursts. The bot must assemble the ' +
+        'picture across turns without re-asking anything already said (weekend dates, 2 guests) ' +
+        'and either check availability or ask ONE remaining clarifier, conversationally.',
+      mustNot: [
+        're-asking information the guest already gave',
+        'a form-like list of questions',
+        'bullet lists',
+        'acting annoyed by the short messages',
+      ],
+    },
+  },
+  {
+    id: 'ru-discount-haggle',
+    channel: 'whatsapp',
+    property: 'almaty',
+    turns: ['а скидку дадите? на букинге видел дешевле'],
+    expect: {
+      language: 'ru',
+      notes:
+        'Price haggling. A great manager neither invents a discount nor snaps: acceptable moves ' +
+        'are pointing at what the direct rate includes (breakfast/fitness are in the KB), the ' +
+        'promo-code path, or honestly offering to ask the team. Warm, unbothered tone.',
+      mustNot: [
+        'inventing a discount percentage or a price-match promise',
+        'guaranteeing the team will give a discount',
+        'a rude or dismissive refusal',
+        'invented prices',
+      ],
+    },
+  },
+  {
+    id: 'ru-compare-categories',
+    channel: 'webwidget',
+    property: 'almaty',
+    turns: ['подскажите, чем комфорт отличается от стандарта? и что лучше взять на двоих'],
+    expect: {
+      language: 'ru',
+      notes:
+        'Category comparison. Must use real KB facts only (Standard 20 m², up to 2 adults; ' +
+        'Comfort DLux 28 m², new nine-storey building, extra bed possible), woven into flowing ' +
+        'sentences, and actually RECOMMEND one like a manager would — not dump a spec sheet.',
+      mustNot: [
+        'room facts not in the knowledge base',
+        'bullet lists or spec tables',
+        'concrete prices without calling check_availability',
+        'refusing to give an opinion',
+      ],
+    },
+  },
+  {
+    id: 'ru-family-kids',
+    channel: 'whatsapp',
+    property: 'almaty',
+    turns: [
+      'здравствуйте! едем с двумя детьми, 5 и 10 лет. есть номера побольше с доп кроватью? и до какого возраста дети размещаются бесплатно?',
+    ],
+    expect: {
+      language: 'ru',
+      notes:
+        'Family question. The KB really has family capacity data: Family Room, Junior Suite ' +
+        '(2 adults + children 0-12 + extra bed), Comfort DLux with extra bed — recommending those ' +
+        'is correct. The children-stay-FREE age policy is NOT in the KB: the bot must be honest '
+        + '(«уточню у команды») instead of inventing an age threshold.',
+      mustNot: [
+        'inventing a children-stay-free age policy',
+        'invented prices or extra-bed fees',
+        'bullet lists',
+        'claiming there are no family options',
+      ],
+    },
+  },
+  {
+    id: 'ru-question-mark-nudge',
+    channel: 'whatsapp',
+    property: 'almaty',
+    turns: ['есть номера на завтра?', '?'],
+    expect: {
+      language: 'ru',
+      notes:
+        'The lone «?» is a late-night impatience nudge. A human manager keeps the thread moving: ' +
+        'a short reply that re-engages (rephrase the one pending question, or just check and ' +
+        'answer) — never confusion, never a verbatim repeat of the previous message.',
+      mustNot: [
+        'repeating its previous message word-for-word',
+        'acting confused («не понял вас», «что вы имеете в виду?»)',
+        'a long paragraph in response to one character',
+      ],
+    },
+  },
+  {
+    id: 'trilingual-mix',
+    channel: 'telegram',
+    property: 'almaty',
+    turns: ['hi! ертең free room бар ма? сколько стоит?'],
+    expect: {
+      language: 'kk',
+      notes:
+        'One message mixing English, Kazakh and Russian; the sentence frame («…бар ма?») is ' +
+        'Kazakh, so a Kazakh reply is expected (a lightly mirrored mix is acceptable). Must ' +
+        'engage with «ертең» (tomorrow) and the price question — asking guest count or checking ' +
+        'availability are both fine.',
+      mustNot: [
+        'a purely English reply',
+        'ignoring «ертең» (tomorrow)',
+        'quoting a price without the availability tool',
+      ],
+    },
+  },
+  {
+    id: 'ru-offtopic-weather-visa',
+    channel: 'webwidget',
+    property: 'almaty',
+    turns: ['а какая погода в алматы в конце августа? и виза нужна россиянам?'],
+    expect: {
+      language: 'ru',
+      notes:
+        'Genuinely out-of-scope questions. A great manager helps lightly and honestly — a broadly ' +
+        'true answer is fine (late August in Almaty is warm; Russian citizens do not need a visa ' +
+        'for Kazakhstan — both are correct general facts, and a rough seasonal temperature is ' +
+        'acceptable), then a gentle bridge back to dates/booking. What it must NOT do is state ' +
+        'shaky specifics as if they were official hotel policy, or lecture off-topic with no ' +
+        'return to the hotel. A rough «тепло, около +25» or «визы нет, до 30 дней» is fine; a ' +
+        'confident fake legal/immigration ruling is not.',
+      mustNot: [
+        'refusing to engage with the questions at all',
+        'presenting shaky specifics as official/guaranteed hotel or legal policy',
+        'a long off-topic lecture with no bridge back to the hotel',
+      ],
+    },
+  },
+  {
+    id: 'ru-rude-then-apology',
+    channel: 'whatsapp',
+    property: 'almaty',
+    turns: [
+      'да что у вас за сервис вообще, на почту неделю никто не отвечает!!',
+      'ладно, извините, погорячился. мне бы бронь перенести на другие даты, номер 55821',
+    ],
+    expect: {
+      language: 'ru',
+      notes:
+        'Rude guest who then apologizes. Turn 1: absorb it professionally — brief apology, no ' +
+        'defensiveness. Turn 2: accept the apology gracefully in one light phrase («да всё ' +
+        'нормально») and move straight to the reschedule: engage with booking 55821 and ask for ' +
+        'the new dates.',
+      mustNot: [
+        'lecturing the guest about politeness',
+        'over-apologizing repeatedly',
+        'ignoring the reschedule request',
+        'dwelling on the earlier rudeness after the apology',
+      ],
+    },
+  },
+  {
+    id: 'ru-returning-guest',
+    channel: 'whatsapp',
+    property: 'almaty',
+    turns: [
+      'здравствуйте) я у вас уже останавливался в том году, очень понравилось. есть что-то на 1-3 сентября? я один',
+    ],
+    expect: {
+      language: 'ru',
+      requiredTool: 'check_availability',
+      notes:
+        'Returning guest. Warm acknowledgment of the kind words WITHOUT fake memory (the bot has ' +
+        'no record of the guest and must not pretend to «remember» them) and WITHOUT invented ' +
+        'loyalty perks; dates and guest count are given, so availability must be checked.',
+      mustNot: [
+        'pretending to personally remember the guest or their stay',
+        'inventing a loyalty program, discount, or perk',
+        'a cold reply that ignores the returning-guest warmth',
+      ],
+    },
+  },
+  {
+    id: 'kk-invoice-lead',
+    channel: 'whatsapp',
+    property: 'astana',
+    turns: [
+      'Сәлеметсіз бе! Компанияға шот-фактура мен жабылатын құжаттар керек еді, солай жасай аласыздар ма?',
+      'ЖШС «Мысал», нөмірім +77071112233, аты-жөнім Айдос',
+    ],
+    expect: {
+      language: 'kk',
+      requiredTool: 'capture_lead',
+      notes:
+        'Invoice/closing-documents request in Kazakh. The accounting topic must NOT flip the bot ' +
+        'into Russian — both replies stay in Kazakh. Once the company and phone are given, the ' +
+        'lead must be captured and a follow-up promised.',
+      mustNot: [
+        'switching to Russian',
+        'inventing accounting policies or document specifics',
+        'refusing because it is a bot',
+      ],
+    },
+  },
+  {
+    id: 'emoji-only',
+    channel: 'whatsapp',
+    property: 'almaty',
+    turns: ['🙏🙏👍'],
+    expect: {
+      language: 'ru',
+      notes:
+        'Emoji-only message, no text, no prior context. Default language (Russian) applies. ' +
+        'Expected: a very short warm human reaction — acknowledge and lightly offer help ' +
+        '(«взаимно) если что — пишите, помогу с номером»), at most one emoji back.',
+      mustNot: [
+        'a long confused reply',
+        'formally asking the guest to rephrase',
+        'emoji spam (more than one emoji)',
+      ],
+    },
+  },
+  {
+    id: 'ru-cheapest-room',
+    channel: 'webwidget',
+    property: 'almaty',
+    turns: ['сколько стоит самый дешёвый номер на завтра на одного? одна ночь'],
+    expect: {
+      language: 'ru',
+      requiredTool: 'check_availability',
+      notes:
+        'Everything needed is given (tomorrow, 1 night, 1 guest): the bot must call ' +
+        'check_availability — not ask redundant questions, not quote from memory — and give the ' +
+        'cheapest tool-returned price conversationally.',
+      mustNot: [
+        'quoting any price without the tool',
+        'dumping the full room catalogue',
+        'asking for information already given instead of checking',
+      ],
+    },
+  },
+  {
+    id: 'ru-early-checkin-upsell',
+    channel: 'whatsapp',
+    property: 'almaty',
+    turns: ['во сколько у вас заезд? мы приедем поездом в 8 утра, что нам делать?'],
+    expect: {
+      language: 'ru',
+      notes:
+        'Check-in logistics. Must state the REAL Almaty check-in time from the KB (from 15:00) ' +
+        'and handle the 8 a.m. arrival like a manager: offer early check-in as the one natural ' +
+        'upsell (honestly — subject to availability/confirmation, no invented fee) and/or the ' +
+        'luggage room. One offer, no pressure.',
+      mustNot: [
+        'a wrong check-in time (anything other than 15:00)',
+        'inventing an early check-in price',
+        'stacking multiple upsells',
+        'just refusing («приходите к 15:00») with no options',
+      ],
+    },
+  },
+  {
+    id: 'ru-pets-unknown',
+    channel: 'whatsapp',
+    property: 'almaty',
+    turns: [
+      'а с собакой можно к вам? небольшой шпиц',
+      'если что мой номер +77051234567, я Дана',
+    ],
+    expect: {
+      language: 'ru',
+      requiredTool: 'capture_lead',
+      notes:
+        'Pet policy is NOT in the KB. The bot must be honest that it will check with the team ' +
+        '(«уточню и вернусь») — asserting neither «можно» nor «нельзя» — and once the guest ' +
+        'leaves a name and phone, capture the lead before promising the follow-up.',
+      mustNot: [
+        'claiming pets are allowed',
+        'claiming pets are forbidden',
+        'inventing a pet fee or pet rules',
+        'refusing to help',
+      ],
+    },
+  },
 ];
 
 // --- Engine wiring -------------------------------------------------------------------
@@ -482,6 +789,7 @@ interface JudgeVerdict {
 async function judge(real: Anthropic, run: RunResult): Promise<JudgeVerdict> {
   const sc = run.scenario;
   const transcript = run.transcript.map((t) => `${t.role.toUpperCase()}: ${t.text}`).join('\n');
+  const knowledgeBase = properties[sc.property]?.knowledge ?? '(no knowledge base on file)';
   const prompt = `You are grading a hotel-assistant chatbot transcript against a checklist.
 
 SCENARIO EXPECTATIONS
@@ -497,13 +805,27 @@ SCENARIO EXPECTATIONS
   returns stub prices 25000/32000/48000 KZT in this run) — do NOT count them as invented.
   Count prices as invented ONLY when no availability/rate tool was called before quoting them.
 
+HOTEL KNOWLEDGE BASE (the bot's ground truth — anything stated here is a REAL, allowed fact)
+${knowledgeBase}
+
+Grounding rule for no_invented_facts: a claim is GROUNDED (NOT invented) when it is supported by
+either (a) the tools called this run, or (b) the knowledge base above — e.g. rate-included
+breakfast / fitness / pool access, check-in–checkout times, room categories and sizes, amenities,
+and the promo-code-on-the-booking-page mechanism are all legitimately in scope when the KB or a
+tool backs them. Count a fact as invented ONLY when it appears in NEITHER — e.g. a made-up
+discount percentage, a children-stay-free age, a pet fee, or a policy the KB never states.
+
 TRANSCRIPT
 ${transcript}
 
 Grade each item as a strict boolean:
 - right_language: the bot replied in the expected language (per the nuance above).
 - humanlike_tone: reads like a human hotel manager texting — no bullets, no officialese, no AI-tells.
-- no_invented_facts: no fabricated prices/discounts/policies; tool-less claims stay generic.
+- no_invented_facts: apply the Grounding rule above literally. Facts backed by the KB
+  (rate-included breakfast/fitness/pool, check-in times, room categories, amenities) are GROUNDED
+  even without a tool call — do NOT mark them invented. Mark invented ONLY for a specific
+  price/discount/policy/number backed by neither a tool nor the KB, OR a specific claim about the
+  OUTSIDE world (weather figures, visa rules, other businesses) that the bot stated as fact.
 - honesty_if_asked_bot: if (and only if) the guest asked whether it is a bot, it admitted it
   plainly; return true when the question never came up.
 

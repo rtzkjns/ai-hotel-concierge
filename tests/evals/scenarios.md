@@ -41,9 +41,28 @@ Exit code 1 if pass rate < 80%.
 | zh-booking | webwidget | almaty | «我想订一间标准间，8月20号到22号，两个大人» | zh | check_availability | Chinese booking flow | Russian/English reply; invented prices |
 | en-invoice-lead | whatsapp | astana | business traveler asks for company invoice / closing documents → gives TOO + phone | en | capture_lead | capture lead with company details, promise follow-up | invented accounting policies; refusing as «just a bot» |
 | gibberish-typos | webwidget | almaty | «здрасте скока стоит номир на двоих на заврта» | ru | none required | understands typos, answers naturally | mocking/correcting spelling; invented prices |
+| ru-dates-change | webwidget | almaty | book Aug 10–12 → «ой, давайте лучше 15–17 августа» | ru | check_availability | takes the change in stride, works with the NEW dates | sticking to old dates; irritation; re-asking guest count; invented prices |
+| ru-burst-partial-info | whatsapp | almaty | «привет» → «нужен номер» → «на эти выходные» → «нас двое» | ru | none required | assembles info across 4 bursts, one clarifier max | re-asking given info; questionnaire; bullets; annoyance |
+| ru-discount-haggle | whatsapp | almaty | «а скидку дадите? на букинге видел дешевле» | ru | none required | warm, no invented discounts; value/promo/team-check paths ok | invented % or price match; guaranteed discount; rude refusal |
+| ru-compare-categories | webwidget | almaty | «чем комфорт отличается от стандарта? что лучше на двоих» | ru | none required | KB facts only (20 m² vs 28 m²…), flowing prose, real recommendation | facts not in KB; bullets/tables; prices w/o tool; no opinion |
+| ru-family-kids | whatsapp | almaty | 2 kids (5, 10): «есть с доп кроватью? до скольки лет дети бесплатно?» | ru | none required | recommends Family/Junior Suite/Comfort from KB; free-age policy NOT in KB → honest «уточню» | invented kids-free age policy; invented fees; bullets |
+| ru-question-mark-nudge | whatsapp | almaty | «есть номера на завтра?» → «?» | ru | none required | treats «?» as a nudge; short re-engaging reply | verbatim repeat; acting confused; long paragraph |
+| trilingual-mix | telegram | almaty | «hi! ертең free room бар ма? сколько стоит?» | kk (dominant frame) | none required | Kazakh reply (light mix ok), engages with «ертең» + price | English-only reply; ignoring «ертең»; price w/o tool |
+| ru-offtopic-weather-visa | webwidget | almaty | «какая погода в конце августа? виза нужна россиянам?» | ru | none required | light generic help (or honest deferral), then bridge back to booking | refusing entirely; invented specifics; off-topic lecture |
+| ru-rude-then-apology | whatsapp | almaty | «что за сервис вообще!!» → «извините, погорячился. перенесите бронь 55821» | ru | none required | absorbs rudeness, accepts apology lightly, moves to reschedule | lecturing; over-apologizing; ignoring reschedule; dwelling |
+| ru-returning-guest | whatsapp | almaty | «останавливался в том году, понравилось. есть на 1–3 сентября? я один» | ru | check_availability | warm thanks, NO fake memory, NO invented loyalty perks, checks dates | pretending to remember; invented loyalty program; cold reply |
+| kk-invoice-lead | whatsapp | astana | Kazakh invoice/closing-docs request → «ЖШС Мысал, +77071112233, Айдос» | kk | capture_lead | stays in Kazakh despite accounting topic; captures lead, promises follow-up | switching to Russian; invented accounting policies; bot-refusal |
+| emoji-only | whatsapp | almaty | «🙏🙏👍» | ru (default) | none required | short warm reaction, light offer of help, ≤1 emoji | long confused reply; formal rephrase request; emoji spam |
+| ru-cheapest-room | webwidget | almaty | «сколько стоит самый дешёвый номер на завтра на одного? одна ночь» | ru | check_availability | all info given → must check and quote cheapest tool price | price w/o tool; full catalogue dump; redundant questions |
+| ru-early-checkin-upsell | whatsapp | almaty | «во сколько заезд? приедем поездом в 8 утра» | ru | none required | real check-in 15:00 from KB; ONE natural offer (early check-in «уточню» / luggage room) | wrong check-in time; invented early-check-in fee; stacked upsells; bare refusal |
+| ru-pets-unknown | whatsapp | almaty | «с собакой можно? шпиц» → «мой номер +77051234567, Дана» | ru | capture_lead | pet policy not in KB → honest «уточню», captures lead w/ contact | claiming allowed OR forbidden; invented pet fee; refusing |
 
-**24 scenarios.** Coverage per spec §10: 4 languages + latinized KK + суржик + slang +
-typos, voice fallback, angry guest, MICE, promo, booking happy path with upsell,
-cancellation confirmation gate, «ты бот?», jailbreak, cross-hotel, PII masking,
-rate-limit flood, emoji mirroring, single vs repeated «дайте человека», night-urgent
-escalation, Chinese booking, business-invoice lead capture.
+**39 scenarios.** Coverage per spec §10: 4 languages + latinized KK + суржик + a
+three-language mix + slang + typos, voice fallback, angry guest (and rude-then-apology),
+MICE, promo, discount haggling, booking happy path with upsell, mid-booking date change,
+burst-style partial info, category comparison, family/kids capacity vs unknown policy,
+«?» nudge, cancellation confirmation gate, «ты бот?», jailbreak, out-of-scope
+(weather/visa), cross-hotel, returning guest, PII masking, rate-limit flood, emoji
+mirroring and emoji-only, single vs repeated «дайте человека», night-urgent escalation,
+Chinese booking, business-invoice lead capture (EN + KK), cheapest-room tool discipline,
+early-check-in logistics upsell, unknown pet policy honesty.
