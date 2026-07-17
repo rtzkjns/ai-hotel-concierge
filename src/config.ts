@@ -1,6 +1,62 @@
 import 'dotenv/config';
 import type { Channel } from './types';
 
+export interface ExelyCabinet {
+  clientId: string;
+  clientSecret: string;
+  propertyId: string;
+  authUrl: string;
+  baseUrl: string;
+  bookingEnabled: boolean;
+}
+
+/**
+ * Reads per-hotel Exely cabinets from env: EXELY_<HOTEL>_CLIENT_ID /
+ * _CLIENT_SECRET / _PROPERTY_ID (+ optional _BOOKING_ENABLED). HOTEL ∈
+ * {ALMATY, ASTANA, PARK_ALMATY} → property keys almaty | astana | park_almaty.
+ * Only fully-specified cabinets (all three core vars) are included.
+ */
+export function buildExelyCabinets(env: NodeJS.ProcessEnv): Record<string, ExelyCabinet> {
+  const map: Array<[string, string]> = [
+    ['ALMATY', 'almaty'],
+    ['ASTANA', 'astana'],
+    ['PARK_ALMATY', 'park_almaty'],
+  ];
+  const authUrl = env.EXELY_AUTH_URL ?? 'https://connect.hopenapi.com/auth/token';
+  const baseUrl = env.EXELY_BASE_URL ?? 'https://connect.hopenapi.com';
+  const out: Record<string, ExelyCabinet> = {};
+
+  // Back-compat: the original single cabinet (EXELY_CLIENT_ID/SECRET) is Almaty,
+  // property 801. Registered first so an explicit EXELY_ALMATY_* pair can override it.
+  if (env.EXELY_CLIENT_ID && env.EXELY_CLIENT_SECRET) {
+    out.almaty = {
+      clientId: env.EXELY_CLIENT_ID,
+      clientSecret: env.EXELY_CLIENT_SECRET,
+      propertyId: env.EXELY_PROPERTY_ID ?? '801',
+      authUrl,
+      baseUrl,
+      bookingEnabled: env.EXELY_BOOKING_ENABLED === 'true',
+    };
+  }
+
+  for (const [envKey, propKey] of map) {
+    const clientId = env[`EXELY_${envKey}_CLIENT_ID`];
+    const clientSecret = env[`EXELY_${envKey}_CLIENT_SECRET`];
+    const propertyId = env[`EXELY_${envKey}_PROPERTY_ID`];
+    if (clientId && clientSecret && propertyId) {
+      out[propKey] = {
+        clientId,
+        clientSecret,
+        propertyId,
+        authUrl,
+        baseUrl,
+        bookingEnabled: env[`EXELY_${envKey}_BOOKING_ENABLED`] === 'true',
+      };
+    }
+  }
+  return out;
+}
+
 /** Pure config builder — testable without touching process.env. */
 export function buildConfig(env: NodeJS.ProcessEnv) {
   const required = (name: string): string => {
@@ -41,6 +97,12 @@ export function buildConfig(env: NodeJS.ProcessEnv) {
       baseUrl: env.EXELY_BASE_URL ?? 'https://connect.hopenapi.com',
       bookingEnabled: env.EXELY_BOOKING_ENABLED === 'true',
     },
+    // Per-hotel Exely cabinets. Astana & Park Almaty are SEPARATE Exely accounts
+    // (the default cabinet above only exposes property 801 / Almaty — verified
+    // 2026-07-17 via /api/content/v1/properties). Each hotel drops in with its own
+    // client_id/secret/property_id and (optionally) its own booking flag; nothing
+    // else changes. A hotel with no vars here falls back to stub availability.
+    exelyByProperty: buildExelyCabinets(env),
     openaiApiKey: env.OPENAI_API_KEY,
     amoAccessToken: env.AMO_ACCESS_TOKEN,
     server: {

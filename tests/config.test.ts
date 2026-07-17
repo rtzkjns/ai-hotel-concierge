@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildConfig, enabledChannels } from '../src/config';
+import { buildConfig, buildExelyCabinets, enabledChannels } from '../src/config';
 
 describe('buildConfig', () => {
   it('is constructible with only ANTHROPIC_API_KEY set', () => {
@@ -46,6 +46,48 @@ describe('buildConfig', () => {
     });
     expect(cfg.server.port).toBe(8080);
     expect(cfg.server.publicBaseUrl).toBe('https://bot.example.com');
+  });
+});
+
+describe('buildExelyCabinets', () => {
+  it('maps the legacy single cabinet to almaty (property 801 default)', () => {
+    const cabinets = buildExelyCabinets({ EXELY_CLIENT_ID: 'id', EXELY_CLIENT_SECRET: 'sec' });
+    expect(cabinets.almaty).toMatchObject({ clientId: 'id', clientSecret: 'sec', propertyId: '801' });
+    expect(cabinets.astana).toBeUndefined();
+  });
+
+  it('reads a separate Astana cabinet with its own property id', () => {
+    const cabinets = buildExelyCabinets({
+      EXELY_ASTANA_CLIENT_ID: 'aid',
+      EXELY_ASTANA_CLIENT_SECRET: 'asec',
+      EXELY_ASTANA_PROPERTY_ID: '900',
+      EXELY_ASTANA_BOOKING_ENABLED: 'true',
+    });
+    expect(cabinets.astana).toMatchObject({ clientId: 'aid', propertyId: '900', bookingEnabled: true });
+  });
+
+  it('ignores a partially-specified cabinet (missing property id)', () => {
+    const cabinets = buildExelyCabinets({
+      EXELY_PARK_ALMATY_CLIENT_ID: 'pid',
+      EXELY_PARK_ALMATY_CLIENT_SECRET: 'psec',
+    });
+    expect(cabinets.park_almaty).toBeUndefined();
+  });
+
+  it('lets an explicit EXELY_ALMATY_* cabinet override the legacy one', () => {
+    const cabinets = buildExelyCabinets({
+      EXELY_CLIENT_ID: 'old',
+      EXELY_CLIENT_SECRET: 'oldsec',
+      EXELY_ALMATY_CLIENT_ID: 'new',
+      EXELY_ALMATY_CLIENT_SECRET: 'newsec',
+      EXELY_ALMATY_PROPERTY_ID: '801',
+    });
+    expect(cabinets.almaty.clientId).toBe('new');
+  });
+
+  it('is exposed on the built config', () => {
+    const cfg = buildConfig({ ANTHROPIC_API_KEY: 'x', EXELY_CLIENT_ID: 'id', EXELY_CLIENT_SECRET: 's' });
+    expect(cfg.exelyByProperty.almaty.propertyId).toBe('801');
   });
 });
 
