@@ -7,6 +7,7 @@ import type { InboundMessage, OutboundPart } from '../src/channels/types';
 // --- Fixtures ------------------------------------------------------------------
 
 const PHONE_ID = '111222333';
+const ASTANA_PHONE_ID = '444555666';
 const WA_ID = '77012345678';
 
 function waPayload(messages: unknown[], extraValue: Record<string, unknown> = {}): unknown {
@@ -182,9 +183,16 @@ function fakeStore() {
   return { events, recordEvent: vi.fn((type: string) => events.push(type)) };
 }
 
-async function makeServer(opts: { appSecret?: string; engineParts?: OutboundPart[] | null } = {}) {
+async function makeServer(
+  opts: {
+    appSecret?: string;
+    engineParts?: OutboundPart[] | null;
+    phoneNumberIds?: Record<string, string>;
+  } = {},
+) {
   const engine = fakeEngine(opts.engineParts);
   const store = fakeStore();
+  const phoneNumberIds = opts.phoneNumberIds ?? { almaty: PHONE_ID };
   const { fn, calls } = fakeFetch((url) => {
     if (url.endsWith('/media-42')) {
       return new Response(JSON.stringify({ url: 'https://lookaside.fbsbx.com/whatsapp_business/attachments/bin' }), { status: 200 });
@@ -192,12 +200,13 @@ async function makeServer(opts: { appSecret?: string; engineParts?: OutboundPart
     if (url === 'https://lookaside.fbsbx.com/whatsapp_business/attachments/bin') {
       return new Response(new Uint8Array(Buffer.from('OGGDATA')), { status: 200 });
     }
+    if (url.endsWith('/media-evil')) {
+      // A (hypothetically compromised) Graph response pointing off Meta's CDN.
+      return new Response(JSON.stringify({ url: 'https://evil.example.com/steal-the-token' }), { status: 200 });
+    }
     return undefined;
   });
-  const adapter = new WhatsAppAdapter(
-    { accessToken: 'wa-token', phoneNumberIds: { almaty: PHONE_ID } },
-    fn,
-  );
+  const adapter = new WhatsAppAdapter({ accessToken: 'wa-token', phoneNumberIds }, fn);
   const app = await buildServer({
     engine,
     adapters: { whatsapp: adapter },
@@ -206,7 +215,7 @@ async function makeServer(opts: { appSecret?: string; engineParts?: OutboundPart
       whatsapp: {
         verifyToken: 'verify-me',
         appSecret: opts.appSecret,
-        phoneNumberIds: { almaty: PHONE_ID },
+        phoneNumberIds,
       },
     },
   });
@@ -358,6 +367,27 @@ describe('buildServer', () => {
     await app.close();
   });
 
+  it('unknown message type flows through the server to the engine as the unsupported placeholder', async () => {
+    const { app, engine } = await makeServer();
+    const body = JSON.stringify(
+      waPayload([{ from: WA_ID, id: 'wamid.stk1', type: 'sticker', sticker: { id: 'stk-9' } }]),
+    );
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/webhooks/whatsapp',
+      payload: body,
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    await vi.waitFor(() => expect(engine.handle).toHaveBeenCalledTimes(1));
+    const msg = engine.handle.mock.calls[0][0];
+    expect(msg.text).toBe('[unsupported message type: sticker]');
+    expect(msg.propertyHint).toBe('almaty');
+    await app.close();
+  });
+
   it('GET /webhooks/instagram performs the Meta verify handshake', async () => {
     const { app } = await makeServer();
     const ok = await app.inject({
@@ -371,6 +401,145 @@ describe('buildServer', () => {
       url: '/webhooks/instagram?hub.mode=subscribe&hub.verify_token=wrong&hub.challenge=ig123',
     });
     expect(bad.statusCode).toBe(403);
+    await app.close();
+  });
+});
+
+// --- Full round-trip: signed webhook POST → engine → Graph API send -----------------
+//
+// These tests prove plug-and-play: the exact bytes Meta will POST (HMAC-signed)
+// travel through signature check → parse → engine → typing/read → paced reply
+// parts on the exact Graph URL with the Bearer token. When a real token arrives,
+// only env vars change.
+
+describe('WhatsApp round-trip integration', () => {
+  it('signed inbound text → engine gets the parsed InboundMessage → typing/read first, then reply parts in order', async () => {
+    const replyParts: OutboundPart[] = [
+      { text: 'Здравствуйте! Да, номера есть.', delayMs: 0 },
+      { text: 'Подсказать цены?', delayMs: 5 },
+    ];
+    const { app, engine, calls } = await makeServer({ appSecret: 's3cret', engineParts: replyParts });
+    const body = JSON.stringify(waPayload([textMessage('есть номера на завтра?')]));
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/webhooks/whatsapp',
+      payload: body,
+      headers: { 'content-type': 'application/json', 'x-hub-signature-256': sign(body, 's3cret') },
+    });
+
+    // Meta requires a fast 2xx; processing continues async.
+    expect(res.statusCode).toBe(200);
+
+    // 1. The engine receives exactly the normalized InboundMessage — nothing more.
+    await vi.waitFor(() => expect(engine.handle).toHaveBeenCalledTimes(1));
+    expect(engine.handle.mock.calls[0][0]).toEqual({
+      channel: 'whatsapp',
+      senderId: `${PHONE_ID}|${WA_ID}`,
+      propertyHint: 'almaty',
+      text: 'есть номера на завтра?',
+      inboundId: 'wamid.msg1',
+    });
+
+    // 2. Exactly three Graph calls: read/typing, then both parts, in order.
+    await vi.waitFor(() => expect(calls.length).toBe(3));
+    for (const call of calls) {
+      expect(call.url).toBe(`https://graph.facebook.com/v23.0/${PHONE_ID}/messages`);
+      expect(call.init?.method).toBe('POST');
+      const headers = call.init?.headers as Record<string, string>;
+      expect(headers.Authorization).toBe('Bearer wa-token');
+      expect(headers['Content-Type']).toBe('application/json');
+    }
+    const bodies = calls.map((c) => JSON.parse(String(c.init?.body)));
+    expect(bodies[0]).toEqual({
+      messaging_product: 'whatsapp',
+      status: 'read',
+      message_id: 'wamid.msg1',
+      typing_indicator: { type: 'text' },
+    });
+    expect(bodies[1]).toEqual({
+      messaging_product: 'whatsapp',
+      to: WA_ID,
+      type: 'text',
+      text: { body: 'Здравствуйте! Да, номера есть.' },
+    });
+    expect(bodies[2]).toEqual({
+      messaging_product: 'whatsapp',
+      to: WA_ID,
+      type: 'text',
+      text: { body: 'Подсказать цены?' },
+    });
+    await app.close();
+  });
+
+  it('routes each hotel number to its property: astana phone_number_id → astana, almaty → almaty', async () => {
+    const { app, engine } = await makeServer({
+      phoneNumberIds: { almaty: PHONE_ID, astana: ASTANA_PHONE_ID },
+    });
+
+    const post = async (payload: unknown) =>
+      app.inject({
+        method: 'POST',
+        url: '/webhooks/whatsapp',
+        payload: JSON.stringify(payload),
+        headers: { 'content-type': 'application/json' },
+      });
+
+    const fromAstana = waPayload([textMessage('бар ма бос бөлмелер?', 'wamid.ast1')], {
+      metadata: { display_phone_number: '77170000000', phone_number_id: ASTANA_PHONE_ID },
+    });
+    expect((await post(fromAstana)).statusCode).toBe(200);
+    await vi.waitFor(() => expect(engine.handle).toHaveBeenCalledTimes(1));
+    expect(engine.handle.mock.calls[0][0]).toMatchObject({
+      propertyHint: 'astana',
+      senderId: `${ASTANA_PHONE_ID}|${WA_ID}`,
+      inboundId: 'wamid.ast1',
+    });
+
+    expect((await post(waPayload([textMessage('привет', 'wamid.alm1')]))).statusCode).toBe(200);
+    await vi.waitFor(() => expect(engine.handle).toHaveBeenCalledTimes(2));
+    expect(engine.handle.mock.calls[1][0]).toMatchObject({
+      propertyHint: 'almaty',
+      senderId: `${PHONE_ID}|${WA_ID}`,
+      inboundId: 'wamid.alm1',
+    });
+    await app.close();
+  });
+
+  it('media URL off Meta hosts is refused — token never leaves Meta, guest still gets the voice fallback path', async () => {
+    const { app, engine, calls } = await makeServer();
+    const body = JSON.stringify(
+      waPayload([
+        {
+          from: WA_ID,
+          id: 'wamid.voiceEvil',
+          type: 'audio',
+          audio: { id: 'media-evil', mime_type: 'audio/ogg' },
+        },
+      ]),
+    );
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/webhooks/whatsapp',
+      payload: body,
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    await vi.waitFor(() => expect(engine.handle).toHaveBeenCalledTimes(1));
+
+    // The Bearer token was sent to Graph for metadata, but NEVER to the rogue host.
+    expect(calls.some((c) => c.url.endsWith('/media-evil'))).toBe(true);
+    expect(calls.some((c) => c.url.includes('evil.example.com'))).toBe(false);
+
+    // The engine still sees a voice-shaped message (empty audio → transcriber
+    // returns null → the polite "please type it out" fallback), never dead silence.
+    const msg = engine.handle.mock.calls[0][0];
+    expect(msg.text).toBeUndefined();
+    expect(msg.audio).toBeDefined();
+    expect(msg.audio!.data.length).toBe(0);
+    expect(msg.audio!.mime).toBe('audio/ogg');
     await app.close();
   });
 });

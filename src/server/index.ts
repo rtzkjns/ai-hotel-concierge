@@ -133,7 +133,10 @@ async function processWhatsApp(
       msg.propertyHint = propertyByPhoneId[item.phoneNumberId] ?? item.phoneNumberId;
       if (item.audioMediaId) {
         const data = await adapter.downloadMedia(item.audioMediaId);
-        if (data) msg.audio = { data, mime: item.audioMime ?? 'audio/ogg' };
+        // Download failed/refused → keep the message voice-shaped with empty audio:
+        // the transcriber returns null on it, so the guest gets the polite
+        // "couldn't listen, please type" fallback instead of dead silence.
+        msg.audio = { data: data ?? Buffer.alloc(0), mime: item.audioMime ?? 'audio/ogg' };
       }
       // Read receipt + typing must never block the actual reply.
       await adapter.typing(msg.senderId, msg.inboundId).catch(() => {});
