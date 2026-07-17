@@ -4,3 +4,6 @@ dist/
 *.db-shm
 *.db-wal
 .env
+
+# Agent worktrees / local agent metadata
+.claude/
