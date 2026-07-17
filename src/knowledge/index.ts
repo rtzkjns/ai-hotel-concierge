@@ -17,21 +17,30 @@ const astana: Property = {
   name: 'Hotel Kazzhol Astana',
   whatsapp: '+7 776 412 6353',
   knowledge: `
-PROPERTY: Hotel Kazzhol Astana — a 4-star business hotel in Astana, Kazakhstan.
+PROPERTY: Hotel Kazzhol Astana — a modern business hotel for business travelers and tourists,
+with cosy rooms, high service, a restaurant and a location near the capital's business and
+administrative centers. (public site)
 
 ADDRESS: pr. Balkantau 213, Astana. Roughly 10 minutes by car from the Bayterek monument.
-CHECK-IN / CHECK-OUT: Check-in from 14:00, check-out until 12:00.
-ROOMS: Standard, Comfort, and Suite rooms. Indicative rates from about 25,000 KZT (~USD 55)
-per night. PRICES: always confirm via the live availability tool (check_availability); the
-indicative figure is only a rough anchor when the tool is unavailable and must be presented
-as approximate, never as a quote.
-DINING: On-site restaurant "Fergana".
-AMENITIES: Free Wi-Fi throughout, breakfast available, conference / meeting halls, parking,
-24-hour front desk.
+CHECK-IN / CHECK-OUT: Check-in from 14:00, check-out until 12:00. (unconfirmed — Almaty turned
+out to be 15:00; verify with staff.)
+ROOM CATEGORIES (from the public site kazzhol.com/ru/astana; sizes/capacity public, confirm live):
+- Standard — 25 m², up to 2 guests.
+- Comfort — 31 m², up to 2 guests.
+- Junior Suite (Полулюкс) — 33 m², up to 2 guests.
+- Suite (Люкс) — 45 m², up to 2 guests.
+- Business Suite (Бизнес-Люкс) — 70 m², up to 3 guests.
+- Family Comfort — 40 m², up to 4 guests.
+PRICES: always confirm via the live availability tool (check_availability); the indicative
+anchor is about 25,000 KZT (~USD 55) per night for a Standard — approximate only, never a quote.
+DINING: On-site restaurant "Fergana" (Фергана).
+WELLNESS: swimming pool, sauna, massage, and a modern gym. (public site)
+AMENITIES: free Wi-Fi, breakfast available, conference / meeting halls of various capacities
+(good for events and conferences), parking, 24-hour front desk.
 CONTACT: WhatsApp +7 776 412 6353; reservations email reservationastana@hotelkazzhol.kz.
 LANGUAGES SPOKEN BY STAFF: Kazakh, Russian, English.
-BOOKING: For specific dates and live availability the reservations team confirms by message
-or phone. This assistant can take a booking request and the team will confirm availability.
+BOOKING: This assistant books directly (or sends a personal secure payment link); the
+reservations team confirms special cases by message or phone.
 `.trim(),
 };
 
@@ -83,21 +92,27 @@ const parkAlmaty: Property = {
   name: 'Hotel Kazzhol Park Almaty',
   whatsapp: '+7 708 906 0661',
   knowledge: `
-PROPERTY: Hotel Kazzhol Park Almaty — a 4-star hotel in Almaty, Kazakhstan, with 112 rooms.
+PROPERTY: Hotel Kazzhol Park Almaty — a comfortable business hotel in Almaty with stylish
+rooms, high service and a restaurant, near business centers and city attractions. (public site)
 
-LOCATION: Almaty.
-CHECK-IN / CHECK-OUT: Check-in from 14:00, check-out until 12:00.
-ROOMS: 112 rooms across Standard, Comfort, and Suite categories. Indicative rates from about
-38,000 KZT (~USD 83) per night. PRICES: always confirm via the live availability tool
-(check_availability); the indicative figure is only a rough anchor and must be presented as
-approximate, never as a quote.
-DINING: On-site restaurant.
-AMENITIES: Free Wi-Fi, breakfast available, conference / meeting rooms, parking,
-24-hour front desk.
+ADDRESS: ul. Nauryzbai Batyra 108, Almaty. (public site)
+CHECK-IN / CHECK-OUT: Check-in from 14:00, check-out until 12:00. (unconfirmed — verify; Almaty
+is 15:00.)
+ROOM CATEGORIES (from the public site kazzhol.com/ru/almaty-park; sizes/capacity public, confirm live):
+- Standard — 26 m², up to 2 guests.
+- Junior Suite — 45 m², up to 4 guests.
+- Business Suite (Бизнес Люкс) — 65 m², up to 3 guests.
+- Family Room — 50 m², up to 5 guests.
+- Two-level LWB (Двухэтажный) — 65 m², up to 4 guests.
+PRICES: always confirm via the live availability tool (check_availability); the indicative
+anchor is about 38,000 KZT (~USD 83) per night — approximate only, never a quote.
+DINING: On-site restaurant "Sapori Veri" (varied cuisine).
+AMENITIES: free Wi-Fi, breakfast available, conference / meeting halls of various capacities,
+parking, 24-hour front desk.
 CONTACT: WhatsApp +7 708 906 0661; reservations email park1@kazzhol.com.
 LANGUAGES SPOKEN BY STAFF: Kazakh, Russian, English.
-BOOKING: For specific dates and live availability the reservations team confirms by message
-or phone. This assistant can take a booking request and the team will confirm availability.
+BOOKING: This assistant books directly (or sends a personal secure payment link); the
+reservations team confirms special cases by message or phone.
 `.trim(),
 };
 
