@@ -173,6 +173,14 @@ describe('detectLanguage', () => {
 
   it('detects English', () => {
     expect(detectLanguage('hello')).toBe('en');
+    expect(detectLanguage('do you have any rooms for the weekend?')).toBe('en');
+  });
+
+  it('detects latinized Kazakh from romanized tokens', () => {
+    expect(detectLanguage('salem, bos nomer barma?')).toBe('kk');
+    expect(detectLanguage('rahmet, qonaq bolme kerek')).toBe('kk');
+    // A single incidental token stays English (avoids false positives).
+    expect(detectLanguage('is there a bar in the hotel?')).toBe('en');
   });
 
   it('detects Chinese even for two characters', () => {
