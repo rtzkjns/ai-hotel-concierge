@@ -6,6 +6,7 @@ import type { InboundMessage, OutboundPart } from '../channels/types';
 import { verifySignature, type WhatsAppAdapter } from '../channels/whatsapp';
 import { track, type EventData } from '../core/events';
 import { maskPII } from '../core/pii';
+import { registerLegalRoutes } from './legal';
 
 export interface EngineLike {
   handle(msg: InboundMessage): Promise<OutboundPart[] | null>;
@@ -44,6 +45,9 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
   );
 
   app.get('/healthz', async () => ({ ok: true }));
+
+  // Public privacy policy + terms (required for Meta App Review, self-hosted).
+  registerLegalRoutes(app);
 
   // Meta webhook verification handshake.
   app.get('/webhooks/whatsapp', async (req, reply) => {
