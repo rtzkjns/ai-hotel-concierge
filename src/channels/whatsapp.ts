@@ -4,11 +4,27 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { ChannelAdapter, InboundMessage, OutboundPart } from './types';
 
 const GRAPH_BASE = 'https://graph.facebook.com/v23.0';
+const D360_BASE = 'https://waba-v2.360dialog.io';
+
+/**
+ * Provider behind the WhatsApp Cloud API:
+ * - 'meta'    → direct Meta Cloud API: POST {base}/{phone_number_id}/messages, Bearer token.
+ * - 'd360'    → 360dialog (used for zero-downtime Coexistence onboarding of an in-use number,
+ *               since 360dialog is a Tech Provider so we skip App Review; the bot stays
+ *               self-hosted — our own webhook). POST {base}/messages, D360-API-KEY header,
+ *               number implicit per key. Payloads are Cloud-API-compatible.
+ */
+export type WhatsAppProvider = 'meta' | 'd360';
 
 export interface WhatsAppAdapterConfig {
+  /** Meta: system-user/Bearer token. 360dialog: the D360-API-KEY. */
   accessToken: string;
-  /** property key → WhatsApp phone_number_id */
+  /** property key → WhatsApp phone_number_id (Meta). For 360dialog the id is implicit per key. */
   phoneNumberIds: Record<string, string>;
+  /** Defaults to 'meta'. Set to 'd360' for a 360dialog-hosted number (Coexistence). */
+  provider?: WhatsAppProvider;
+  /** Override the API base URL (else derived from provider). */
+  baseUrl?: string;
 }
 
 /** One inbound guest message plus the number it arrived on (→ hotel). */
@@ -191,14 +207,17 @@ export class WhatsAppAdapter implements ChannelAdapter {
   }
 
   private async post(phoneNumberId: string, body: unknown): Promise<void> {
-    const res = await this.fetchFn(`${GRAPH_BASE}/${encodeURIComponent(phoneNumberId)}/messages`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${this.cfg.accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
+    const isD360 = this.cfg.provider === 'd360';
+    const base = this.cfg.baseUrl ?? (isD360 ? D360_BASE : GRAPH_BASE);
+    // 360dialog scopes the number to the API key → path is just /messages; Meta needs the id.
+    const url = isD360
+      ? `${base}/messages`
+      : `${base}/${encodeURIComponent(phoneNumberId)}/messages`;
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (isD360) headers['D360-API-KEY'] = this.cfg.accessToken;
+    else headers.Authorization = `Bearer ${this.cfg.accessToken}`;
+
+    const res = await this.fetchFn(url, { method: 'POST', headers, body: JSON.stringify(body) });
     if (!res.ok) {
       // Status only — never the token, never the guest's number.
       throw new Error(`WhatsApp send failed: HTTP ${res.status}`);

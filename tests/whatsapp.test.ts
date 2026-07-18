@@ -89,6 +89,26 @@ describe('WhatsAppAdapter', () => {
     expect(bodies[1].text.body).toBe('вторая');
   });
 
+  it('360dialog provider: posts to /messages with a D360-API-KEY header (no phone id in path)', async () => {
+    const { fn, calls } = fakeFetch(() => undefined);
+    const adapter = new WhatsAppAdapter(
+      { accessToken: 'd360-key', phoneNumberIds: { almaty: PHONE_ID }, provider: 'd360' },
+      fn,
+    );
+    await adapter.send(`${PHONE_ID}|${WA_ID}`, [{ text: 'привет', delayMs: 0 }]);
+    expect(calls.length).toBe(1);
+    expect(calls[0].url).toBe('https://waba-v2.360dialog.io/messages');
+    const headers = calls[0].init?.headers as Record<string, string>;
+    expect(headers['D360-API-KEY']).toBe('d360-key');
+    expect(headers.Authorization).toBeUndefined(); // key goes only in the D360 header
+    expect(JSON.parse(String(calls[0].init?.body))).toEqual({
+      messaging_product: 'whatsapp',
+      to: WA_ID,
+      type: 'text',
+      text: { body: 'привет' },
+    });
+  });
+
   it('typing: posts mark-read with a typing indicator for the inbound message', async () => {
     const { adapter, calls } = makeAdapter();
     await adapter.typing(`${PHONE_ID}|${WA_ID}`, 'wamid.msg1');
