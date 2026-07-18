@@ -24,3 +24,14 @@ Instagram-аккаунт **wibzal.m**, привязанный к kza200710@gmail
 `whatsapp_business_messaging` + `whatsapp_business_management`, привязанный к приложению
 «whatsapp business» и WABA `1363377080731255`. С ним я через Graph API вытяну phone_number_id,
 пропишу конфиг, настрою webhook и подключу номер вживую.
+
+## Обновление (2026-07-19) — живая проверка через Graph API
+Пользователь создал приложение внутри портфолио и дал рабочий (временный) токен. Через Graph API v22.0 установлено:
+- Токен рабочий, читает WABA `1363377080731255` = «Kazzhol Almaty».
+- **phone_number_id = `1541962692809091`** (номер +7 708 709 3000).
+- **owner_business_info = «Бернер Александр's Business» (id `373990573160727`)**, `on_behalf_of_business_info.type = SELF` → WABA принадлежит SMB-бизнесу Бернера, к нам лишь пошарена.
+- **Номер: platform_type = ON_PREMISE, status = DISCONNECTED** — сидел на старом On-Premise API, сейчас отключён (прошлая автоматизация мертва).
+- Ни одно приложение не подписано на вебхуки WABA.
+- `POST /1541962692809091/register` → ошибка **«Register endpoint is not available for SMB businesses»** — программная регистрация на Cloud API для SMB-аккаунтов заблокирована Meta.
+
+**Вывод:** токен и phone_number_id есть, но номер нельзя просто «зарегистрировать» на Cloud API из-за SMB-ограничения + On-Premise. Путь для SMB — отдельный (coexistence / re-onboarding / передача владения). Уточняется ресёрчем; вероятно, требует действия владельца (Бернера).
