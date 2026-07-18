@@ -106,6 +106,7 @@ async function main(): Promise<void> {
     adapters.whatsapp = new WhatsAppAdapter({
       accessToken: config.whatsapp.accessToken,
       phoneNumberIds: config.whatsapp.phoneNumberIds,
+      provider: config.whatsapp.provider,
     });
   }
   if (channels.includes('instagram') && config.instagram.accessToken) {

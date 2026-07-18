@@ -90,10 +90,13 @@ export function buildConfig(env: NodeJS.ProcessEnv) {
       staffGroupChatId: env.STAFF_GROUP_CHAT_ID,
     },
     whatsapp: {
+      // Meta: system-user/Bearer token. 360dialog: the D360-API-KEY (set WHATSAPP_PROVIDER=d360).
       accessToken: env.WHATSAPP_ACCESS_TOKEN,
       verifyToken: env.WHATSAPP_VERIFY_TOKEN,
       appSecret: env.WHATSAPP_APP_SECRET,
       phoneNumberIds,
+      // 'meta' (direct Cloud API) or 'd360' (360dialog, for zero-downtime Coexistence).
+      provider: env.WHATSAPP_PROVIDER === 'd360' ? ('d360' as const) : ('meta' as const),
     },
     instagram: {
       accessToken: env.INSTAGRAM_ACCESS_TOKEN,
