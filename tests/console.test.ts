@@ -492,7 +492,9 @@ describe('per-hotel access', () => {
       url: `/console/chats/${encodeURIComponent(alm.id)}`,
       headers: { cookie },
     });
-    expect(direct.statusCode).toBe(403);
+    // Именно 404, а не 403: по разнице ответов можно было бы выяснить, что этот
+    // гость обслуживается в другом отеле сети.
+    expect(direct.statusCode).toBe(404);
     await app.close();
   });
 
@@ -504,6 +506,35 @@ describe('per-hotel access', () => {
     const { cookie } = await login(app, 'admin', 'admin-pass');
     const inbox = await app.inject({ method: 'GET', url: '/console', headers: { cookie } });
     expect(inbox.body).toContain(`/console/chats/${encodeURIComponent(alm.id)}`);
+    await app.close();
+  });
+});
+
+describe('per-hotel writes', () => {
+  it('refuses to change the status of another hotel request, even by guessing its id', async () => {
+    const { app, store } = await makeApp();
+    store.saveMice({
+      conversationId: 'webwidget:m1',
+      property: 'astana',
+      status: 'in_work',
+      createdAt: new Date().toISOString(),
+    } as never);
+    store.saveMice({
+      conversationId: 'webwidget:m2',
+      property: 'almaty',
+      status: 'in_work',
+      createdAt: new Date().toISOString(),
+    } as never);
+    const almaty = store.listMice().find((m) => m.property === 'almaty')!;
+
+    const { cookie, token } = await login(app, 'astana-desk', 'desk-pass');
+    // Список чужих заявок ресепшен не видит, но id — обычные автоинкременты,
+    // поэтому запись обязана проверяться отдельно от чтения.
+    const res = await post(app, `/console/mice/${almaty.id}/status`, cookie, csrfTokenFor(token!), {
+      status: 'done',
+    });
+    expect(res.statusCode).toBe(403);
+    expect(store.listMice().find((m) => m.id === almaty.id)!.status).toBe('in_work');
     await app.close();
   });
 });

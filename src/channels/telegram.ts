@@ -18,6 +18,7 @@ export interface TelegramEngine {
 export interface TelegramStore {
   /** Привязка группы менеджеров к отелю (команда /привязать в самой группе). */
   setStaffChat?(property: string, chatId: string): void;
+  staffChatFor?(property: string): string | undefined;
   getOrCreateConversation(channel: Channel, senderId: string): Conversation;
   resetConversation(id: string): void;
   setProperty(id: string, property: string): void;
@@ -27,6 +28,10 @@ export interface TelegramChannelDeps {
   botToken: string;
   engine: TelegramEngine;
   store: TelegramStore;
+  /** Действующий код привязки групп; владелец видит его в панели. */
+  bindCode?: () => string | undefined;
+  /** Вызывается при смене привязки — чтобы подмену было видно, а не молча. */
+  onBindChanged?: (property: string, chatId: string, previous?: string) => void;
 }
 
 /** The pieces of a Telegraf ctx the text handler needs (structural, for unit tests). */
@@ -70,25 +75,66 @@ export class TelegramChannel {
       );
     });
 
-    // Привязка группы менеджеров к отелю прямо из чата: «/привязать almaty».
-    // Так владельцу не нужно узнавать и присылать id — бот берёт его из самого сообщения.
+    /**
+     * Привязка группы менеджеров к отелю прямо из чата: «/привязать almaty <код>».
+     *
+     * Раньше команда не требовала ничего: любой, кто мог написать боту, перенаправлял
+     * заявки чужого отеля себе, а прежняя группа замолкала молча. Теперь нужны три вещи
+     * сразу — это групповой чат, отправитель в нём администратор, и у него есть код
+     * привязки, который владелец берёт в панели.
+     */
     this.bot.on(message('text'), async (ctx, next) => {
       const raw = ctx.message.text.trim();
       if (!/^\/(привязать|bind)\b/i.test(raw)) return next();
-      const key = raw.split(/\s+/)[1]?.toLowerCase() ?? '';
+      const [, key = '', code = ''] = raw.split(/\s+/);
+      const hotel = key.toLowerCase();
       const known = ['almaty', 'astana', 'park_almaty', 'seven'];
-      if (!known.includes(key)) {
+
+      if (!known.includes(hotel)) {
         await ctx.reply(
-          'Укажите отель: /привязать almaty | astana | park_almaty | seven\n' +
-            'После привязки заявки на оператора по этому отелю будут приходить в эту группу.',
+          'Укажите отель и код привязки:\n/привязать almaty КОД\n\n' +
+            'Отели: almaty, astana, park_almaty, seven.\n' +
+            'Код можно посмотреть в панели: раздел «Ещё» → «Профиль».',
         );
         return;
       }
-      deps.store.setStaffChat?.(key, String(ctx.chat.id));
+
+      if (ctx.chat.type === 'private') {
+        await ctx.reply(
+          'Привязать можно только групповой чат: создайте группу для менеджеров отеля, ' +
+            'добавьте меня туда и повторите команду там.',
+        );
+        return;
+      }
+
+      const expected = deps.bindCode?.();
+      if (!expected || code !== expected) {
+        await ctx.reply(
+          'Нужен код привязки. Он есть в панели у владельца: раздел «Ещё» → «Профиль».\n' +
+            'Команда целиком: /привязать ' + hotel + ' КОД',
+        );
+        return;
+      }
+
+      try {
+        const member = await ctx.telegram.getChatMember(ctx.chat.id, ctx.from.id);
+        if (member.status !== 'creator' && member.status !== 'administrator') {
+          await ctx.reply('Привязать чат может только его администратор.');
+          return;
+        }
+      } catch {
+        await ctx.reply('Не удалось проверить права в этой группе. Попробуйте ещё раз.');
+        return;
+      }
+
+      const previous = deps.store.staffChatFor?.(hotel);
+      deps.store.setStaffChat?.(hotel, String(ctx.chat.id));
       await ctx.reply(
-        `Готово. Эта группа привязана к отелю ${key}. Сюда будут приходить запросы на переключение ` +
-          'на живого менеджера с кратким описанием проблемы.',
+        `Готово. Эта группа привязана к отелю ${hotel}. Сюда будут приходить запросы на ` +
+          'переключение на живого менеджера с кратким описанием проблемы.',
       );
+      // Смена привязки — событие, о котором обязаны узнать и владелец, и прежняя группа.
+      deps.onBindChanged?.(hotel, String(ctx.chat.id), previous);
     });
 
     this.bot.on(message('text'), async (ctx) => {

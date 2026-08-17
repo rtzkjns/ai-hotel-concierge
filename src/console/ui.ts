@@ -549,7 +549,7 @@ export function shell(title: string, body: string, opts: ShellOpts = {}): string
 
 const ROLE_LABEL: Record<string, string> = {
   admin: 'владелец',
-  mice_manager: 'менеджер',
+  mice_manager: 'ресепшен',
 };
 
 function moreMenu(staff: { login: string; role: string; property?: string }, csrf?: string): string {

@@ -74,6 +74,9 @@ export interface ConsoleStore extends SessionStore {
   ): void;
   deleteKbEntry?(id: number): void;
   findStaffByLogin(login: string): StaffMember | null;
+  /** Код привязки Telegram-групп и список уже привязанных отелей — для профиля владельца. */
+  bindCode?(): string;
+  staffChatFor?(property: string): string | undefined;
   /** Смена собственного пароля — иначе выданный при заведении пароль живёт вечно. */
   setStaffPassword?(id: number, passHash: string): void;
   deleteSession(token: string): void;
@@ -286,7 +289,11 @@ export async function registerConsoleRoutes(
       const meta = [
         opts.mine ? 'вы ведёте диалог' : reasonFor(c.id),
         channelLabel(c.channel),
-        opts.showProperty && c.property ? propertyLabel(c.property) : '',
+        c.property
+          ? opts.showProperty
+            ? propertyLabel(c.property)
+            : ''
+          : 'отель ещё не выбран — общая очередь сети',
       ]
         .filter(Boolean)
         .join(' · ');
@@ -309,6 +316,14 @@ export async function registerConsoleRoutes(
         .filter((c) => c.status === 'handed_off' && !c.takenBy)
         .sort((x, y) => minutesSince(lastGuestAt(y)) - minutesSince(lastGuestAt(x)));
       const mine = all.filter((c) => c.status === 'handed_off' && c.takenBy === staff.login);
+      // Диалоги, которые ведёт коллега, раньше не попадали никуда: владелец сети
+      // не видел работу менеджеров вообще.
+      // Только для владельца: ресепшену чужой диалог всё равно не открыть, а ссылка,
+      // ведущая в «не найдено», хуже её отсутствия.
+      const theirs =
+        staff.role === 'admin'
+          ? all.filter((c) => c.status === 'handed_off' && c.takenBy && c.takenBy !== staff.login)
+          : [];
       const botHandled = all.filter((c) => c.status !== 'handed_off');
 
       // Красным красим только верхнюю карточку: если покрасить все, красный
@@ -336,7 +351,22 @@ export async function registerConsoleRoutes(
             `</section>`,
         );
       }
-      if (!waiting.length && !mine.length) {
+      if (theirs.length) {
+        bands.push(
+          `<details class="quiet"><summary>В работе у коллег · ${theirs.length}</summary>` +
+            theirs
+              .map(
+                (c) =>
+                  `<a class="row" href="${chatUrl(c.id)}">` +
+                  `<span class="name">${escapeHtml(humanId(c))}</span>` +
+                  `<span class="grow">отвечает ${escapeHtml(c.takenBy ?? '')}</span>` +
+                  `<time>${escapeHtml(ago(c.updatedAt))}</time></a>`,
+              )
+              .join('') +
+            `</details>`,
+        );
+      }
+      if (!waiting.length && !mine.length && !theirs.length) {
         bands.push(
           emptyState(
             'Никто не ждёт ответа',
@@ -404,9 +434,18 @@ export async function registerConsoleRoutes(
         );
         return null;
       }
-      // Чужой отель закрыт даже для владельца роли admin, если он привязан к отелю.
+      // Для сотрудника чужого отеля диалога просто не существует: 403 против 404
+      // подсказал бы, что этот гость есть в сети, — по номеру телефона это проверяется.
       if (!canSee(req.staff!, convo.property)) {
-        await reply.code(403).type('text/html; charset=utf-8').send(FORBIDDEN_HTML);
+        await sendHtml(
+          reply,
+          shell('Диалог не найден', emptyState('Диалог не найден', 'Возможно, он относится к другому отелю сети или был удалён по просьбе гостя.', btn('К входящим', { variant: 'secondary', href: '/console' }), 'lost'), {
+            staff: req.staff,
+            csrf: csrfTokenFor(req.sessionToken!),
+            active: '/console',
+          }),
+          404,
+        );
         return null;
       }
       const notOwn =
@@ -607,9 +646,14 @@ export async function registerConsoleRoutes(
      */
     const sourceStatus = (e: KbEntry): string => {
       if (e.fetchError) {
+        // Человеку нужен следующий шаг, а не только диагноз.
+        const hopeless = /скриптом|не страница с текстом|внутреннюю сеть/.test(e.fetchError);
+        const next = hopeless
+          ? 'Такую страницу бот прочитать не сможет — дайте ссылку на обычную страницу или внесите текст в «Факты».'
+          : 'Бот попробует ещё раз в течение часа.';
         return `<p class="card__meta" style="color:var(--err-tx)">Не удалось прочитать: ${escapeHtml(e.fetchError)}${
           e.fetchedAt ? ` · бот пока пользуется текстом, прочитанным ${escapeHtml(agoLabel(e.fetchedAt))}` : ''
-        }</p>`;
+        }<br>${escapeHtml(next)}</p>`;
       }
       if (e.fetchedAt) {
         return `<p class="card__meta" style="color:var(--ok)">Прочитано ${escapeHtml(agoLabel(e.fetchedAt))} — бот использует эту страницу</p>`;
@@ -757,7 +801,12 @@ export async function registerConsoleRoutes(
       const one = KB_KINDS.find((k) => k.key === entry.kind)!.one;
       const prop = entry.property ?? '';
       const action = isNew ? '/console/kb/add' : `/console/kb/${entry.id}`;
-      const head = entry.kind === 'tone' ? 'ПРАВИЛА ОБЩЕНИЯ ОТ ОТЕЛЯ:' : 'ДОПОЛНИТЕЛЬНЫЕ СВЕДЕНИЯ ОТ ОТЕЛЯ:';
+      const head =
+        entry.kind === 'tone'
+          ? 'ПРАВИЛА ОБЩЕНИЯ ОТ ОТЕЛЯ:'
+          : entry.kind === 'source'
+            ? 'ТЕКСТ СО СТРАНИЦ САЙТА ОТЕЛЯ:'
+            : 'ДОПОЛНИТЕЛЬНЫЕ СВЕДЕНИЯ ОТ ОТЕЛЯ:';
 
       const propPicker =
         `<div class="field"><label for="property">Отель</label>` +
@@ -793,16 +842,21 @@ export async function registerConsoleRoutes(
           placeholder: 'Например: Поздний выезд',
           hint: 'Коротко, о чём это.',
         }) +
-        field('body', entry.kind === 'tone' ? 'Правило общения' : 'Текст', {
-          textarea: true,
-          rows: 6,
-          value: entry.body ?? '',
-          required: entry.kind !== 'source',
-          hint:
-            entry.kind === 'tone'
-              ? 'Например: «Всегда предлагайте ранний заезд, если гость прилетает утром».'
-              : 'Пишите так, как объяснили бы новому сотруднику.',
-        }) +
+        (entry.kind === 'source'
+          ? `<div class="field"><label>Что бот прочитал со страницы</label>` +
+            `<div class="preview">${escapeHtml((entry.body ?? '').slice(0, 1500) || 'Страница ещё не прочитана.')}</div>` +
+            `<p class="hint">Этот текст бот обновляет сам каждые несколько часов. ` +
+            `Правки здесь не сохранятся — если нужно добавить своё, заведите «Факт».</p></div>`
+          : field('body', entry.kind === 'tone' ? 'Правило общения' : 'Текст', {
+              textarea: true,
+              rows: 6,
+              value: entry.body ?? '',
+              required: true,
+              hint:
+                entry.kind === 'tone'
+                  ? 'Например: «Всегда предлагайте ранний заезд, если гость прилетает утром».'
+                  : 'Пишите так, как объяснили бы новому сотруднику.',
+            })) +
         `<div class="banner banner--warn" id="price-warn" hidden>Здесь указана сумма. Цену на номер бот всегда берёт ` +
         `из системы бронирования на даты гостя — опишите условие словами.</div>` +
         (entry.kind === 'source' ? '' : sourceField) +
@@ -910,9 +964,11 @@ export async function registerConsoleRoutes(
     scope.post('/console/kb/:id', { preHandler: requireRole('admin') }, async (req, reply) => {
       const id = Number((req.params as { id: string }).id);
       const b = req.body as Record<string, string>;
+      const existing = store.getKbEntry?.(id);
       store.updateKbEntry?.(id, {
         title: (b.title ?? '').trim(),
-        body: (b.body ?? '').trim(),
+        // У источника тело — это прочитанный ботом текст, его форма не редактирует.
+        body: existing?.kind === 'source' ? existing.body : (b.body ?? '').trim(),
         url: (b.url ?? '').trim() || null,
         // Отель тоже сохраняется: селект рисовался, но правка отбрасывалась,
         // и владелец оставался уверен, что запись стала отельной.
@@ -1238,6 +1294,9 @@ export async function registerConsoleRoutes(
           .map(
             (l) =>
               `<tr><td data-label="Что нужно">${escapeHtml(l.kind)} <span class="badge badge--off">ещё не бронь</span></td>` +
+              (staff.property
+                ? ''
+                : `<td data-label="Отель">${escapeHtml(propertyLabel(store.getConversation(l.conversationId)?.property ?? ''))}</td>`) +
               `<td data-label="Даты">${escapeHtml(l.checkIn ?? '')} ${escapeHtml(l.checkOut ?? '')}</td>` +
               `<td data-label="Контакт">${escapeHtml(l.contactName ?? '')} ${tel(l.contactPhone)}</td>` +
               `<td data-label="Детали">${escapeHtml(l.specialRequests ?? '')}</td>` +
@@ -1246,7 +1305,9 @@ export async function registerConsoleRoutes(
           )
           .join('');
         table = rows
-          ? `<div class="tablewrap"><table><thead><tr><th>Что нужно</th><th>Даты</th><th>Контакт</th>` +
+          ? `<div class="tablewrap"><table><thead><tr><th>Что нужно</th>` +
+            (staff.property ? '' : '<th>Отель</th>') +
+            `<th>Даты</th><th>Контакт</th>` +
             `<th>Детали</th><th>Создан</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
           : emptyState('Заявок пока нет', 'Когда бот запишет контакт гостя, заявка появится здесь.');
       }
@@ -1307,6 +1368,12 @@ export async function registerConsoleRoutes(
       const id = Number((req.params as { id: string }).id);
       const body = (req.body ?? {}) as Record<string, unknown>;
       const status = typeof body.status === 'string' ? body.status : '';
+      // Единственный пишущий маршрут заявок: без этой проверки ресепшен закрывал
+      // чужую заявку простым перебором id — список он не видит, а запись проходила.
+      const target = store.listMice().find((m) => Number(m.id) === id);
+      if (!target || !canSee(req.staff!, target.property)) {
+        return reply.code(403).type('text/html; charset=utf-8').send(FORBIDDEN_HTML);
+      }
       if (!Number.isInteger(id) || (status !== 'in_work' && status !== 'done')) {
         return sendHtml(
           reply,
@@ -1321,6 +1388,10 @@ export async function registerConsoleRoutes(
         );
       }
       store.setMiceStatus(id, status);
+      store.recordEvent('mice_status', {
+        property: target.property,
+        payload: { staff: req.staff!.login, id, status },
+      });
       return reply.redirect('/console/requests?tab=mice');
     });
 
@@ -1332,8 +1403,9 @@ export async function registerConsoleRoutes(
       staff: AuthedStaff,
       csrf: string,
       msg?: { kind: 'ok' | 'err'; text: string },
-    ): string =>
-      shell(
+    ): string => {
+      const staffChats = PROPERTY_KEYS.filter((k) => store.staffChatFor?.(k)).map(propertyLabel);
+      return shell(
         'Профиль',
         `<div class="narrow"><h1>Профиль</h1>` +
           (msg ? banner(msg.kind, escapeHtml(msg.text)) : '') +
@@ -1344,6 +1416,18 @@ export async function registerConsoleRoutes(
               ' · ' +
               (staff.property ? propertyLabel(staff.property) : 'вся сеть'),
           )}</p></div>` +
+          (staff.role === 'admin' && store.bindCode
+            ? `<h2 style="font-size:15px;color:var(--text-2);margin:24px 0 12px">Чаты заявок в Telegram</h2>` +
+              `<div class="card"><p class="card__body">Чтобы заявки приходили менеджерам отеля: ` +
+              `создайте группу, добавьте в неё бота и менеджеров и напишите там команду` +
+              `<br><code>/привязать almaty ${escapeHtml(store.bindCode())}</code></p>` +
+              `<p class="card__meta">Вместо almaty — astana, park_almaty или seven. ` +
+              `Код нужен, чтобы посторонний не перенаправил заявки отеля себе.</p>` +
+              (staffChats.length
+                ? `<p class="card__meta">Уже привязаны: ${escapeHtml(staffChats.join(', '))}</p>`
+                : `<p class="card__meta">Пока не привязан ни один отель — заявки идут владельцу.</p>`) +
+              `</div>`
+            : '') +
           `<h2 style="font-size:15px;color:var(--text-2);margin:24px 0 12px">Сменить пароль</h2>` +
           `<form method="post" action="/console/profile" data-once>` +
           `<input type="hidden" name="_csrf" value="${escapeHtml(csrf)}">` +
@@ -1367,6 +1451,7 @@ export async function registerConsoleRoutes(
           `</form></div>`,
         { staff, csrf, active: '/console', waiting: waitingFor(store, staff).length },
       );
+    };
 
     scope.get('/console/profile', async (req, reply) =>
       sendHtml(reply, profilePage(req.staff!, csrfTokenFor(req.sessionToken!))),

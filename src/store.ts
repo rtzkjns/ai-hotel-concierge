@@ -142,6 +142,32 @@ export class Store {
       .run(property, chatId, new Date().toISOString());
   }
 
+  /**
+   * Код привязки Telegram-групп: короткий секрет, который владелец видит в панели и
+   * диктует менеджеру. Без него команда «/привязать» позволяла кому угодно
+   * перенаправить заявки отеля себе.
+   */
+  bindCode(): string {
+    const row = this.db
+      .prepare("SELECT body FROM kb_entries WHERE kind='bindcode' LIMIT 1")
+      .get() as { body: string } | undefined;
+    if (row?.body) return row.body;
+    const code = Math.random().toString(36).slice(2, 8).toUpperCase();
+    this.db
+      .prepare(
+        `INSERT INTO kb_entries (property, kind, title, body, url, active, updated_at)
+         VALUES ('', 'bindcode', 'Код привязки чатов', ?, NULL, 1, ?)`,
+      )
+      .run(code, new Date().toISOString());
+    return code;
+  }
+
+  /** Смена кода — если он куда-то утёк. */
+  resetBindCode(): string {
+    this.db.prepare("DELETE FROM kb_entries WHERE kind='bindcode'").run();
+    return this.bindCode();
+  }
+
   staffChatFor(property: string): string | undefined {
     const r = this.db
       .prepare("SELECT body FROM kb_entries WHERE kind='staffchat' AND property=? AND active=1")

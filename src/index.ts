@@ -112,6 +112,8 @@ async function main(): Promise<void> {
     Object.entries(config.whatsapp.phoneNumberIds).map(([property, id]) => [id, property]),
   );
 
+  const staffNotifier = createStaffNotifier(store);
+
   const engine = new Engine({
     store,
     client: anthropic,
@@ -121,7 +123,7 @@ async function main(): Promise<void> {
     paymentGateway: new StubPaymentGateway(),
     crm: new StubAmoCrm((type, data) => store.recordEvent(type, { payload: data })),
     transcriber: createTranscriber(config.openaiApiKey),
-    staffNotifier: createStaffNotifier(store),
+    staffNotifier,
     rateLimiter: new RateLimiter(),
     phoneNumberIdToProperty,
     styleGuide: loadStyleGuide(),
@@ -266,6 +268,15 @@ async function main(): Promise<void> {
       botToken: config.telegram.botToken,
       engine,
       store,
+      bindCode: () => store.bindCode(),
+      onBindChanged: (property, chatId, previous) => {
+        // Молчаливая перепривязка означала бы, что отель перестал получать заявки
+        // и не узнал об этом. Сообщаем владельцу и прежней группе.
+        void staffNotifier.notify(
+          `Чат заявок отеля ${property} изменён. Новый чат: ${chatId}` +
+            (previous ? `, прежний: ${previous}` : ''),
+        );
+      },
     });
     telegram = tg;
     tg.launch();
