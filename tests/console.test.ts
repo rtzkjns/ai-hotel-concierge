@@ -153,24 +153,52 @@ describe('console roles', () => {
     });
     const { cookie } = await login(app, 'admin', 'admin-pass');
 
-    const bookings = await app.inject({ method: 'GET', url: '/console/bookings', headers: { cookie } });
+    const bookings = await app.inject({
+      method: 'GET',
+      url: '/console/requests?tab=bookings',
+      headers: { cookie },
+    });
     expect(bookings.statusCode).toBe(200);
     expect(bookings.body).toContain('BK-100');
     expect(bookings.body).toContain('Ivan Petrov');
 
-    const leads = await app.inject({ method: 'GET', url: '/console/leads', headers: { cookie } });
+    const leads = await app.inject({ method: 'GET', url: '/console/requests?tab=all', headers: { cookie } });
     expect(leads.statusCode).toBe(200);
     await app.close();
   });
 
-  it('mice_manager gets 403 on bookings and leads but sees /console/mice and metrics', async () => {
-    const { app } = await makeApp();
+  it('mice_manager sees no bookings or leads data, but can work requests and the inbox', async () => {
+    const { app, store } = await makeApp();
+    const bookingConvo = store.getOrCreateConversation('webwidget', 'guest-booked');
+    store.saveBooking({
+      conversationId: bookingConvo.id,
+      exelyNumber: 'BK-777',
+      status: 'confirmed',
+      property: 'almaty',
+      checkIn: '2026-09-01',
+      checkOut: '2026-09-03',
+      guests: 2,
+      roomType: 'Standard',
+      guestName: 'Ivan Petrov',
+      guestPhone: '+77015556677',
+      createdAt: new Date().toISOString(),
+    });
     const { cookie } = await login(app, 'aigul', 'mice-pass');
 
-    expect((await app.inject({ method: 'GET', url: '/console/bookings', headers: { cookie } })).statusCode).toBe(403);
-    expect((await app.inject({ method: 'GET', url: '/console/leads', headers: { cookie } })).statusCode).toBe(403);
+    // Заявки открываются всем — но чужих данных на экране нет.
+    const requests = await app.inject({
+      method: 'GET',
+      url: '/console/requests?tab=bookings',
+      headers: { cookie },
+    });
+    expect(requests.statusCode).toBe(200);
+    expect(requests.body).not.toContain('BK-777');
+    expect(requests.body).not.toContain('Ivan Petrov');
+
+    // Знания, итоги и удаление ПД остаются админскими.
+    expect((await app.inject({ method: 'GET', url: '/console/kb', headers: { cookie } })).statusCode).toBe(403);
+    expect((await app.inject({ method: 'GET', url: '/console/summary', headers: { cookie } })).statusCode).toBe(403);
     expect((await app.inject({ method: 'GET', url: '/console/data-deletion', headers: { cookie } })).statusCode).toBe(403);
-    expect((await app.inject({ method: 'GET', url: '/console/mice', headers: { cookie } })).statusCode).toBe(200);
     expect((await app.inject({ method: 'GET', url: '/console', headers: { cookie } })).statusCode).toBe(200);
     await app.close();
   });
@@ -184,10 +212,12 @@ describe('console roles', () => {
     store.setStatus(handed.id, 'handed_off');
 
     const { cookie } = await login(app, 'aigul', 'mice-pass');
-    const list = await app.inject({ method: 'GET', url: '/console/chats', headers: { cookie } });
+    const list = await app.inject({ method: 'GET', url: '/console', headers: { cookie } });
     expect(list.statusCode).toBe(200);
-    expect(list.body).toContain('guest-handed');
-    expect(list.body).not.toContain('guest-active');
+    // Гость показан человеческим именем, а не машинным id диалога.
+    expect(list.body).toContain('Гость с сайта');
+    expect(list.body).toContain(`/console/chats/${encodeURIComponent(handed.id)}`);
+    expect(list.body).not.toContain(`/console/chats/${encodeURIComponent(active.id)}`);
     expect(list.body).not.toContain('+77776665544'); // masked
 
     // Detail of an active chat is off-limits for mice_manager.
@@ -200,6 +230,27 @@ describe('console roles', () => {
     await app.close();
   });
 
+  it('shows the right handoff state: bot answering, unclaimed, or led by you', async () => {
+    const { app, store } = await makeApp();
+    const bot = store.getOrCreateConversation('webwidget', 'st-bot');
+    const free = store.getOrCreateConversation('webwidget', 'st-free');
+    store.setStatus(free.id, 'handed_off');
+    const mine = store.getOrCreateConversation('webwidget', 'st-mine');
+    store.setStatus(mine.id, 'handed_off');
+    store.setTakenBy(mine.id, 'admin');
+    const { cookie } = await login(app, 'admin', 'admin-pass');
+    const open = async (id: string) =>
+      (await app.inject({ method: 'GET', url: `/console/chats/${encodeURIComponent(id)}`, headers: { cookie } })).body;
+
+    expect(await open(bot.id)).toContain('Сейчас отвечает бот');
+    // Переданный, но никем не взятый диалог не должен утверждать, что его уже ведут.
+    const freeBody = await open(free.id);
+    expect(freeBody).toContain('Гость ждёт человека');
+    expect(freeBody).not.toContain('Вы ведёте диалог');
+    expect(await open(mine.id)).toContain('Вы ведёте диалог');
+    await app.close();
+  });
+
   it('mice_manager cannot open a handed_off chat taken by ANOTHER manager', async () => {
     const { app, store } = await makeApp();
     const taken = store.getOrCreateConversation('webwidget', 'guest-taken');
@@ -209,9 +260,9 @@ describe('console roles', () => {
     store.setStatus(unclaimed.id, 'handed_off');
 
     const { cookie } = await login(app, 'aigul', 'mice-pass');
-    const list = await app.inject({ method: 'GET', url: '/console/chats', headers: { cookie } });
-    expect(list.body).toContain('guest-unclaimed');
-    expect(list.body).not.toContain('guest-taken');
+    const list = await app.inject({ method: 'GET', url: '/console', headers: { cookie } });
+    expect(list.body).toContain(`/console/chats/${encodeURIComponent(unclaimed.id)}`);
+    expect(list.body).not.toContain(`/console/chats/${encodeURIComponent(taken.id)}`);
 
     const detail = await app.inject({
       method: 'GET',
@@ -302,7 +353,10 @@ describe('chat takeover and staff replies', () => {
       csrfTokenFor(token!),
       { text: 'ау' },
     );
-    expect(res.body).toContain('guest offline');
+    // Ошибка возвращает менеджера в тот же диалог: набранный текст не теряется.
+    expect(res.statusCode).toBe(302);
+    expect(res.headers.location).toContain('err=');
+    expect(decodeURIComponent(res.headers.location as string)).toContain('guest offline');
     expect(store.getConversation(convo.id)!.history).toEqual([]);
     await app.close();
   });
@@ -412,14 +466,16 @@ describe('data deletion (admin)', () => {
 // --- Dashboard & XSS -------------------------------------------------------------------------
 
 describe('dashboard and output escaping', () => {
-  it('GET /console renders metric tiles with an SLA indicator', async () => {
+  it('GET /console/summary states the speed in words and hides the milliseconds', async () => {
     const { app, store } = await makeApp();
     store.recordEvent('reply_timing', { payload: { ms: 1200 } });
     const { cookie } = await login(app, 'admin', 'admin-pass');
-    const res = await app.inject({ method: 'GET', url: '/console', headers: { cookie } });
+    const res = await app.inject({ method: 'GET', url: '/console/summary', headers: { cookie } });
     expect(res.statusCode).toBe(200);
-    expect(res.body).toContain('SLA');
+    expect(res.body).toContain('Скорость ответа в норме');
+    // Телеметрия остаётся, но убрана под «Технику» — владелец видит смысл, не миллисекунды.
     expect(res.body).toContain('p95');
+    expect(res.body).toContain('<details');
     await app.close();
   });
 

@@ -38,9 +38,11 @@ export class Store {
    * Смысл: отель может сам добавить акцию, новую услугу или сайт, и бот учтёт это
    * со следующего сообщения гостя — без разработчика и без редеплоя.
    */
-  listKbEntries(property?: string, kind?: string): KbEntry[] {
+  listKbEntries(property?: string, kind?: string, includeArchived = false): KbEntry[] {
     let sql = 'SELECT * FROM kb_entries WHERE 1=1';
     const args: unknown[] = [];
+    // Архивные записи не участвуют ни в ответах бота, ни в списке — только на своей странице.
+    sql += includeArchived ? ' AND archived = 1' : ' AND archived = 0';
     if (property) { sql += " AND (property = ? OR property = '')"; args.push(property); }
     if (kind) { sql += ' AND kind = ?'; args.push(kind); }
     sql += ' ORDER BY kind, id DESC';
@@ -55,6 +57,20 @@ export class Store {
       )
       .run(e.property, e.kind, e.title, e.body, e.url ?? null, e.active ? 1 : 0, new Date().toISOString());
     return Number(r.lastInsertRowid);
+  }
+
+  getKbEntry(id: number): KbEntry | null {
+    return (this.db.prepare('SELECT * FROM kb_entries WHERE id = ?').get(id) as KbEntry) ?? null;
+  }
+
+  /**
+   * «В архив» вместо DELETE: правка отеля обратима, а удаление навсегда живёт
+   * отдельной страницей. Так владелец не боится трогать базу знаний.
+   */
+  archiveKbEntry(id: number, archived = true): void {
+    this.db
+      .prepare('UPDATE kb_entries SET archived = ?, active = CASE WHEN ? THEN 0 ELSE active END, updated_at = ? WHERE id = ?')
+      .run(archived ? 1 : 0, archived ? 1 : 0, new Date().toISOString(), id);
   }
 
   updateKbEntry(id: number, patch: Partial<Pick<KbEntry, 'title' | 'body' | 'url' | 'active'>>): void {
@@ -148,6 +164,7 @@ export class Store {
         body       TEXT NOT NULL DEFAULT '',
         url        TEXT,
         active     INTEGER NOT NULL DEFAULT 1,
+        archived   INTEGER NOT NULL DEFAULT 0,
         updated_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS hotel_content (
@@ -237,6 +254,13 @@ export class Store {
     ) !== undefined;
     if (hasConversations && !hasColumn('conversations', 'taken_by')) {
       this.db.exec('ALTER TABLE conversations ADD COLUMN taken_by TEXT');
+    }
+    // «В архив» появилось позже самой базы знаний — доливаем колонку на живой базе.
+    const hasKb = (
+      this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='kb_entries'").get()
+    ) !== undefined;
+    if (hasKb && !hasColumn('kb_entries', 'archived')) {
+      this.db.exec('ALTER TABLE kb_entries ADD COLUMN archived INTEGER NOT NULL DEFAULT 0');
     }
   }
 

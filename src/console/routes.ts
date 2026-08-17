@@ -20,6 +20,26 @@ import type {
   StoredEvent,
 } from '../types';
 import {
+  ago,
+  badge,
+  banner,
+  btn,
+  channelLabel,
+  CSS,
+  CSS_VERSION,
+  emptyState,
+  escapeHtml,
+  escalationReason,
+  field,
+  humanId,
+  minutesSince,
+  pills,
+  PROPERTY_KEYS,
+  propertyLabel,
+  shell,
+  waitLabel,
+} from './ui';
+import {
   createSessionFor,
   csrfTokenFor,
   FORBIDDEN_HTML,
@@ -43,7 +63,9 @@ const SNIPPET_CHARS = 80;
 /** The subset of Store the console needs (structural, for easy faking). */
 export interface ConsoleStore extends SessionStore {
   /** Админ-панель базы знаний: факты, правила общения, источники. */
-  listKbEntries?(property?: string, kind?: string): KbEntry[];
+  listKbEntries?(property?: string, kind?: string, includeArchived?: boolean): KbEntry[];
+  /** «В архив» вместо удаления — правка отеля обратима. */
+  archiveKbEntry?(id: number, archived?: boolean): void;
   addKbEntry?(e: Omit<KbEntry, 'id' | 'updatedAt'>): number;
   updateKbEntry?(
     id: number,
@@ -101,117 +123,33 @@ export interface ConsoleDeps {
 }
 
 // --- HTML helpers ------------------------------------------------------------------
+// Всё оформление живёт в ./ui — здесь остаются только экраны и логика маршрутов.
 
-export function escapeHtml(value: unknown): string {
-  return String(value ?? '')
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;');
-}
-
-const CSS = `
-  * { box-sizing: border-box; }
-  body { font-family: system-ui, -apple-system, sans-serif; margin: 0; color: #1c2430; background: #f5f6f8; }
-  header { background: #1c2430; color: #fff; padding: 10px 16px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
-  header .brand { font-weight: 700; }
-  header nav a { color: #cfd8e3; text-decoration: none; margin-right: 12px; font-size: 14px; }
-  header nav a:hover { color: #fff; }
-  header .who { margin-left: auto; font-size: 13px; color: #9fb0c3; display: flex; align-items: center; gap: 8px; }
-  main { padding: 16px; max-width: 1100px; margin: 0 auto; }
-  h1 { font-size: 20px; margin: 8px 0 16px; }
-  table { border-collapse: collapse; width: 100%; background: #fff; font-size: 14px; }
-  th, td { border: 1px solid #dde3ea; padding: 6px 10px; text-align: left; vertical-align: top; }
-  th { background: #eef1f5; font-weight: 600; }
-  .tiles { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }
-  .tile { background: #fff; border: 1px solid #dde3ea; border-radius: 6px; padding: 12px 16px; min-width: 140px; }
-  .tile .num { font-size: 24px; font-weight: 700; }
-  .tile .cap { font-size: 12px; color: #5b6b7d; }
-  .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; }
-  .badge.active { background: #d9f2e0; color: #16713a; }
-  .badge.handed_off { background: #fde3c9; color: #a05a10; }
-  .ok { color: #16713a; font-weight: 700; }
-  .bad { color: #b3261e; font-weight: 700; }
-  .msg { margin: 6px 0; padding: 8px 12px; border-radius: 8px; max-width: 75%; white-space: pre-wrap; }
-  .msg.user { background: #fff; border: 1px solid #dde3ea; }
-  .msg.assistant { background: #dceafe; margin-left: auto; }
-  form.inline { display: inline; }
-  button, input[type=submit] { background: #1c2430; color: #fff; border: 0; border-radius: 4px; padding: 6px 14px; cursor: pointer; font-size: 14px; }
-  button.secondary { background: #5b6b7d; }
-  input[type=text], input[type=password], select, textarea { padding: 6px 8px; border: 1px solid #b9c3cf; border-radius: 4px; font-size: 14px; }
-  .error { background: #fdecea; border: 1px solid #f5c6c2; color: #b3261e; padding: 8px 12px; border-radius: 4px; margin-bottom: 12px; }
-`;
-
-const REFRESH_SCRIPT = `<script>
-setInterval(async function () {
-  try {
-    var r = await fetch(location.href, { headers: { 'x-refresh': '1' } });
-    if (!r.ok) return;
-    var doc = new DOMParser().parseFromString(await r.text(), 'text/html');
-    var next = doc.getElementById('live');
-    var cur = document.getElementById('live');
-    if (next && cur) cur.innerHTML = next.innerHTML;
-  } catch (e) {}
-}, 5000);
-</script>`;
-
-interface PageOpts {
-  staff?: AuthedStaff;
-  csrf?: string;
-  /** Re-fetch the page every 5s and swap the #live region (keeps forms intact). */
-  refresh?: boolean;
-}
-
-function nav(staff: AuthedStaff): string {
-  const links: Array<[string, string]> = [
-    ['/console', 'Метрики'],
-    ['/console/chats', 'Чаты'],
-  ];
-  if (staff.role === 'admin') {
-    links.push(
-      ['/console/leads', 'Лиды'],
-      ['/console/bookings', 'Брони'],
-      ['/console/content', 'Акции'],
-      ['/console/kb', 'База знаний'],
-    );
-  }
-  links.push(['/console/mice', 'MICE']);
-  if (staff.role === 'admin') links.push(['/console/data-deletion', 'Удаление ПД']);
-  return links.map(([href, label]) => `<a href="${href}">${label}</a>`).join('');
-}
-
-function page(title: string, body: string, opts: PageOpts = {}): string {
-  const { staff, csrf, refresh } = opts;
-  const header = staff
-    ? `<header><span class="brand">Kazzhol AI · консоль</span><nav>${nav(staff)}</nav>` +
-      `<span class="who">${escapeHtml(staff.login)} (${escapeHtml(staff.role)})` +
-      `<form class="inline" method="post" action="/console/logout">` +
-      `<input type="hidden" name="_csrf" value="${escapeHtml(csrf ?? '')}">` +
-      `<button class="secondary" type="submit">Выйти</button></form></span></header>`
-    : '';
-  return (
-    `<!doctype html><html lang="ru"><head><meta charset="utf-8">` +
-    `<meta name="viewport" content="width=device-width, initial-scale=1">` +
-    `<title>${escapeHtml(title)}</title><style>${CSS}</style></head><body>` +
-    header +
-    `<main>${body}</main>` +
-    (refresh ? REFRESH_SCRIPT : '') +
-    `</body></html>`
-  );
-}
+export { escapeHtml };
 
 function sendHtml(reply: FastifyReply, html: string, code = 200): FastifyReply {
   return reply.code(code).type('text/html; charset=utf-8').send(html);
 }
 
-function statusBadge(status: string): string {
-  const label = status === 'handed_off' ? 'у менеджера' : 'бот';
-  return `<span class="badge ${escapeHtml(status)}">${label}</span>`;
-}
-
 function chatUrl(id: string): string {
   return `/console/chats/${encodeURIComponent(id)}`;
+}
+
+/** Диалоги, которые бот передал человеку и которые ещё никто не взял. */
+function waitingFor(store: ConsoleStore, staff: AuthedStaff): Conversation[] {
+  return store
+    .listConversations()
+    .filter((c) => c.status === 'handed_off' && !c.takenBy)
+    .filter((c) => staff.role === 'admin' || true);
+}
+
+/** Момент последнего сообщения гостя — от него считается, сколько человек ждёт. */
+function lastGuestAt(convo: Conversation): string | undefined {
+  for (let i = convo.history.length - 1; i >= 0; i -= 1) {
+    const m = convo.history[i];
+    if (m.role === 'user') return (m as { createdAt?: string }).createdAt ?? convo.updatedAt;
+  }
+  return convo.updatedAt;
 }
 
 // --- Route registration ----------------------------------------------------------------
@@ -241,15 +179,27 @@ export async function registerConsoleRoutes(
 
     // --- Login / logout ------------------------------------------------------------
 
+    // CSS отдельным маршрутом с версией в имени: страница-опрос больше не тащит
+    // килобайты стилей на каждом обновлении списка.
+    scope.get(`/console/app.${CSS_VERSION}.css`, async (_req, reply) =>
+      reply
+        .type('text/css; charset=utf-8')
+        .header('Cache-Control', 'public, max-age=31536000, immutable')
+        .send(CSS),
+    );
+
     const loginPage = (error?: string): string =>
-      page(
-        'Вход — консоль Kazzhol AI',
-        `<h1>Консоль персонала</h1>` +
-          (error ? `<div class="error">${escapeHtml(error)}</div>` : '') +
+      shell(
+        'Вход',
+        `<div class="login"><div class="logo">Kazzhol</div>` +
+          `<p class="sub">Консоль персонала</p>` +
+          (error ? banner('err', escapeHtml(error)) : '') +
           `<form method="post" action="/console/login">` +
-          `<p><input type="text" name="login" placeholder="Логин" autocomplete="username" required></p>` +
-          `<p><input type="password" name="password" placeholder="Пароль" autocomplete="current-password" required></p>` +
-          `<p><button type="submit">Войти</button></p></form>`,
+          field('login', 'Логин', { attrs: 'autocomplete="username"', required: true }) +
+          field('password', 'Пароль', { type: 'password', attrs: 'autocomplete="current-password"', required: true }) +
+          btn('Войти', { variant: 'primary' }) +
+          `</form></div>`,
+        { bare: true },
       );
 
     scope.get('/console/login', async (_req, reply) => sendHtml(reply, loginPage()));
@@ -283,70 +233,138 @@ export async function registerConsoleRoutes(
       return reply.redirect('/console/login');
     });
 
-    // --- Dashboard -------------------------------------------------------------------
-
-    scope.get('/console', async (req, reply) => {
-      const m = deps.metricsSummary(store);
-      const slaOk = m.p95ReplyMs <= SLA_TARGET_MS;
-      const tile = (num: string | number, cap: string): string =>
-        `<div class="tile"><div class="num">${escapeHtml(num)}</div><div class="cap">${escapeHtml(cap)}</div></div>`;
-      const langs =
-        Object.entries(m.byLanguage)
-          .map(([lang, n]) => `${escapeHtml(lang)}: ${escapeHtml(n)}`)
-          .join(', ') || '—';
-      const body =
-        `<h1>Метрики за сегодня</h1><div id="live"><div class="tiles">` +
-        tile(m.dialogsToday, 'диалогов') +
-        tile(m.messagesToday, 'сообщений') +
-        tile(m.bookingsToday, 'броней') +
-        tile(m.escalationsToday, 'эскалаций') +
-        tile(`${m.upsellOffered} / ${m.upsellAccepted}`, 'upsell: предложено / принято') +
-        tile(`${m.p50ReplyMs} ms`, 'p50 ответа') +
-        `<div class="tile"><div class="num ${slaOk ? 'ok' : 'bad'}">${escapeHtml(m.p95ReplyMs)} ms</div>` +
-        `<div class="cap">p95 ответа — SLA ≤ ${SLA_TARGET_MS} ms: ${slaOk ? 'в норме' : 'нарушен'}</div></div>` +
-        `</div><p class="cap">Языки (входящие): ${langs}</p></div>`;
-      return sendHtml(
-        reply,
-        page('Метрики — консоль', body, { staff: req.staff, csrf: csrfTokenFor(req.sessionToken!), refresh: true }),
-      );
-    });
-
-    // --- Chats -----------------------------------------------------------------------
+    // --- Входящие (главный экран) ------------------------------------------------
 
     const maskFor = (staff: AuthedStaff, text: string): string =>
       staff.role === 'admin' ? text : maskPII(text);
 
-    scope.get('/console/chats', async (req, reply) => {
+    /** Причина, по которой диалог попал на стол человеку — словами, а не кодом. */
+    const reasonFor = (convoId: string): string => {
+      const since = new Date(Date.now() - 7 * 24 * 3600_000).toISOString();
+      const ev = store
+        .listEvents(since)
+        .filter((e) => e.type === 'escalation' && e.conversationId === convoId)
+        .pop();
+      const payload = (ev?.payload ?? {}) as { type?: string };
+      return escalationReason(payload.type);
+    };
+
+    /**
+     * Карточка очереди. Четыре носителя смысла и ни одним больше: кто, сколько ждёт,
+     * о чём речь, почему это у вас. Машинный id гостю на стол не кладём.
+     */
+    const queueCard = (
+      c: Conversation,
+      staff: AuthedStaff,
+      opts: { waiting?: boolean; mine?: boolean; overdue?: boolean; showProperty: boolean },
+    ): string => {
+      const last = [...c.history].reverse().find((m) => m.role === 'user') ?? c.history[c.history.length - 1];
+      const preview = last ? maskFor(staff, last.content) : '';
+      const cls =
+        'card' +
+        (opts.waiting ? ' card--wait' : '') +
+        (opts.mine ? ' card--mine' : '') +
+        (opts.overdue ? ' card--overdue' : '');
+      const meta = [
+        opts.mine ? 'вы ведёте диалог' : reasonFor(c.id),
+        channelLabel(c.channel),
+        opts.showProperty && c.property ? propertyLabel(c.property) : '',
+      ]
+        .filter(Boolean)
+        .join(' · ');
+      return (
+        `<a class="${cls}" href="${chatUrl(c.id)}">` +
+        `<div class="card__top"><span class="dot"></span>` +
+        `<span class="card__who">${escapeHtml(humanId(c))}</span>` +
+        `<span class="card__wait">${escapeHtml(waitLabel(lastGuestAt(c)))}</span></div>` +
+        `<p class="card__preview">${escapeHtml(preview)}</p>` +
+        `<p class="card__meta">${escapeHtml(meta)}</p></a>`
+      );
+    };
+
+    scope.get('/console', async (req, reply) => {
       const staff = req.staff!;
-      let convos = store.listConversations();
-      // Non-admins see only handed-off chats that are unclaimed or their own.
-      if (staff.role !== 'admin') {
-        convos = convos.filter(
-          (c) => c.status === 'handed_off' && (c.takenBy === null || c.takenBy === staff.login),
+      const all = store.listConversations();
+      const showProperty = new Set(all.map((c) => c.property)).size > 1;
+
+      const waiting = all
+        .filter((c) => c.status === 'handed_off' && !c.takenBy)
+        .sort((x, y) => minutesSince(lastGuestAt(y)) - minutesSince(lastGuestAt(x)));
+      const mine = all.filter((c) => c.status === 'handed_off' && c.takenBy === staff.login);
+      const botHandled = all.filter((c) => c.status !== 'handed_off');
+
+      // Красным красим только верхнюю карточку: если покрасить все, красный
+      // за одну ночную смену перестанет что-либо значить.
+      const bands: string[] = [];
+      if (waiting.length) {
+        bands.push(
+          `<section class="section"><div class="section__head"><h2>Ждут вас · ${waiting.length}</h2></div>` +
+            waiting
+              .map((c, i) =>
+                queueCard(c, staff, {
+                  waiting: true,
+                  overdue: i === 0 && minutesSince(lastGuestAt(c)) >= 20,
+                  showProperty,
+                }),
+              )
+              .join('') +
+            `</section>`,
         );
       }
-      const rows = convos
-        .map((c) => {
-          const last = c.history[c.history.length - 1];
-          const snippet = last ? maskFor(staff, last.content).slice(0, SNIPPET_CHARS) : '';
-          return (
-            `<tr><td><a href="${chatUrl(c.id)}">${escapeHtml(c.id)}</a></td>` +
-            `<td>${escapeHtml(c.channel)}</td><td>${escapeHtml(c.property || '—')}</td>` +
-            `<td>${escapeHtml(c.language ?? '—')}</td><td>${statusBadge(c.status)}</td>` +
-            `<td>${escapeHtml(c.updatedAt)}</td><td>${escapeHtml(snippet)}</td></tr>`
-          );
-        })
-        .join('');
-      const body =
-        `<h1>Диалоги</h1><div id="live"><table><tr><th>Диалог</th><th>Канал</th><th>Отель</th>` +
-        `<th>Язык</th><th>Статус</th><th>Обновлён</th><th>Последнее сообщение</th></tr>` +
-        (rows || '<tr><td colspan="7">пока пусто</td></tr>') +
-        `</table></div>`;
+      if (mine.length) {
+        bands.push(
+          `<section class="section"><div class="section__head"><h2>Вы отвечаете · ${mine.length}</h2></div>` +
+            mine.map((c) => queueCard(c, staff, { mine: true, showProperty })).join('') +
+            `</section>`,
+        );
+      }
+      if (!waiting.length && !mine.length) {
+        bands.push(
+          emptyState(
+            'Никто не ждёт ответа',
+            'Бот отвечает сам. Как только гость попросит человека — диалог появится здесь первым, наверху.',
+            staff.role === 'admin'
+              ? btn('Посмотреть, что бот знает об отеле', { variant: 'secondary', href: '/console/kb' })
+              : undefined,
+          ),
+        );
+      }
+      if (botHandled.length && staff.role === 'admin') {
+        const rows = botHandled
+          .slice(0, 60)
+          .map((c) => {
+            const last = c.history[c.history.length - 1];
+            const snippet = last ? maskFor(staff, last.content).slice(0, SNIPPET_CHARS) : '';
+            return (
+              `<a class="row" href="${chatUrl(c.id)}">` +
+              `<span class="dot" style="color:var(--ok)"></span>` +
+              `<span class="name">${escapeHtml(humanId(c))}</span>` +
+              `<span class="grow">${escapeHtml(snippet)}</span>` +
+              `<time>${escapeHtml(ago(c.updatedAt))}</time></a>`
+            );
+          })
+          .join('');
+        bands.push(
+          `<details class="quiet"><summary>Бот справляется · ${botHandled.length}</summary>${rows}</details>`,
+        );
+      }
+
+      const title = waiting.length ? `(${waiting.length}) Входящие` : 'Входящие';
       return sendHtml(
         reply,
-        page('Чаты — консоль', body, { staff, csrf: csrfTokenFor(req.sessionToken!), refresh: true }),
+        shell(title, `<div id="live">${bands.join('')}</div>`, {
+          heading: 'Входящие',
+          staff,
+          csrf: csrfTokenFor(req.sessionToken!),
+          active: '/console',
+          waiting: waiting.length,
+          refresh: true,
+        }),
       );
     });
+
+    // Старые адреса продолжают работать — закладки персонала не ломаем.
+    scope.get('/console/chats', async (_req, reply) => reply.redirect('/console'));
 
     /** Loads the conversation and enforces the mice_manager handed_off-only rule. */
     const chatAccess = async (
@@ -356,7 +374,15 @@ export async function registerConsoleRoutes(
       const { id } = req.params as { id: string };
       const convo = store.getConversation(id);
       if (!convo) {
-        await sendHtml(reply, page('Не найдено', '<h1>Диалог не найден</h1>', { staff: req.staff, csrf: csrfTokenFor(req.sessionToken!) }), 404);
+        await sendHtml(
+          reply,
+          shell('Диалог не найден', emptyState('Диалог не найден', 'Возможно, его удалили по запросу гостя.', btn('К входящим', { variant: 'secondary', href: '/console' })), {
+            staff: req.staff,
+            csrf: csrfTokenFor(req.sessionToken!),
+            active: '/console',
+          }),
+          404,
+        );
         return null;
       }
       const notOwn =
@@ -374,32 +400,90 @@ export async function registerConsoleRoutes(
       if (!convo) return;
       const staff = req.staff!;
       const csrf = csrfTokenFor(req.sessionToken!);
-      const transcript = convo.history
-        .map(
-          (m) =>
-            `<div class="msg ${m.role === 'user' ? 'user' : 'assistant'}">${escapeHtml(
-              maskFor(staff, m.content),
-            )}</div>`,
-        )
-        .join('');
+      const q = req.query as { err?: string };
       const csrfField = `<input type="hidden" name="_csrf" value="${escapeHtml(csrf)}">`;
-      const actions =
-        convo.status === 'active'
-          ? `<form class="inline" method="post" action="${chatUrl(convo.id)}/takeover">${csrfField}` +
-            `<button type="submit">Взять чат (бот замолчит)</button></form>`
-          : `<form class="inline" method="post" action="${chatUrl(convo.id)}/release">${csrfField}` +
-            `<button type="submit">Вернуть боту</button></form>`;
+
+      // Три типа пузыря вместо двух: гость, бот и вы — раньше свой ответ выглядел
+      // ровно как ответ бота, и в истории было не разобрать, кто что сказал.
+      let lastDay = '';
+      const transcript = convo.history
+        .map((m) => {
+          const created = (m as { createdAt?: string }).createdAt;
+          const day = created ? new Date(created).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' }) : '';
+          const sep = day && day !== lastDay ? ((lastDay = day), `<div class="daysep">${escapeHtml(day)}</div>`) : '';
+          const time = created
+            ? new Date(created).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
+            : '';
+          const staffMsg = m.role === 'assistant' && m.content.startsWith('[менеджер] ');
+          const text = maskFor(staff, staffMsg ? m.content.slice('[менеджер] '.length) : m.content);
+          const kind = m.role === 'user' ? 'guest' : staffMsg ? 'staff' : 'bot';
+          const label = kind === 'guest' ? '' : `${staffMsg ? escapeHtml(convo.takenBy ?? staff.login) : 'бот'}${time ? ` · ${time}` : ''}`;
+          const meta = label ? `<p class="msg__meta msg__meta--right">${label}</p>` : '';
+          return `${sep}<div class="msg msg--${kind}">${escapeHtml(text)}</div>${meta}`;
+        })
+        .join('');
+
+      // Три состояния, а не два: бот ведёт / передан, но никем не взят / ведёте вы.
+      // Раньше любой переданный диалог утверждал «Вы ведёте диалог», даже если
+      // его никто не брал — менеджер думал, что гостя уже кто-то ведёт.
+      const mine = convo.status === 'handed_off' && convo.takenBy === staff.login;
+      const unclaimed = convo.status === 'handed_off' && !convo.takenBy;
+      const handoff = mine
+        ? `<div class="handoff"><p>${badge('brand', 'Вы ведёте диалог')}` +
+          `<span class="sub">Бот молчит и не вмешивается в переписку.</span></p>` +
+          `<form method="post" action="${chatUrl(convo.id)}/release">${csrfField}` +
+          btn('Вернуть боту', { variant: 'ghost' }) +
+          `</form></div>`
+        : unclaimed
+          ? `<div class="handoff"><p>${badge('wait', 'Гость ждёт человека')}` +
+            `<span class="sub">Диалог никто не взял. Возьмите его, чтобы ответить.</span></p>` +
+            `<form method="post" action="${chatUrl(convo.id)}/takeover">${csrfField}` +
+            btn('Взять диалог', { variant: 'primary' }) +
+            `</form></div>`
+          : convo.takenBy
+            ? `<div class="handoff"><p>Диалог ведёт ${escapeHtml(convo.takenBy)}.` +
+              `<span class="sub">Вмешиваться не нужно — гость уже с человеком.</span></p></div>`
+            : `<div class="handoff"><p>Сейчас отвечает бот.` +
+              `<span class="sub">Бот замолчит, пока вы не вернёте его обратно.</span></p>` +
+              `<form method="post" action="${chatUrl(convo.id)}/takeover">${csrfField}` +
+              btn('Ответить самой', { variant: 'primary' }) +
+              `</form></div>`;
+
+      const err = q.err
+        ? banner('err', `Не доставлено: ${escapeHtml(decodeURIComponent(q.err))}. Текст остался в поле — попробуйте отправить ещё раз.`)
+        : '';
+
+      const meta = [channelLabel(convo.channel), propertyLabel(convo.property), convo.language ?? '']
+        .filter(Boolean)
+        .join(' · ');
+
       const body =
-        `<h1>${escapeHtml(convo.id)} ${statusBadge(convo.status)}</h1>` +
-        `<p>Канал: ${escapeHtml(convo.channel)} · Отель: ${escapeHtml(convo.property || '—')} · ` +
-        `Язык: ${escapeHtml(convo.language ?? '—')}</p>` +
-        `<p>${actions}</p>` +
-        `<div id="live" style="display:flex;flex-direction:column">${transcript || '<p>История пуста.</p>'}</div>` +
-        `<form method="post" action="${chatUrl(convo.id)}/send" style="margin-top:12px;display:flex;gap:8px">` +
+        `<div class="chat">` +
+        `<div class="chat__head"><div class="who">${escapeHtml(humanId(convo))}</div>` +
+        `<div class="meta">${escapeHtml(meta)}</div></div>` +
+        handoff +
+        `<div id="live" class="chat__log">${transcript || '<p class="note">История пуста.</p>'}</div>` +
+        err +
+        `<form class="composer" method="post" action="${chatUrl(convo.id)}/send" data-once>` +
         csrfField +
-        `<input type="text" name="text" placeholder="Ответ гостю от имени отеля" style="flex:1" required>` +
-        `<button type="submit">Отправить</button></form>`;
-      return sendHtml(reply, page(`Чат ${convo.id}`, body, { staff, csrf, refresh: true }));
+        `<textarea name="text" rows="1" data-autogrow placeholder="Ответ гостю от имени отеля" required></textarea>` +
+        btn('Отправить', { variant: 'primary', attrs: 'data-busy="Отправляю…"' }) +
+        `</form>` +
+        `<details class="tech"><summary>Технические данные</summary>` +
+        `<p><code>${escapeHtml(convo.id)}</code></p></details>` +
+        `</div>`;
+
+      return sendHtml(
+        reply,
+        shell(humanId(convo), body, {
+          staff,
+          csrf,
+          active: '/console',
+          back: { href: '/console', label: 'Входящие' },
+          waiting: waitingFor(store, staff).length,
+          refresh: true,
+        }),
+      );
     });
 
     scope.post('/console/chats/:id/takeover', async (req, reply) => {
@@ -444,16 +528,10 @@ export async function registerConsoleRoutes(
         result = { ok: false, error: err instanceof Error ? err.message : 'send failed' };
       }
       if (!result.ok) {
+        // Ошибка возвращается НА экран диалога: отдельная страница-заглушка
+        // стирала набранный менеджером текст вместе с контекстом.
         const msg = maskPII(result.error ?? 'не удалось отправить');
-        return sendHtml(
-          reply,
-          page(
-            'Не доставлено',
-            `<h1>Сообщение не доставлено</h1><div class="error">${escapeHtml(msg)}</div>` +
-              `<p><a href="${chatUrl(convo.id)}">← назад к чату</a></p>`,
-            { staff: req.staff, csrf: csrfTokenFor(req.sessionToken!) },
-          ),
-        );
+        return reply.redirect(`${chatUrl(convo.id)}?err=${encodeURIComponent(msg)}`);
       }
       // Stored with a staff marker; the guest just sees the plain text.
       store.appendMessage(convo.id, { role: 'assistant', content: `[менеджер] ${text}` });
@@ -475,80 +553,299 @@ export async function registerConsoleRoutes(
     // Админ-панель базы знаний: владелец и менеджеры сами учат бота — без разработчика.
     // Три типа записей: факт (что знать), правило общения (как говорить), источник (откуда брать).
     // Всё читается движком на КАЖДОМ сообщении гостя, поэтому правка действует сразу.
+    // --- Знания: что бот знает и как говорит ------------------------------------
+    // Правка действует со следующего сообщения гостя: движок читает эти записи
+    // на каждом ходу, поэтому ни редеплоя, ни разработчика не требуется.
+
+    const KB_KINDS: Array<{ key: 'fact' | 'tone' | 'source'; label: string; one: string }> = [
+      { key: 'fact', label: 'Факты', one: 'факт' },
+      { key: 'tone', label: 'Как говорить', one: 'правило общения' },
+      { key: 'source', label: 'Источники', one: 'источник' },
+    ];
+
+    const kbKindOf = (v: unknown): 'fact' | 'tone' | 'source' =>
+      v === 'tone' ? 'tone' : v === 'source' ? 'source' : 'fact';
+
+    const kbHead = (kind: string, prop: string): string => {
+      const kindPills = pills([
+        ...KB_KINDS.map((k) => ({
+          href: `/console/kb?kind=${k.key}&property=${encodeURIComponent(prop)}`,
+          label: k.label,
+          active: k.key === kind,
+        })),
+        { href: '/console/content', label: 'Акции', active: false },
+      ]);
+      const propPills = pills([
+        { href: `/console/kb?kind=${kind}&property=`, label: 'Вся сеть', active: prop === '' },
+        ...PROPERTY_KEYS.map((k) => ({
+          href: `/console/kb?kind=${kind}&property=${k}`,
+          label: propertyLabel(k),
+          active: prop === k,
+        })),
+      ]);
+      return (
+        kindPills +
+        propPills +
+        `<p class="note">Записи из «Вся сеть» действуют во всех четырёх отелях. ` +
+        `Изменения бот применит со следующего сообщения гостя — перезапуск не нужен.</p>`
+      );
+    };
+
     scope.get('/console/kb', { preHandler: requireRole('admin') }, async (req, reply) => {
       const staff = req.staff!;
-      const csrf = csrfTokenFor(req.sessionToken!);
-      const csrfField = `<input type="hidden" name="_csrf" value="${escapeHtml(csrf)}">`;
-      const rows: KbEntry[] = store.listKbEntries?.() ?? [];
-      const KIND_LABEL: Record<string, string> = {
-        fact: 'Факт',
-        tone: 'Правило общения',
-        source: 'Источник',
-      };
-      const hotelOptions =
-        '<option value="">Вся сеть</option>' +
-        propertyList.map((h) => `<option value="${escapeHtml(h.key)}">${escapeHtml(h.name)}</option>`).join('');
+      const q = req.query as { kind?: string; property?: string; saved?: string };
+      const kind = kbKindOf(q.kind);
+      const prop = typeof q.property === 'string' ? q.property : '';
+      const one = KB_KINDS.find((k) => k.key === kind)!.one;
 
-      const group = (kind: string, hint: string): string => {
-        const list = rows.filter((r) => r.kind === kind);
-        const items = list.length
-          ? list
-              .map(
-                (r) =>
-                  `<tr><td>${escapeHtml(r.property || 'вся сеть')}</td>` +
-                  `<td><b>${escapeHtml(r.title || '—')}</b><br><span class="muted">${escapeHtml(r.body).slice(0, 400)}</span>` +
-                  (r.url ? `<br><a href="${escapeHtml(r.url)}" target="_blank" rel="noreferrer">${escapeHtml(r.url)}</a>` : '') +
-                  `</td><td>${r.active ? '🟢 включено' : '⚪️ выключено'}</td>` +
-                  `<td><form method="post" action="/console/kb/toggle" style="display:inline">${csrfField}` +
-                  `<input type="hidden" name="id" value="${escapeHtml(String(r.id))}"><button>${r.active ? 'Выкл' : 'Вкл'}</button></form> ` +
-                  `<form method="post" action="/console/kb/delete" style="display:inline" onsubmit="return confirm('Удалить запись?')">${csrfField}` +
-                  `<input type="hidden" name="id" value="${escapeHtml(String(r.id))}"><button>Удалить</button></form></td></tr>`,
+      const entries = (store.listKbEntries?.(prop || undefined, kind) ?? []).filter(
+        (e: KbEntry) => e.kind === kind,
+      );
+
+      const cards = entries
+        .map((e: KbEntry) => {
+          const on = Boolean(e.active);
+          const inherited = prop !== '' && !e.property;
+          const meta = [
+            propertyLabel(e.property),
+            inherited ? 'из общих' : '',
+            e.updatedAt
+              ? `изменено ${new Date(e.updatedAt).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })}`
+              : '',
+          ]
+            .filter(Boolean)
+            .join(' · ');
+          return (
+            `<a class="card${on ? '' : ' card--off'}" href="/console/kb/${e.id}">` +
+            `<div class="card__top"><span class="card__who">${escapeHtml(e.title || (e.url ?? 'Без заголовка'))}</span>` +
+            `<span style="margin-left:auto">${on ? badge('on', 'включено') : badge('off', 'выключено', true)}</span></div>` +
+            `<p class="card__body">${escapeHtml(e.url && kind === 'source' ? e.url : e.body)}</p>` +
+            `<p class="card__meta">${escapeHtml(meta)}</p></a>`
+          );
+        })
+        .join('');
+
+      const templates =
+        kind === 'fact'
+          ? `<div class="stack" style="margin-top:12px">` +
+            ['Поздний выезд', 'Завтрак', 'Парковка', 'Дети и доп. кровати', 'Животные', 'Трансфер']
+              .map((t) =>
+                btn(t, {
+                  variant: 'secondary',
+                  sm: true,
+                  href: `/console/kb/new?kind=fact&property=${encodeURIComponent(prop)}&title=${encodeURIComponent(t)}`,
+                }),
               )
-              .join('')
-          : `<tr><td colspan="4" class="muted">Пока пусто. ${escapeHtml(hint)}</td></tr>`;
-        return `<table><tr><th>Отель</th><th>Запись</th><th>Статус</th><th></th></tr>${items}</table>`;
-      };
+              .join('') +
+            `</div>`
+          : '';
+
+      const empty = emptyState(
+        `Пока нет записей: ${one}`,
+        kind === 'fact'
+          ? 'Бот уже знает то, что приходит из Exely: номера, услуги, цены. Добавьте то, чего там нет.'
+          : kind === 'tone'
+            ? 'Здесь вы объясняете боту, как разговаривать с гостями: что подчёркивать, а чего избегать.'
+            : 'Дайте ссылку на страницу с новой информацией — бот будет учитывать её в ответах.',
+        templates,
+      );
+
+      const saved = q.saved ? banner('ok', 'Изменения сохранены. Бот применит их со следующего сообщения гостя.') : '';
 
       const body =
-        '<h1>База знаний бота</h1>' +
-        '<p>Всё, что вы добавите здесь, бот учтёт <b>со следующего сообщения гостя</b> — перезапуск не нужен. ' +
-        'Записи можно выключать, не удаляя.</p>' +
+        `<h1>Знания</h1>` +
+        kbHead(kind, prop) +
+        saved +
+        `<div class="stack" style="margin-bottom:16px">` +
+        btn(`+ Добавить ${one}`, {
+          variant: 'primary',
+          href: `/console/kb/new?kind=${kind}&property=${encodeURIComponent(prop)}`,
+        }) +
+        `</div>` +
+        (cards || empty);
 
-        '<h2>Факты об отеле</h2>' +
-        '<p class="muted">Услуги, цены на дополнительные услуги, правила, акции. Бот отвечает по ним прямо и считает их достоверными.</p>' +
-        group('fact', 'Например: «Поздний выезд до 16:00 — 50% стоимости суток».') +
-        `<form method="post" action="/console/kb/add">${csrfField}
-          <input type="hidden" name="kind" value="fact">
-          <p><select name="property">${hotelOptions}</select></p>
-          <p><input name="title" placeholder="Короткий заголовок, например «Поздний выезд»" style="width:100%"></p>
-          <p><textarea name="body" rows="3" placeholder="Что именно должен знать бот" style="width:100%" required></textarea></p>
-          <p><button type="submit">Добавить факт</button></p>
-        </form>` +
+      return sendHtml(
+        reply,
+        shell('Знания', body, {
+          staff,
+          csrf: csrfTokenFor(req.sessionToken!),
+          active: '/console/kb',
+          waiting: waitingFor(store, staff).length,
+        }),
+      );
+    });
 
-        '<hr><h2>Правила общения</h2>' +
-        '<p class="muted">Как боту говорить и как не говорить. Эти правила приоритетнее общих настроек стиля.</p>' +
-        group('tone', 'Например: «Не предлагать бронирование, если гость спросил только про услугу».') +
-        `<form method="post" action="/console/kb/add">${csrfField}
-          <input type="hidden" name="kind" value="tone">
-          <p><select name="property">${hotelOptions}</select></p>
-          <p><input name="title" placeholder="Короткий заголовок правила" style="width:100%"></p>
-          <p><textarea name="body" rows="3" placeholder="Например: всегда уточнять число гостей до предложения номера" style="width:100%" required></textarea></p>
-          <p><button type="submit">Добавить правило</button></p>
-        </form>` +
+    /** Редактор одной записи — экрана правки не существовало вовсе. */
+    const kbEditor = (
+      req: FastifyRequest,
+      entry: Partial<KbEntry> & { kind: 'fact' | 'tone' | 'source' },
+      isNew: boolean,
+    ): string => {
+      const staff = req.staff!;
+      const csrf = csrfTokenFor(req.sessionToken!);
+      const one = KB_KINDS.find((k) => k.key === entry.kind)!.one;
+      const prop = entry.property ?? '';
+      const action = isNew ? '/console/kb/add' : `/console/kb/${entry.id}`;
+      const head = entry.kind === 'tone' ? 'ПРАВИЛА ОБЩЕНИЯ ОТ ОТЕЛЯ:' : 'ДОПОЛНИТЕЛЬНЫЕ СВЕДЕНИЯ ОТ ОТЕЛЯ:';
 
-        '<hr><h2>Источники</h2>' +
-        '<p class="muted">Ссылка на страницу отеля, акцию или прайс. Текст со страницы подтягивается и попадает в знания бота.</p>' +
-        group('source', 'Например: страница фитнес-центра на сайте отеля.') +
-        `<form method="post" action="/console/kb/add">${csrfField}
-          <input type="hidden" name="kind" value="source">
-          <p><select name="property">${hotelOptions}</select></p>
-          <p><input name="title" placeholder="Что это за источник" style="width:100%"></p>
-          <p><input name="url" type="url" placeholder="https://kazzhol.com/..." style="width:100%" required></p>
-          <p><textarea name="body" rows="2" placeholder="Необязательно: краткое пояснение для бота" style="width:100%"></textarea></p>
-          <p><button type="submit">Добавить источник</button></p>
-        </form>`;
+      const propPicker =
+        `<div class="field"><label for="property">Отель</label>` +
+        `<select name="property" id="property">` +
+        [['', 'Вся сеть'], ...PROPERTY_KEYS.map((k) => [k, propertyLabel(k)])]
+          .map(([v, l]) => `<option value="${v}"${v === prop ? ' selected' : ''}>${escapeHtml(l)}</option>`)
+          .join('') +
+        `</select>` +
+        `<p class="hint">«Вся сеть» — запись увидят все четыре отеля.</p></div>`;
 
-      return reply.type('text/html; charset=utf-8').send(page('База знаний', body, { staff, csrf }));
+      const sourceField =
+        entry.kind === 'source'
+          ? field('url', 'Ссылка на страницу', {
+              type: 'url',
+              value: entry.url ?? '',
+              required: true,
+              placeholder: 'https://kazzhol.com/…',
+              hint: 'Бот будет учитывать информацию с этой страницы в ответах гостям.',
+            })
+          : `<details style="margin-bottom:16px"><summary class="note">+ добавить ссылку на страницу сайта</summary>` +
+            field('url', 'Ссылка (необязательно)', { type: 'url', value: entry.url ?? '' }) +
+            `</details>`;
+
+      return (
+        `<div class="narrow"><h1>${isNew ? `Новый ${one}` : `Изменить ${one}`}</h1>` +
+        `<form method="post" action="${action}" data-once>` +
+        `<input type="hidden" name="_csrf" value="${escapeHtml(csrf)}">` +
+        `<input type="hidden" name="kind" value="${entry.kind}">` +
+        (entry.kind === 'source' ? sourceField : '') +
+        field('title', 'Заголовок', {
+          value: entry.title ?? '',
+          required: entry.kind !== 'source',
+          placeholder: 'Например: Поздний выезд',
+          hint: 'Коротко, о чём это.',
+        }) +
+        field('body', entry.kind === 'tone' ? 'Правило общения' : 'Текст', {
+          textarea: true,
+          rows: 6,
+          value: entry.body ?? '',
+          required: entry.kind !== 'source',
+          hint:
+            entry.kind === 'tone'
+              ? 'Например: «Всегда предлагайте ранний заезд, если гость прилетает утром».'
+              : 'Пишите так, как объяснили бы новому сотруднику.',
+        }) +
+        `<div class="banner banner--warn" id="price-warn" hidden>Здесь указана сумма. Цену на номер бот всегда берёт ` +
+        `из системы бронирования на даты гостя — опишите условие словами.</div>` +
+        (entry.kind === 'source' ? '' : sourceField) +
+        propPicker +
+        `<div class="field"><label>Что увидит бот</label>` +
+        `<div class="preview" id="kb-preview" data-head="${escapeHtml(head)}"></div>` +
+        `<p class="hint">Ваш текст уходит боту дословно, вот в таком виде.</p></div>` +
+        `<div class="sticky-actions">` +
+        btn('Сохранить', { variant: 'primary' }) +
+        (isNew ? '' : btn('Отмена', { variant: 'ghost', href: `/console/kb?kind=${entry.kind}` })) +
+        `</div></form>` +
+        (isNew
+          ? ''
+          : `<form method="post" action="/console/kb/${entry.id}/archive" style="margin-top:16px">` +
+            `<input type="hidden" name="_csrf" value="${escapeHtml(csrf)}">` +
+            btn('В архив', { variant: 'danger' }) +
+            `<p class="note">Запись перестанет влиять на ответы, но её можно вернуть.</p></form>`) +
+        `</div>`
+      );
+    };
+
+    scope.get('/console/kb/new', { preHandler: requireRole('admin') }, async (req, reply) => {
+      const q = req.query as { kind?: string; property?: string; title?: string };
+      const staff = req.staff!;
+      const body = kbEditor(
+        req,
+        { kind: kbKindOf(q.kind), property: q.property ?? '', title: q.title ?? '', body: '', active: 1 },
+        true,
+      );
+      return sendHtml(
+        reply,
+        shell('Новая запись', body, {
+          staff,
+          csrf: csrfTokenFor(req.sessionToken!),
+          active: '/console/kb',
+          back: { href: '/console/kb', label: 'Знания' },
+        }),
+      );
+    });
+
+    scope.get('/console/kb/archive', { preHandler: requireRole('admin') }, async (req, reply) => {
+      const staff = req.staff!;
+      const csrf = csrfTokenFor(req.sessionToken!);
+      const rows = (store.listKbEntries?.(undefined, undefined, true) ?? [])
+        .filter((e: KbEntry) => e.kind === 'fact' || e.kind === 'tone' || e.kind === 'source')
+        .map(
+          (e: KbEntry) =>
+            `<div class="card"><div class="card__top"><span class="card__who">${escapeHtml(e.title || 'Без заголовка')}</span></div>` +
+            `<p class="card__body">${escapeHtml(e.body)}</p>` +
+            `<div class="stack" style="margin-top:8px">` +
+            `<form method="post" action="/console/kb/${e.id}/restore" class="inline">` +
+            `<input type="hidden" name="_csrf" value="${escapeHtml(csrf)}">` +
+            btn('Вернуть', { variant: 'secondary', sm: true }) +
+            `</form>` +
+            `<form method="post" action="/console/kb/delete" class="inline">` +
+            `<input type="hidden" name="_csrf" value="${escapeHtml(csrf)}">` +
+            `<input type="hidden" name="id" value="${e.id}">` +
+            btn('Удалить навсегда', { variant: 'danger', sm: true }) +
+            `</form></div></div>`,
+        )
+        .join('');
+      const body =
+        `<div class="narrow"><h1>Архив знаний</h1>` +
+        `<p class="note">Эти записи не влияют на ответы бота. Их можно вернуть или удалить навсегда.</p>` +
+        (rows || emptyState('Архив пуст', 'Сюда попадают записи, которые вы убрали из работы.')) +
+        `</div>`;
+      return sendHtml(
+        reply,
+        shell('Архив знаний', body, {
+          staff,
+          csrf,
+          active: '/console/kb',
+          back: { href: '/console/kb', label: 'Знания' },
+        }),
+      );
+    });
+
+    scope.get('/console/kb/:id', { preHandler: requireRole('admin') }, async (req, reply) => {
+      const id = Number((req.params as { id: string }).id);
+      const entry = (store.listKbEntries?.(undefined, undefined) ?? []).find(
+        (e: KbEntry) => Number(e.id) === id,
+      );
+      if (!entry) return reply.redirect('/console/kb');
+      const staff = req.staff!;
+      return sendHtml(
+        reply,
+        shell('Изменить запись', kbEditor(req, entry as KbEntry & { kind: 'fact' }, false), {
+          staff,
+          csrf: csrfTokenFor(req.sessionToken!),
+          active: '/console/kb',
+          back: { href: '/console/kb', label: 'Знания' },
+        }),
+      );
+    });
+
+    scope.post('/console/kb/:id', { preHandler: requireRole('admin') }, async (req, reply) => {
+      const id = Number((req.params as { id: string }).id);
+      const b = req.body as Record<string, string>;
+      store.updateKbEntry?.(id, {
+        title: (b.title ?? '').trim(),
+        body: (b.body ?? '').trim(),
+        url: (b.url ?? '').trim() || null,
+      });
+      return reply.redirect(`/console/kb?kind=${kbKindOf(b.kind)}&saved=1`);
+    });
+
+    scope.post('/console/kb/:id/archive', { preHandler: requireRole('admin') }, async (req, reply) => {
+      store.archiveKbEntry?.(Number((req.params as { id: string }).id), true);
+      return reply.redirect('/console/kb?saved=1');
+    });
+
+    scope.post('/console/kb/:id/restore', { preHandler: requireRole('admin') }, async (req, reply) => {
+      store.archiveKbEntry?.(Number((req.params as { id: string }).id), false);
+      return reply.redirect('/console/kb/archive');
     });
 
     scope.post('/console/kb/add', { preHandler: requireRole('admin') }, async (req, reply) => {
@@ -558,7 +855,7 @@ export async function registerConsoleRoutes(
       const url = (b.url ?? '').trim();
       // Источник без ссылки и факт без текста бессмысленны — молча не сохраняем мусор.
       if (kind === 'source' ? url === '' : bodyText === '') {
-        return reply.redirect('/console/kb');
+        return reply.redirect(`/console/kb?kind=${kind}`);
       }
       store.addKbEntry?.({
         property: (b.property ?? '').trim(),
@@ -568,7 +865,7 @@ export async function registerConsoleRoutes(
         url: url || null,
         active: true,
       });
-      return reply.redirect('/console/kb');
+      return reply.redirect(`/console/kb?kind=${kind}&saved=1`);
     });
 
     scope.post('/console/kb/toggle', { preHandler: requireRole('admin') }, async (req, reply) => {
@@ -640,11 +937,21 @@ export async function registerConsoleRoutes(
         `<p><button type="submit">Добавить</button></p></form>`;
       return sendHtml(
         reply,
-        page(
-          'Акции и знания — консоль',
-          `<h1>Акции и знания отелей</h1>${knowledgePanel}${table}${form}`,
-          { staff, csrf },
-        ),
+        shell('Акции', `<div class="narrow"><h1>Акции и анонсы</h1>` +
+          pills([
+            { href: '/console/kb?kind=fact', label: 'Факты', active: false },
+            { href: '/console/kb?kind=tone', label: 'Как говорить', active: false },
+            { href: '/console/kb?kind=source', label: 'Источники', active: false },
+            { href: '/console/content', label: 'Акции', active: true },
+          ]) +
+          `<p class="note">Акция действует до указанной даты и исчезает сама. ` +
+          `Изменения бот применит со следующего сообщения гостя.</p>` +
+          `${table}${form}${knowledgePanel}</div>`, {
+          staff,
+          csrf,
+          active: '/console/kb',
+          back: { href: '/console/kb', label: 'Знания' },
+        }),
       );
     });
 
@@ -701,78 +1008,138 @@ export async function registerConsoleRoutes(
       return reply.redirect('/console/content');
     });
 
-    scope.get('/console/leads', { preHandler: requireRole('admin') }, async (req, reply) => {
-      const rows = store
-        .listLeads()
-        .map(
-          (l) =>
-            `<tr><td>${escapeHtml(l.id)}</td><td>${escapeHtml(l.kind)}</td>` +
-            `<td>${escapeHtml(l.conversationId)}</td>` +
-            `<td>${escapeHtml(l.checkIn ?? '')} ${escapeHtml(l.checkOut ?? '')}</td>` +
-            `<td>${escapeHtml(l.contactName ?? '')} ${escapeHtml(l.contactPhone ?? '')}</td>` +
-            `<td>${escapeHtml(l.specialRequests ?? '')}</td><td>${escapeHtml(l.createdAt)}</td></tr>`,
-        )
-        .join('');
-      const body =
-        `<h1>Лиды</h1><div id="live"><table><tr><th>#</th><th>Тип</th><th>Диалог</th>` +
-        `<th>Даты</th><th>Контакт</th><th>Детали</th><th>Создан</th></tr>` +
-        (rows || '<tr><td colspan="7">пока пусто</td></tr>') +
-        `</table></div>`;
-      return sendHtml(
-        reply,
-        page('Лиды — консоль', body, { staff: req.staff, csrf: csrfTokenFor(req.sessionToken!), refresh: true }),
-      );
-    });
+    // --- Заявки: лиды, брони и мероприятия на одном экране -----------------------
+    // Три вкладки вместо трёх пунктов меню: «Лиды» и «Брони» на слух не различались.
 
-    scope.get('/console/bookings', { preHandler: requireRole('admin') }, async (req, reply) => {
-      const rows = store
-        .listBookings()
-        .map(
-          (b) =>
-            `<tr><td>${escapeHtml(b.exelyNumber)}</td><td>${escapeHtml(b.status)}</td>` +
-            `<td>${escapeHtml(b.property)}</td><td>${escapeHtml(b.checkIn)} → ${escapeHtml(b.checkOut)}</td>` +
-            `<td>${escapeHtml(b.guests)}</td><td>${escapeHtml(b.roomType)}</td>` +
-            `<td>${escapeHtml(b.guestName ?? '')} ${escapeHtml(b.guestPhone ?? '')}</td>` +
-            `<td>${escapeHtml(b.total ?? '')} ${escapeHtml(b.currency ?? '')}</td>` +
-            `<td>${b.upsellAccepted ? 'да' : b.upsellOffered ? 'предложен' : '—'}</td></tr>`,
-        )
-        .join('');
-      const body =
-        `<h1>Брони</h1><div id="live"><table><tr><th>Номер</th><th>Статус</th><th>Отель</th>` +
-        `<th>Даты</th><th>Гостей</th><th>Категория</th><th>Гость</th><th>Сумма</th><th>Upsell</th></tr>` +
-        (rows || '<tr><td colspan="9">пока пусто</td></tr>') +
-        `</table></div>`;
-      return sendHtml(
-        reply,
-        page('Брони — консоль', body, { staff: req.staff, csrf: csrfTokenFor(req.sessionToken!), refresh: true }),
-      );
-    });
-
-    // --- MICE ---------------------------------------------------------------------------------
-
-    scope.get('/console/mice', async (req, reply) => {
+    scope.get('/console/requests', async (req, reply) => {
+      const staff = req.staff!;
       const csrf = csrfTokenFor(req.sessionToken!);
       const csrfField = `<input type="hidden" name="_csrf" value="${escapeHtml(csrf)}">`;
-      const rows = store
-        .listMice()
-        .map(
-          (m) =>
-            `<tr><td>${escapeHtml(m.id)}</td><td>${escapeHtml(m.property)}</td>` +
-            `<td>${escapeHtml(m.eventDate ?? '')}</td><td>${escapeHtml(m.peopleCount ?? '')}</td>` +
-            `<td>${escapeHtml(m.halls ?? '')} ${escapeHtml(m.catering ?? '')}</td>` +
-            `<td>${escapeHtml(m.contactName ?? '')} ${escapeHtml(m.contactPhone ?? '')}</td>` +
-            `<td>${escapeHtml(m.notes ?? '')}</td><td>${escapeHtml(m.status)}</td>` +
-            `<td><form class="inline" method="post" action="/console/mice/${escapeHtml(m.id)}/status">${csrfField}` +
-            `<select name="status"><option value="in_work">в работе</option><option value="done">закрыта</option></select> ` +
-            `<button type="submit">OK</button></form></td></tr>`,
-        )
-        .join('');
+      const q = req.query as { tab?: string };
+      const tab = q.tab === 'bookings' ? 'bookings' : q.tab === 'mice' ? 'mice' : 'all';
+      const admin = staff.role === 'admin';
+
+      const tel = (phone?: string | null): string =>
+        phone ? `<a href="tel:${escapeHtml(phone.replace(/[^\d+]/g, ''))}">${escapeHtml(phone)}</a>` : '';
+
+      const tabs = pills([
+        { href: '/console/requests?tab=all', label: 'Все', active: tab === 'all' },
+        ...(admin ? [{ href: '/console/requests?tab=bookings', label: 'Брони', active: tab === 'bookings' }] : []),
+        { href: '/console/requests?tab=mice', label: 'Мероприятия', active: tab === 'mice' },
+      ]);
+
+      let table = '';
+      if (tab === 'bookings' && admin) {
+        const rows = store
+          .listBookings()
+          .map(
+            (b) =>
+              `<tr><td data-label="Номер">${escapeHtml(b.exelyNumber)}</td>` +
+              `<td data-label="Статус">${escapeHtml(b.status)}</td>` +
+              `<td data-label="Отель">${escapeHtml(propertyLabel(b.property))}</td>` +
+              `<td data-label="Даты">${escapeHtml(b.checkIn)} → ${escapeHtml(b.checkOut)}</td>` +
+              `<td data-label="Гостей">${escapeHtml(b.guests)}</td>` +
+              `<td data-label="Категория">${escapeHtml(b.roomType)}</td>` +
+              `<td data-label="Гость">${escapeHtml(b.guestName ?? '')} ${tel(b.guestPhone)}</td>` +
+              `<td data-label="Сумма">${escapeHtml(b.total ?? '')} ${escapeHtml(b.currency ?? '')}</td></tr>`,
+          )
+          .join('');
+        table = rows
+          ? `<div class="tablewrap"><table><thead><tr><th>Номер</th><th>Статус</th><th>Отель</th><th>Даты</th>` +
+            `<th>Гостей</th><th>Категория</th><th>Гость</th><th>Сумма</th></tr></thead><tbody>${rows}</tbody></table></div>`
+          : emptyState('Броней пока нет', 'Здесь появятся подтверждённые брони гостей.');
+      } else if (tab === 'mice') {
+        const rows = store
+          .listMice()
+          .map(
+            (m) =>
+              `<tr><td data-label="Отель">${escapeHtml(propertyLabel(m.property))}</td>` +
+              `<td data-label="Дата">${escapeHtml(m.eventDate ?? '')}</td>` +
+              `<td data-label="Человек">${escapeHtml(m.peopleCount ?? '')}</td>` +
+              `<td data-label="Залы / кейтеринг">${escapeHtml(m.halls ?? '')} ${escapeHtml(m.catering ?? '')}</td>` +
+              `<td data-label="Контакт">${escapeHtml(m.contactName ?? '')} ${tel(m.contactPhone)}</td>` +
+              `<td data-label="Заметки">${escapeHtml(m.notes ?? '')}</td>` +
+              `<td data-label="Статус">${escapeHtml(m.status === 'done' ? 'закрыта' : 'в работе')}</td>` +
+              `<td data-label="Сменить"><form class="inline" method="post" action="/console/mice/${escapeHtml(m.id)}/status">${csrfField}` +
+              `<select name="status"><option value="in_work">в работе</option><option value="done">закрыта</option></select>` +
+              btn('Сохранить', { variant: 'secondary', sm: true }) +
+              `</form></td></tr>`,
+          )
+          .join('');
+        table = rows
+          ? `<div class="tablewrap"><table><thead><tr><th>Отель</th><th>Дата</th><th>Человек</th>` +
+            `<th>Залы / кейтеринг</th><th>Контакт</th><th>Заметки</th><th>Статус</th><th>Сменить</th></tr></thead>` +
+            `<tbody>${rows}</tbody></table></div>`
+          : emptyState('Заявок на мероприятия нет', 'Сюда попадают запросы на конференц-залы и банкеты.');
+      } else {
+        const rows = (admin ? store.listLeads() : [])
+          .map(
+            (l) =>
+              `<tr><td data-label="Что нужно">${escapeHtml(l.kind)} <span class="badge badge--off">ещё не бронь</span></td>` +
+              `<td data-label="Даты">${escapeHtml(l.checkIn ?? '')} ${escapeHtml(l.checkOut ?? '')}</td>` +
+              `<td data-label="Контакт">${escapeHtml(l.contactName ?? '')} ${tel(l.contactPhone)}</td>` +
+              `<td data-label="Детали">${escapeHtml(l.specialRequests ?? '')}</td>` +
+              `<td data-label="Создан">${escapeHtml(ago(l.createdAt))} назад</td>` +
+              `<td data-label=""><a href="${chatUrl(l.conversationId)}">Открыть диалог</a></td></tr>`,
+          )
+          .join('');
+        table = rows
+          ? `<div class="tablewrap"><table><thead><tr><th>Что нужно</th><th>Даты</th><th>Контакт</th>` +
+            `<th>Детали</th><th>Создан</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
+          : emptyState('Заявок пока нет', 'Когда бот запишет контакт гостя, заявка появится здесь.');
+      }
+
+      return sendHtml(
+        reply,
+        shell('Заявки', `<h1>Заявки</h1>${tabs}${table}`, {
+          staff,
+          csrf,
+          active: '/console/requests',
+          waiting: waitingFor(store, staff).length,
+        }),
+      );
+    });
+
+    scope.get('/console/leads', async (_req, reply) => reply.redirect('/console/requests?tab=all'));
+    scope.get('/console/bookings', async (_req, reply) => reply.redirect('/console/requests?tab=bookings'));
+    scope.get('/console/mice', async (_req, reply) => reply.redirect('/console/requests?tab=mice'));
+
+    // --- Итоги --------------------------------------------------------------------
+
+    scope.get('/console/summary', { preHandler: requireRole('admin') }, async (req, reply) => {
+      const staff = req.staff!;
+      const m = deps.metricsSummary(store);
+      const slaOk = m.p95ReplyMs <= SLA_TARGET_MS;
+      const tile = (num: string | number, cap: string): string =>
+        `<div class="tile"><div class="num">${escapeHtml(num)}</div><div class="cap">${escapeHtml(cap)}</div></div>`;
+      const langs =
+        Object.entries(m.byLanguage)
+          .map(([lang, n]) => `${escapeHtml(lang)}: ${escapeHtml(n)}`)
+          .join(', ') || '—';
       const body =
-        `<h1>MICE-заявки</h1><div id="live"><table><tr><th>#</th><th>Отель</th><th>Дата</th>` +
-        `<th>Чел.</th><th>Залы / кейтеринг</th><th>Контакт</th><th>Заметки</th><th>Статус</th><th>Сменить</th></tr>` +
-        (rows || '<tr><td colspan="9">пока пусто</td></tr>') +
-        `</table></div>`;
-      return sendHtml(reply, page('MICE — консоль', body, { staff: req.staff, csrf, refresh: true }));
+        `<h1>Итоги за сегодня</h1><div id="live">` +
+        `<p class="lede">Сегодня бот ответил ${m.dialogsToday} гостям, ${m.escalationsToday} передал вам.</p>` +
+        `<div class="tiles">` +
+        tile(m.dialogsToday, 'диалогов') +
+        tile(m.escalationsToday, 'передано вам') +
+        tile(m.bookingsToday, 'броней') +
+        tile(m.messagesToday, 'сообщений') +
+        `</div>` +
+        `<p>${slaOk ? badge('on', 'Скорость ответа в норме') : badge('wait', 'Бот отвечает медленнее обычного')}</p>` +
+        `<details class="quiet"><summary>Техника</summary>` +
+        `<p class="note">p50 ${escapeHtml(m.p50ReplyMs)} мс · p95 ${escapeHtml(m.p95ReplyMs)} мс · цель ≤ ${SLA_TARGET_MS} мс<br>` +
+        `Upsell: предложено ${escapeHtml(m.upsellOffered)}, принято ${escapeHtml(m.upsellAccepted)}<br>` +
+        `Языки входящих: ${langs}</p></details></div>`;
+      return sendHtml(
+        reply,
+        shell('Итоги', body, {
+          staff,
+          csrf: csrfTokenFor(req.sessionToken!),
+          active: '/console/summary',
+          waiting: waitingFor(store, staff).length,
+          refresh: true,
+        }),
+      );
     });
 
     scope.post('/console/mice/:id/status', async (req, reply) => {
@@ -782,31 +1149,42 @@ export async function registerConsoleRoutes(
       if (!Number.isInteger(id) || (status !== 'in_work' && status !== 'done')) {
         return sendHtml(
           reply,
-          page('Ошибка', '<h1>Недопустимый статус</h1><p><a href="/console/mice">← назад</a></p>', {
-            staff: req.staff,
-            csrf: csrfTokenFor(req.sessionToken!),
-          }),
+          shell(
+            'Ошибка',
+            `<div class="narrow">${banner('err', 'Недопустимый статус заявки.')}` +
+              btn('Назад к заявкам', { variant: 'secondary', href: '/console/requests?tab=mice' }) +
+              `</div>`,
+            { staff: req.staff, csrf: csrfTokenFor(req.sessionToken!), active: '/console/requests' },
+          ),
           400,
         );
       }
       store.setMiceStatus(id, status);
-      return reply.redirect('/console/mice');
+      return reply.redirect('/console/requests?tab=mice');
     });
 
     // --- Data deletion (admin only) --------------------------------------------------------------
 
     const deletionForm = (staff: AuthedStaff, csrf: string, note?: string): string =>
-      page(
-        'Удаление ПД — консоль',
-        `<h1>Удаление персональных данных</h1>` +
-          (note ? `<div class="error">${escapeHtml(note)}</div>` : '') +
-          `<p>Стирает историю диалога и маскирует имя/телефон в лидах, бронях и MICE-заявках. Необратимо.</p>` +
-          `<form method="post" action="/console/data-deletion">` +
+      shell(
+        'Удаление данных гостя',
+        `<div class="narrow"><h1>Удаление данных гостя</h1>` +
+          (note ? banner('err', escapeHtml(note)) : '') +
+          `<p class="note">Стирает историю диалога и маскирует имя и телефон в заявках, бронях ` +
+          `и заявках на мероприятия. Отменить нельзя.</p>` +
+          `<form method="post" action="/console/data-deletion" data-once>` +
           `<input type="hidden" name="_csrf" value="${escapeHtml(csrf)}">` +
-          `<p><input type="text" name="conversationId" placeholder="ID диалога, напр. whatsapp:1112|7701..." style="width:420px" required></p>` +
-          `<p><label><input type="checkbox" name="confirm"> Подтверждаю удаление ПД по запросу гостя</label></p>` +
-          `<p><button type="submit">Удалить ПД</button></p></form>`,
-        { staff, csrf },
+          field('conversationId', 'ID диалога', {
+            required: true,
+            placeholder: 'whatsapp:1112|7701…',
+            hint: 'ID можно скопировать в самом диалоге — раздел «Технические данные».',
+          }) +
+          `<div class="field"><label style="font-weight:400;font-size:15px">` +
+          `<input type="checkbox" name="confirm" style="width:auto;min-height:0;margin-right:8px">` +
+          `Подтверждаю удаление по запросу гостя</label></div>` +
+          btn('Удалить данные', { variant: 'danger' }) +
+          `</form></div>`,
+        { staff, csrf, active: '/console' },
       );
 
     scope.get('/console/data-deletion', { preHandler: requireRole('admin') }, async (req, reply) =>
@@ -840,11 +1218,13 @@ export async function registerConsoleRoutes(
       });
       return sendHtml(
         reply,
-        page(
-          'ПД удалены',
-          `<h1>Готово</h1><p>Персональные данные диалога ${escapeHtml(conversationId)} удалены/замаскированы.</p>` +
-            `<p><a href="/console/data-deletion">← ещё одно удаление</a></p>`,
-          { staff: req.staff, csrf },
+        shell(
+          'Готово',
+          `<div class="narrow">` +
+            banner('ok', `Данные диалога ${escapeHtml(conversationId)} удалены и замаскированы.`) +
+            btn('Удалить ещё один', { variant: 'secondary', href: '/console/data-deletion' }) +
+            `</div>`,
+          { staff: req.staff, csrf, active: '/console' },
         ),
       );
     });
