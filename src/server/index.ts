@@ -15,11 +15,19 @@ export interface EngineLike {
 export interface ServerDeps {
   engine: EngineLike;
   adapters: { whatsapp?: WhatsAppAdapter; instagram?: InstagramAdapter };
-  store: { recordEvent(type: string, data?: EventData): void };
+  store: {
+    recordEvent(type: string, data?: EventData): void;
+    /** Optional (tests pass a minimal stub): needed to mute the bot on a WhatsApp staff takeover. */
+    getConversation?(id: string): { status: string } | null;
+    appendMessage?(id: string, message: { role: 'user' | 'assistant'; content: string }): void;
+    setStatus?(id: string, status: 'active' | 'handed_off' | 'closed'): void;
+  };
   config: {
     whatsapp: {
       verifyToken?: string;
       appSecret?: string;
+      /** Shared secret sent by 360dialog as a custom webhook header (d360 does not HMAC-sign). */
+      webhookSecret?: string;
       phoneNumberIds: Record<string, string>;
     };
   };
@@ -82,6 +90,17 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
 
     scope.post('/webhooks/whatsapp', async (req, reply) => {
       const rawBody = typeof req.body === 'string' ? req.body : '';
+      // 360dialog does NOT sign webhooks the way Meta does, so the signature check below is
+      // inert on that provider and the endpoint would be open to the whole internet. 360dialog
+      // can attach arbitrary headers to every delivery (`headers` in /v1/configs/webhook), so a
+      // shared secret header is the equivalent guarantee. Meta path keeps the HMAC check.
+      const sharedSecret = deps.config.whatsapp.webhookSecret;
+      if (sharedSecret) {
+        const provided = req.headers['x-kazzhol-webhook-secret'];
+        if (typeof provided !== 'string' || provided !== sharedSecret) {
+          return reply.code(401).send('invalid webhook secret');
+        }
+      }
       const appSecret = deps.config.whatsapp.appSecret;
       if (appSecret) {
         const header = req.headers['x-hub-signature-256'];
@@ -157,6 +176,36 @@ async function processWhatsApp(
       if (parts && parts.length > 0) await adapter.send(msg.senderId, parts);
     } catch (err) {
       console.error('whatsapp message handling failed:', maskPII(errorMessage(err)));
+    }
+  }
+
+  // Coexistence: staff replied to a guest from the WhatsApp Business app (echoed to
+  // us) — record it so analytics/console see the human turn; it is not a guest message.
+  for (const echo of adapter.parseSmbEchoes(body)) {
+    // Coexistence is a SHARED line: the reception answers the same guest from the phone. If we
+    // only counted the echo, the bot would keep replying over the human — two voices in one chat.
+    // Treat a staff reply as a takeover: record it in the history and mute the bot for this guest.
+    // Conversation ids are `${channel}:${senderId}` and the WhatsApp senderId is
+    // `${phone_number_id}|${wa_id}` (one adapter serves every hotel number) — verified live:
+    // ids in production look like `whatsapp:1541962692809091|77010000001`.
+    const conversationId = `whatsapp:${echo.phoneNumberId}|${echo.guestWaId}`;
+    const convo = deps.store.getConversation?.(conversationId) ?? null;
+    if (convo) {
+      if (echo.text) {
+        deps.store.appendMessage?.(conversationId, { role: 'assistant', content: echo.text });
+      }
+      if (convo.status !== 'handed_off') deps.store.setStatus?.(conversationId, 'handed_off');
+    }
+    track(deps.store, 'wa_staff_echo', {
+      conversationId: convo ? conversationId : undefined,
+      channel: 'whatsapp',
+    });
+  }
+  // Account lifecycle: PARTNER_REMOVED means our app was offboarded from the number.
+  for (const upd of adapter.parseAccountUpdates(body)) {
+    track(deps.store, 'wa_account_update', { channel: 'whatsapp' });
+    if (upd.event === 'PARTNER_REMOVED') {
+      console.warn('WhatsApp account_update: PARTNER_REMOVED — our app was offboarded from a number');
     }
   }
 }

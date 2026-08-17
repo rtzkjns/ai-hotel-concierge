@@ -76,9 +76,31 @@ export function buildConfig(env: NodeJS.ProcessEnv) {
   if (env.INSTAGRAM_IG_ID_ALMATY) instagramIgIds.almaty = env.INSTAGRAM_IG_ID_ALMATY;
   if (env.INSTAGRAM_IG_ID_ASTANA) instagramIgIds.astana = env.INSTAGRAM_IG_ID_ASTANA;
   if (env.INSTAGRAM_IG_ID_PARK_ALMATY) instagramIgIds.park_almaty = env.INSTAGRAM_IG_ID_PARK_ALMATY;
+  if (env.INSTAGRAM_IG_ID_SEVEN) instagramIgIds.seven = env.INSTAGRAM_IG_ID_SEVEN;
   // Back-compat: a lone INSTAGRAM_IG_ID maps to Almaty when no per-hotel ids are set.
   if (Object.keys(instagramIgIds).length === 0 && env.INSTAGRAM_IG_ID) {
     instagramIgIds.almaty = env.INSTAGRAM_IG_ID;
+  }
+
+  // Per-account access tokens — "Instagram API with Instagram Login" issues one token per account.
+  const instagramTokens: Record<string, string> = {};
+  if (env.INSTAGRAM_TOKEN_ALMATY) instagramTokens.almaty = env.INSTAGRAM_TOKEN_ALMATY;
+  if (env.INSTAGRAM_TOKEN_ASTANA) instagramTokens.astana = env.INSTAGRAM_TOKEN_ASTANA;
+  if (env.INSTAGRAM_TOKEN_PARK_ALMATY) instagramTokens.park_almaty = env.INSTAGRAM_TOKEN_PARK_ALMATY;
+  if (env.INSTAGRAM_TOKEN_SEVEN) instagramTokens.seven = env.INSTAGRAM_TOKEN_SEVEN;
+
+  // Chatfuel bridge (temporary IG tenant path while our own App Review is pending):
+  // property key → that hotel's Chatfuel bot id + broadcasting token.
+  const chatfuelBots: Record<string, { botId: string; token: string }> = {};
+  for (const [h, key] of [
+    ['ALMATY', 'almaty'],
+    ['ASTANA', 'astana'],
+    ['PARK_ALMATY', 'park_almaty'],
+    ['SEVEN', 'seven'],
+  ] as const) {
+    const botId = env[`CHATFUEL_BOT_ID_${h}`];
+    const token = env[`CHATFUEL_TOKEN_${h}`];
+    if (botId && token) chatfuelBots[key] = { botId, token };
   }
 
   return {
@@ -88,12 +110,22 @@ export function buildConfig(env: NodeJS.ProcessEnv) {
     telegram: {
       botToken: env.TELEGRAM_BOT_TOKEN,
       staffGroupChatId: env.STAFF_GROUP_CHAT_ID,
+      // Отдельный Telegram-чат на каждый отель: STAFF_CHAT_ID_ALMATY и т.д.
+      // Если для отеля чат не задан — уведомление уходит в общий staffGroupChatId.
+      staffChatByProperty: {
+        almaty: env.STAFF_CHAT_ID_ALMATY,
+        astana: env.STAFF_CHAT_ID_ASTANA,
+        park_almaty: env.STAFF_CHAT_ID_PARK_ALMATY,
+        seven: env.STAFF_CHAT_ID_SEVEN,
+      } as Record<string, string | undefined>,
     },
     whatsapp: {
       // Meta: system-user/Bearer token. 360dialog: the D360-API-KEY (set WHATSAPP_PROVIDER=d360).
       accessToken: env.WHATSAPP_ACCESS_TOKEN,
       verifyToken: env.WHATSAPP_VERIFY_TOKEN,
       appSecret: env.WHATSAPP_APP_SECRET,
+      // Shared secret for the d360 path, where Meta-style HMAC signatures do not exist.
+      webhookSecret: env.WHATSAPP_WEBHOOK_SECRET,
       phoneNumberIds,
       // 'meta' (direct Cloud API) or 'd360' (360dialog, for zero-downtime Coexistence).
       provider: env.WHATSAPP_PROVIDER === 'd360' ? ('d360' as const) : ('meta' as const),
@@ -105,6 +137,10 @@ export function buildConfig(env: NodeJS.ProcessEnv) {
       // Multi-account: one Instagram account per hotel (recipient.id in the
       // webhook → property), mirroring the WhatsApp phone_number_ids design.
       igIds: instagramIgIds,
+      // Per-account tokens (Instagram Login): property key → that account's own token.
+      tokens: instagramTokens,
+      // Override API host+version (default graph.instagram.com/v26.0, Instagram Login path).
+      baseUrl: env.INSTAGRAM_API_BASE,
     },
     exely: {
       clientId: env.EXELY_CLIENT_ID,
@@ -121,6 +157,7 @@ export function buildConfig(env: NodeJS.ProcessEnv) {
     exelyByProperty: buildExelyCabinets(env),
     openaiApiKey: env.OPENAI_API_KEY,
     amoAccessToken: env.AMO_ACCESS_TOKEN,
+    chatfuelBots,
     server: {
       port: Number(env.PORT ?? 3000),
       publicBaseUrl: env.PUBLIC_BASE_URL,
@@ -147,7 +184,10 @@ export function enabledChannels(cfg: AppConfig = config): Channel[] {
   ) {
     channels.push('whatsapp');
   }
-  if (cfg.instagram.accessToken && Object.keys(cfg.instagram.igIds).length > 0) {
+  if (
+    Object.keys(cfg.instagram.igIds).length > 0 &&
+    (cfg.instagram.accessToken || Object.keys(cfg.instagram.tokens).length > 0)
+  ) {
     channels.push('instagram');
   }
   return channels;

@@ -16,6 +16,8 @@ export interface TelegramEngine {
 }
 
 export interface TelegramStore {
+  /** Привязка группы менеджеров к отелю (команда /привязать в самой группе). */
+  setStaffChat?(property: string, chatId: string): void;
   getOrCreateConversation(channel: Channel, senderId: string): Conversation;
   resetConversation(id: string): void;
   setProperty(id: string, property: string): void;
@@ -39,7 +41,9 @@ export interface TelegramTextCtx {
 export class TelegramChannel {
   readonly bot: Telegraf;
   private readonly keyboard = Markup.inlineKeyboard(
-    propertyList.map((p) => [Markup.button.callback(p.name, `property:${p.key}`)]),
+    propertyList
+      .filter((p) => p.bookable !== false)
+      .map((p) => [Markup.button.callback(p.name, `property:${p.key}`)]),
   );
 
   constructor(private readonly deps: TelegramChannelDeps) {
@@ -63,6 +67,27 @@ export class TelegramChannel {
       deps.store.setProperty(convo.id, key);
       await ctx.reply(
         `${prop.name} — я виртуальный ассистент этого отеля. Чем могу помочь? / How can I help you?`,
+      );
+    });
+
+    // Привязка группы менеджеров к отелю прямо из чата: «/привязать almaty».
+    // Так владельцу не нужно узнавать и присылать id — бот берёт его из самого сообщения.
+    this.bot.on(message('text'), async (ctx, next) => {
+      const raw = ctx.message.text.trim();
+      if (!/^\/(привязать|bind)\b/i.test(raw)) return next();
+      const key = raw.split(/\s+/)[1]?.toLowerCase() ?? '';
+      const known = ['almaty', 'astana', 'park_almaty', 'seven'];
+      if (!known.includes(key)) {
+        await ctx.reply(
+          'Укажите отель: /привязать almaty | astana | park_almaty | seven\n' +
+            'После привязки заявки на оператора по этому отелю будут приходить в эту группу.',
+        );
+        return;
+      }
+      deps.store.setStaffChat?.(key, String(ctx.chat.id));
+      await ctx.reply(
+        `Готово. Эта группа привязана к отелю ${key}. Сюда будут приходить запросы на переключение ` +
+          'на живого менеджера с кратким описанием проблемы.',
       );
     });
 

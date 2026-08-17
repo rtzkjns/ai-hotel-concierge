@@ -6,6 +6,8 @@ import type {
   ChatMessage,
   Conversation,
   ConversationStatus,
+  HotelContent,
+  KbEntry,
   Language,
   LeadKind,
   MiceRequest,
@@ -26,6 +28,88 @@ function cutoffIso(days: number): string {
 
 export class Store {
   private db: Database.Database;
+
+
+  /**
+   * База знаний, редактируемая владельцем и менеджерами из панели.
+   * kind: 'fact'   — факт об отеле, попадает в промпт как знание
+   *       'tone'   — правило общения («как говорить / как не говорить»)
+   *       'source' — ссылка-источник, содержимое подтягивается фоново в body
+   * Смысл: отель может сам добавить акцию, новую услугу или сайт, и бот учтёт это
+   * со следующего сообщения гостя — без разработчика и без редеплоя.
+   */
+  listKbEntries(property?: string, kind?: string): KbEntry[] {
+    let sql = 'SELECT * FROM kb_entries WHERE 1=1';
+    const args: unknown[] = [];
+    if (property) { sql += " AND (property = ? OR property = '')"; args.push(property); }
+    if (kind) { sql += ' AND kind = ?'; args.push(kind); }
+    sql += ' ORDER BY kind, id DESC';
+    return this.db.prepare(sql).all(...(args as never[])) as KbEntry[];
+  }
+
+  addKbEntry(e: Omit<KbEntry, 'id' | 'updatedAt'>): number {
+    const r = this.db
+      .prepare(
+        `INSERT INTO kb_entries (property, kind, title, body, url, active, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(e.property, e.kind, e.title, e.body, e.url ?? null, e.active ? 1 : 0, new Date().toISOString());
+    return Number(r.lastInsertRowid);
+  }
+
+  updateKbEntry(id: number, patch: Partial<Pick<KbEntry, 'title' | 'body' | 'url' | 'active'>>): void {
+    const cur = this.db.prepare('SELECT * FROM kb_entries WHERE id = ?').get(id) as KbEntry | undefined;
+    if (!cur) return;
+    this.db
+      .prepare('UPDATE kb_entries SET title=?, body=?, url=?, active=?, updated_at=? WHERE id=?')
+      .run(
+        patch.title ?? cur.title,
+        patch.body ?? cur.body,
+        patch.url ?? cur.url ?? null,
+        (patch.active ?? cur.active) ? 1 : 0,
+        new Date().toISOString(),
+        id,
+      );
+  }
+
+  /**
+   * Привязка Telegram-группы к отелю. Менеджеры добавляют бота в свою группу и пишут
+   * «/привязать <отель>» — id чата определяется сам, вручную ничего копировать не нужно.
+   * Хранится в kb_entries (kind='staffchat'), чтобы не плодить таблицы.
+   */
+  setStaffChat(property: string, chatId: string): void {
+    const existing = this.db
+      .prepare("SELECT id FROM kb_entries WHERE kind='staffchat' AND property=?")
+      .get(property) as { id: number } | undefined;
+    if (existing) {
+      this.db
+        .prepare('UPDATE kb_entries SET body=?, updated_at=? WHERE id=?')
+        .run(chatId, new Date().toISOString(), existing.id);
+      return;
+    }
+    this.db
+      .prepare(
+        `INSERT INTO kb_entries (property, kind, title, body, url, active, updated_at)
+         VALUES (?, 'staffchat', 'Чат менеджеров', ?, NULL, 1, ?)`,
+      )
+      .run(property, chatId, new Date().toISOString());
+  }
+
+  staffChatFor(property: string): string | undefined {
+    const r = this.db
+      .prepare("SELECT body FROM kb_entries WHERE kind='staffchat' AND property=? AND active=1")
+      .get(property) as { body: string } | undefined;
+    return r?.body;
+  }
+
+  deleteKbEntry(id: number): void {
+    this.db.prepare('DELETE FROM kb_entries WHERE id = ?').run(id);
+  }
+
+  /** Flush and release the SQLite handle on shutdown (WAL checkpoint happens on close). */
+  close(): void {
+    this.db.close();
+  }
 
   constructor(path: string) {
     this.db = new Database(path);
@@ -56,6 +140,30 @@ export class Store {
         special_requests TEXT,
         created_at      TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS kb_entries (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        property   TEXT NOT NULL DEFAULT '',
+        kind       TEXT NOT NULL,
+        title      TEXT NOT NULL DEFAULT '',
+        body       TEXT NOT NULL DEFAULT '',
+        url        TEXT,
+        active     INTEGER NOT NULL DEFAULT 1,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS hotel_content (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        property   TEXT NOT NULL,
+        kind       TEXT NOT NULL DEFAULT 'promo',
+        title      TEXT NOT NULL DEFAULT '',
+        body       TEXT NOT NULL,
+        source     TEXT NOT NULL DEFAULT 'staff',
+        active     INTEGER NOT NULL DEFAULT 1,
+        starts_at  TEXT,
+        ends_at    TEXT,
+        updated_at TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_hotel_content_prop ON hotel_content(property, active);
       CREATE TABLE IF NOT EXISTS bookings (
         id              INTEGER PRIMARY KEY AUTOINCREMENT,
         conversation_id TEXT NOT NULL,
@@ -276,6 +384,94 @@ export class Store {
       specialRequests: (r.special_requests as string | null) ?? undefined,
       createdAt: r.created_at as string,
     }));
+  }
+
+  // --- Hotel content (live promos / announcements / facts, editable per hotel) ----
+
+  private mapContent(r: Record<string, unknown>): HotelContent {
+    return {
+      id: r.id as number,
+      property: r.property as string,
+      kind: r.kind as HotelContent['kind'],
+      title: (r.title as string) ?? '',
+      body: r.body as string,
+      source: r.source as HotelContent['source'],
+      active: Number(r.active) === 1,
+      startsAt: (r.starts_at as string | null) ?? null,
+      endsAt: (r.ends_at as string | null) ?? null,
+      updatedAt: r.updated_at as string,
+      createdAt: r.created_at as string,
+    };
+  }
+
+  /** Active, in-window content for a hotel — injected into the prompt each turn. */
+  listActiveContent(property: string, now: string = nowIso()): HotelContent[] {
+    // Kazakhstan is UTC+5 (no DST) — compare on the hotel's LOCAL calendar date so a promo
+    // dated "starts today" is live from local 00:00, not from 05:00 (the UTC-midnight skew).
+    // substr(...,1,10) normalizes any stored value (bare YYYY-MM-DD or full ISO) to its date.
+    const localDate = new Date(Date.parse(now) + 5 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM hotel_content
+         WHERE property = ? AND active = 1
+           AND (starts_at IS NULL OR substr(starts_at, 1, 10) <= ?)
+           AND (ends_at   IS NULL OR substr(ends_at, 1, 10)   >= ?)
+         ORDER BY kind, updated_at DESC`,
+      )
+      .all(property, localDate, localDate) as Array<Record<string, unknown>>;
+    return rows.map((r) => this.mapContent(r));
+  }
+
+  /** All content (any status) for the admin console; optionally scoped to one hotel. */
+  listContentForAdmin(property?: string): HotelContent[] {
+    const rows = (
+      property
+        ? this.db
+            .prepare('SELECT * FROM hotel_content WHERE property = ? ORDER BY id DESC')
+            .all(property)
+        : this.db.prepare('SELECT * FROM hotel_content ORDER BY property, id DESC').all()
+    ) as Array<Record<string, unknown>>;
+    return rows.map((r) => this.mapContent(r));
+  }
+
+  addContent(c: {
+    property: string;
+    kind: HotelContent['kind'];
+    title?: string;
+    body: string;
+    source?: HotelContent['source'];
+    startsAt?: string | null;
+    endsAt?: string | null;
+  }): number {
+    const ts = nowIso();
+    const info = this.db
+      .prepare(
+        `INSERT INTO hotel_content
+         (property, kind, title, body, source, active, starts_at, ends_at, updated_at, created_at)
+         VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
+      )
+      .run(
+        c.property,
+        c.kind,
+        c.title ?? '',
+        c.body,
+        c.source ?? 'staff',
+        c.startsAt ?? null,
+        c.endsAt ?? null,
+        ts,
+        ts,
+      );
+    return Number(info.lastInsertRowid);
+  }
+
+  setContentActive(id: number, active: boolean): void {
+    this.db
+      .prepare('UPDATE hotel_content SET active = ?, updated_at = ? WHERE id = ?')
+      .run(active ? 1 : 0, nowIso(), id);
+  }
+
+  deleteContent(id: number): void {
+    this.db.prepare('DELETE FROM hotel_content WHERE id = ?').run(id);
   }
 
   // --- Bookings -----------------------------------------------------------

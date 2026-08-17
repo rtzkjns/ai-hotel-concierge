@@ -379,7 +379,7 @@ describe('InstagramAdapter', () => {
     await adapter.send('17840000|guest-9', [{ text: 'hello!', delayMs: 0 }]);
 
     expect(calls.length).toBe(1);
-    expect(calls[0].url).toBe('https://graph.facebook.com/v23.0/17840000/messages');
+    expect(calls[0].url).toBe('https://graph.instagram.com/v26.0/17840000/messages');
     expect((calls[0].init?.headers as Record<string, string>).Authorization).toBe(
       'Bearer ig-token',
     );

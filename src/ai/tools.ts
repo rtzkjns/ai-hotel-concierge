@@ -16,6 +16,7 @@ export interface CheckAvailabilityInput {
   checkIn: string;
   checkOut: string;
   guests: number;
+  childAges?: number[];
   promoCode?: string;
   property?: PropertyKey;
 }
@@ -37,6 +38,7 @@ export interface CreateBookingInput {
   guestEmail?: string;
   comment?: string;
   upsellAccepted?: UpsellKind[];
+  childAges?: number[];
   property?: PropertyKey;
 }
 
@@ -102,8 +104,18 @@ export const toolDefinitions: Anthropic.Tool[] = [
       properties: {
         checkIn: { type: 'string', description: 'Check-in date, YYYY-MM-DD' },
         checkOut: { type: 'string', description: 'Check-out date, YYYY-MM-DD' },
-        guests: { type: 'number', description: 'Number of guests' },
-        promoCode: { type: 'string', description: 'Promo code the guest wants applied, if any' },
+        guests: { type: 'number', description: 'Number of ADULT guests' },
+        childAges: {
+          type: 'array',
+          items: { type: 'number' },
+          description:
+            'Ages of children on the stay, if any, e.g. [5, 9]. Hotels price children by age, so ' +
+            'pass this whenever the guest mentions kids — do NOT fold children into the adult count.',
+        },
+        // promoCode was declared here but never read anywhere in the code: the model believed the
+        // discount had been applied while the search ran at full price. Exely applies promo codes
+        // on the booking form itself, so the field is removed rather than faked — the prompt tells
+        // the guest to enter the code there, and check_promo_code records it for the team.
         property: propertySchema,
       },
       required: ['checkIn', 'checkOut', 'guests'],
@@ -112,8 +124,9 @@ export const toolDefinitions: Anthropic.Tool[] = [
   {
     name: 'get_room_info',
     description:
-      'Get room categories, descriptions, and hotel services from the hotel content. Use when ' +
-      'the guest asks what rooms exist, what they include, or about hotel amenities.',
+      "Get the hotel's STATIC reference info (room categories, descriptions, amenities, services). " +
+      'Use when the guest asks what rooms exist, what they include, or about hotel amenities. This ' +
+      'is NOT live pricing or availability — for those always call check_availability.',
     input_schema: {
       type: 'object',
       properties: {
@@ -136,7 +149,12 @@ export const toolDefinitions: Anthropic.Tool[] = [
       properties: {
         checkIn: { type: 'string', description: 'Check-in date, YYYY-MM-DD' },
         checkOut: { type: 'string', description: 'Check-out date, YYYY-MM-DD' },
-        guests: { type: 'number', description: 'Number of guests' },
+        guests: { type: 'number', description: 'Number of ADULT guests' },
+        childAges: {
+          type: 'array',
+          items: { type: 'number' },
+          description: 'Ages of children on the stay, if any, e.g. [5, 9]. Same as in check_availability.',
+        },
         roomTypeId: { type: 'string', description: 'Room type id from a check_availability offer' },
         ratePlanId: { type: 'string', description: 'Rate plan id from a check_availability offer' },
         guestFirstName: { type: 'string', description: 'Guest first name' },
@@ -235,6 +253,29 @@ export const toolDefinitions: Anthropic.Tool[] = [
         notes: { type: 'string', description: 'Anything else the MICE manager should know' },
       },
       required: ['eventDate', 'peopleCount', 'contactName', 'contactPhone'],
+    },
+  },
+  {
+    name: 'register_completed_booking',
+    description:
+      'Record a booking the GUEST completed themselves on the Exely booking form, after they send ' +
+      'you the booking number from their confirmation e-mail. Use this the moment a guest reports ' +
+      'they finished booking, or sends a number that looks like a reservation number. It links ' +
+      'the booking to this chat, tells the staff, and lets you confirm receipt to the guest. ' +
+      'NEVER call it with a number you invented or assumed — only one the guest actually gave.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        bookingNumber: {
+          type: 'string',
+          description: 'The reservation number exactly as the guest sent it',
+        },
+        guestName: { type: 'string', description: 'Guest name, if known' },
+        checkIn: { type: 'string', description: 'Check-in date YYYY-MM-DD, if known' },
+        checkOut: { type: 'string', description: 'Check-out date YYYY-MM-DD, if known' },
+        property: propertySchema,
+      },
+      required: ['bookingNumber'],
     },
   },
   {

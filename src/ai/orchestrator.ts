@@ -16,12 +16,23 @@ export interface GenerateDeps {
   model: string;
   systemPrompt: string;
   tools: ToolHandlers;
+  /**
+   * Reply used when the tool loop is exhausted, in the GUEST's language. Without it a Kazakh or
+   * Chinese guest would receive a hardcoded English sentence.
+   */
+  exhaustedReply?: string;
 }
 
 export interface GenerateResult {
   reply: string;
   handedOff: boolean;
   toolsUsed: string[];
+  /**
+   * True when the tool loop hit MAX_ROUNDS without the model producing an answer. The caller MUST
+   * treat this as a dead end: notify staff and record a lead, otherwise the guest is left with a
+   * holding phrase and nobody ever follows up.
+   */
+  roundsExhausted: boolean;
 }
 
 // Capped to avoid infinite loops on a misbehaving model.
@@ -57,7 +68,7 @@ export async function generateReply(
         .map((b) => b.text)
         .join('\n')
         .trim();
-      return { reply: text, handedOff, toolsUsed };
+      return { reply: text, handedOff, toolsUsed, roundsExhausted: false };
     }
 
     // Echo the assistant turn (with tool_use blocks) back into the conversation.
@@ -71,7 +82,12 @@ export async function generateReply(
     messages.push({ role: 'user', content: toolResults });
   }
 
-  return { reply: 'Our team will get back to you shortly.', handedOff, toolsUsed };
+  return {
+    reply: deps.exhaustedReply ?? 'Our team will get back to you shortly.',
+    handedOff,
+    toolsUsed,
+    roundsExhausted: true,
+  };
 }
 
 async function runTool(

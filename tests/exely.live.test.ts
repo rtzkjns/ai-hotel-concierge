@@ -90,6 +90,8 @@ describe('LiveAvailabilityProvider', () => {
       childAges: [],
       arrivalDate: '2026-08-10',
       departureDate: '2026-08-13',
+      // Без include Exely отдаёт только id, и гостю называют номер «2 взрослых на основных местах».
+      include: 'roomTypeShortContent|ratePlanShortContent',
     });
   });
 

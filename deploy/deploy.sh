@@ -25,18 +25,24 @@ id -u "$SERVICE_USER" >/dev/null 2>&1 || sudo useradd -r -s /usr/sbin/nologin "$
 sudo mkdir -p "$APP_DIR"
 sudo chown -R "$SERVICE_USER":"$SERVICE_USER" "$APP_DIR"
 
-echo "==> 3/6 Dependencies"
+echo "==> 3/7 Dependencies"
 [ -f "$APP_DIR/.env" ] || { echo "ERROR: $APP_DIR/.env missing — copy .env.example and fill it first."; exit 1; }
 sudo chmod 600 "$APP_DIR/.env"
 ( cd "$APP_DIR" && sudo -u "$SERVICE_USER" npm ci --omit=dev && sudo -u "$SERVICE_USER" npm run typecheck )
 
-echo "==> 4/6 systemd service"
+echo "==> 4/7 systemd service"
 sudo cp "$APP_DIR/deploy/kazzhol-bot.service" /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable kazzhol-bot
 sudo systemctl restart kazzhol-bot
 
-echo "==> 5/6 Caddy (HTTPS)"
+echo "==> 5/7 Nightly SQLite backup (systemd timer)"
+command -v sqlite3 >/dev/null || sudo apt-get install -y sqlite3
+sudo cp "$APP_DIR/deploy/kazzhol-backup.service" "$APP_DIR/deploy/kazzhol-backup.timer" /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now kazzhol-backup.timer
+
+echo "==> 6/7 Caddy (HTTPS)"
 if ! command -v caddy >/dev/null; then
   sudo apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl
   curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
@@ -46,7 +52,7 @@ fi
 sudo sed "s/bot.kazzhol.com/${DOMAIN}/g" "$APP_DIR/deploy/Caddyfile" | sudo tee /etc/caddy/Caddyfile >/dev/null
 sudo systemctl restart caddy
 
-echo "==> 6/6 Health check"
+echo "==> 7/7 Health check"
 sleep 4
 curl -fsS "http://127.0.0.1:3000/healthz" && echo " — local OK"
 echo

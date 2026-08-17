@@ -18,30 +18,46 @@ import { RateLimiter } from './core/rateLimit';
 import { startRetention } from './core/retention';
 import { StubAmoCrm } from './integrations/amocrm';
 import { createCabinetProviders } from './integrations/exely';
+import { ExelyContentSync } from './knowledge/contentSync';
 import { StubPaymentGateway } from './integrations/payments';
 import { createTranscriber } from './integrations/transcribe';
 import { buildServer } from './server';
+import { registerChatfuelBridge } from './server/chatfuel';
 import { Store } from './store';
 
 /** Staff alerts: Telegram staff chat via raw Bot API when configured, console otherwise. */
-function createStaffNotifier(): StaffNotifier {
+function createStaffNotifier(store: { staffChatFor?(p: string): string | undefined }): StaffNotifier {
   const token = config.telegram.botToken;
-  const chatId = config.telegram.staffGroupChatId;
-  if (!token || !chatId) {
+  const fallbackChat = config.telegram.staffGroupChatId;
+  const byProperty = config.telegram.staffChatByProperty ?? {};
+  if (!token || (!fallbackChat && Object.values(byProperty).every((v) => !v))) {
     return { notify: (text) => console.log('[staff]', text) };
   }
+
+  async function send(chatId: string, text: string): Promise<void> {
+    try {
+      const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, text }),
+      });
+      if (!res.ok) console.error(`staff notify failed: Telegram HTTP ${res.status}`);
+    } catch (err) {
+      console.error('staff notify failed:', err instanceof Error ? err.message : 'unknown error');
+    }
+  }
+
   return {
-    async notify(text) {
-      try {
-        const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ chat_id: chatId, text }),
-        });
-        if (!res.ok) console.error(`staff notify failed: Telegram HTTP ${res.status}`);
-      } catch (err) {
-        console.error('staff notify failed:', err instanceof Error ? err.message : 'unknown error');
-      }
+    async notify(text, property) {
+      // Заявка уходит в чат СВОЕГО отеля; если для него чат не настроен — в общий.
+      // Общий чат владельца получает копию всегда, чтобы ничего не терялось.
+      // Привязка из Telegram-группы важнее .env: менеджеры настраивают её сами, без разработчика.
+      const hotelChat = property ? (store.staffChatFor?.(property) ?? byProperty[property]) : undefined;
+      const targets = new Set<string>();
+      if (hotelChat) targets.add(hotelChat);
+      if (fallbackChat) targets.add(fallbackChat);
+      if (targets.size === 0 && hotelChat === undefined && fallbackChat) targets.add(fallbackChat);
+      await Promise.all([...targets].map((c) => send(c, text)));
     },
   };
 }
@@ -72,6 +88,13 @@ async function main(): Promise<void> {
   // accounts). A hotel with no cabinet configured falls back to stub availability.
   const cabinets = createCabinetProviders(config.exelyByProperty);
   const availabilityProvider = cabinets.availability;
+
+  // Keep the bot's hotel knowledge (rooms, services, policies) fresh from Exely's Content API —
+  // the system of record. Prices stay live via Search; this covers the static catalog.
+  const contentSync = new ExelyContentSync({
+    properties: Object.keys(config.exelyByProperty),
+    contentFor: cabinets.contentFor,
+  });
   const bookingService = new BookingService({
     store,
     provider: availabilityProvider,
@@ -93,11 +116,28 @@ async function main(): Promise<void> {
     paymentGateway: new StubPaymentGateway(),
     crm: new StubAmoCrm((type, data) => store.recordEvent(type, { payload: data })),
     transcriber: createTranscriber(config.openaiApiKey),
-    staffNotifier: createStaffNotifier(),
+    staffNotifier: createStaffNotifier(store),
     rateLimiter: new RateLimiter(),
     phoneNumberIdToProperty,
     styleGuide: loadStyleGuide(),
+    knowledgeFor: (property) => contentSync.knowledgeFor(property),
   });
+
+  // Initial pull so the bot boots on the freshest catalog. Bounded + non-fatal: if Exely Content
+  // is unreachable, the static knowledge in src/knowledge stays in place and we retry on schedule.
+  try {
+    const { updated, failed } = await contentSync.refreshAll();
+    engine.rebuildPrompts();
+    console.log(
+      `Exely content synced: ${updated.join(', ') || 'none'}` +
+        (failed.length ? ` (fell back to static: ${failed.join(', ')})` : ''),
+    );
+  } catch (err) {
+    console.warn(
+      'Exely content sync failed at boot — using static knowledge:',
+      err instanceof Error ? err.message : err,
+    );
+  }
 
   const channels = enabledChannels();
 
@@ -109,10 +149,18 @@ async function main(): Promise<void> {
       provider: config.whatsapp.provider,
     });
   }
-  if (channels.includes('instagram') && config.instagram.accessToken) {
+  // Create the IG adapter when EITHER a single fallback token OR per-account tokens exist —
+  // the Instagram Login path issues a separate token per hotel account (no single accessToken),
+  // so gating only on accessToken left adapters.instagram undefined and silently dropped every DM.
+  if (
+    channels.includes('instagram') &&
+    (config.instagram.accessToken || Object.keys(config.instagram.tokens ?? {}).length > 0)
+  ) {
     adapters.instagram = new InstagramAdapter({
       accessToken: config.instagram.accessToken,
       igIds: config.instagram.igIds,
+      tokens: config.instagram.tokens,
+      baseUrl: config.instagram.baseUrl,
     });
   }
 
@@ -152,11 +200,44 @@ async function main(): Promise<void> {
     config,
     extraRoutes: [
       (a) => widget.register(a),
-      (a) => registerConsoleRoutes(a, { store, metricsSummary, sendToConversation }),
+      (a) =>
+        registerConsoleRoutes(a, {
+          store,
+          metricsSummary,
+          sendToConversation,
+          knowledgeStatus: () => contentSync.status(),
+          refreshKnowledge: async () => {
+            await contentSync.refreshAll();
+            engine.rebuildPrompts();
+          },
+        }),
+      // Chatfuel bridge — temporary IG tenant path (answers all guests while our App Review pends).
+      (a) => {
+        if (Object.keys(config.chatfuelBots).length > 0) {
+          registerChatfuelBridge(a, {
+            engine,
+            bots: config.chatfuelBots,
+            inboundTimeoutMs: Number(process.env.CHATFUEL_INBOUND_TIMEOUT_MS) || undefined,
+          });
+        }
+      },
     ],
   });
   await app.listen({ port: config.server.port, host: '0.0.0.0' });
   startRetention(store);
+
+  // Twice-daily catalog refresh so room/service/policy changes made in Exely reach the bot with
+  // no redeploy (staff can also force it from the console). unref() so it never holds the process up.
+  const knowledgeTimer = setInterval(
+    () => {
+      contentSync
+        .refreshAll()
+        .then(() => engine.rebuildPrompts())
+        .catch(() => undefined);
+    },
+    12 * 60 * 60 * 1000,
+  );
+  knowledgeTimer.unref();
 
   if (channels.includes('telegram') && config.telegram.botToken) {
     const tg = new TelegramChannel({
@@ -174,6 +255,29 @@ async function main(): Promise<void> {
   console.log(
     `Kazzhol AI server listening on :${config.server.port} — channels: ${channels.join(', ')}`,
   );
+
+  // Graceful shutdown. Without it systemd waits the full 90s TimeoutStopSec and then SIGKILLs:
+  // in-flight guest replies die mid-send and the SQLite handle is never closed. Stop accepting
+  // new webhooks first, let the current turns finish, then close the database.
+  let shuttingDown = false;
+  const shutdown = async (signal: string): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`${signal} received — shutting down gracefully`);
+    try {
+      await app.close();
+    } catch (err) {
+      console.error('http close failed:', err instanceof Error ? err.message : err);
+    }
+    try {
+      store.close?.();
+    } catch (err) {
+      console.error('store close failed:', err instanceof Error ? err.message : err);
+    }
+    process.exit(0);
+  };
+  process.once('SIGTERM', () => void shutdown('SIGTERM'));
+  process.once('SIGINT', () => void shutdown('SIGINT'));
 }
 
 main().catch((err) => {

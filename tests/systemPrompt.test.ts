@@ -1,10 +1,32 @@
 import { describe, it, expect } from 'vitest';
-import { buildSystemPrompt } from '../src/ai/systemPrompt';
+import { buildLiveContentSection, buildSystemPrompt } from '../src/ai/systemPrompt';
+import type { HotelContent } from '../src/types';
 import { properties, propertyList } from '../src/knowledge';
 
 const astana = properties.astana;
 const almaty = properties.almaty;
 const prompt = buildSystemPrompt(astana);
+
+describe('buildLiveContentSection (live promos injected each turn)', () => {
+  const entry = (over: Partial<HotelContent> = {}): HotelContent => ({
+    id: 1, property: 'almaty', kind: 'promo', title: '', body: '', source: 'staff',
+    active: true, startsAt: null, endsAt: null, updatedAt: '', createdAt: '', ...over,
+  });
+  it('is empty with no entries', () => {
+    expect(buildLiveContentSection([])).toBe('');
+    expect(buildLiveContentSection([entry({ body: '   ' })])).toBe('');
+  });
+  it('renders promos and reasserts the price rule', () => {
+    const s = buildLiveContentSection([
+      entry({ title: 'Осенняя акция', body: '-15% на выходные' }),
+      entry({ body: 'открыли новый ресторан' }),
+    ]);
+    expect(s).toContain('-15% на выходные');
+    expect(s).toContain('Осенняя акция:');
+    expect(s).toContain('открыли новый ресторан');
+    expect(s).toMatch(/check_availability/);
+  });
+});
 
 describe('buildSystemPrompt: identity', () => {
   it('embeds the property name and knowledge', () => {
@@ -59,15 +81,28 @@ describe('buildSystemPrompt: texting style', () => {
     expect(prompt).toMatch(/numbered list/i);
   });
 
-  it('bans officialese and AI-tells', () => {
-    expect(prompt).toContain('Конечно! Я с радостью помогу');
+  it('bans canned assistant openers and AI-tells', () => {
+    expect(prompt).toContain('С радостью');
+    expect(prompt).toContain('Отличный выбор');
     expect(prompt).toContain("I'm an AI language model");
   });
 
-  it('gives live connective phrases and forbids repeated openings', () => {
-    expect(prompt).toContain('сейчас гляну');
+  it('gives approved official openers and forbids repeated openings', () => {
+    expect(prompt).toContain('Уточню наличие на ваши даты');
     expect(prompt).toContain('қазір қарап берейін');
     expect(prompt).toMatch(/never start two consecutive replies/i);
+  });
+
+  // Владелец (2026-08-14): бот должен звучать как официальный менеджер, а не как приятель.
+  it('requires the formal «вы» and bans emoticons/emoji outright', () => {
+    expect(prompt).toMatch(/ALWAYS address the guest as «вы»/);
+    expect(prompt).toMatch(/NEVER use emoticons or emoji/);
+    expect(prompt).not.toMatch(/A "\)" as a light smile is fine/);
+    expect(prompt).not.toMatch(/Match, don't upgrade/);
+  });
+
+  it('forbids gendered self-reference so the persona never flips', () => {
+    expect(prompt).toMatch(/NEVER use a gendered first-person past-tense form/);
   });
 });
 
@@ -90,10 +125,14 @@ describe('buildSystemPrompt: workflows', () => {
     expect(prompt).toMatch(/upgrade/i);
   });
 
-  it('covers MICE and the booking-link mode', () => {
+  it('covers MICE and delivers the booking link in-chat (not by email)', () => {
     expect(prompt).toContain('submit_mice_request');
     expect(prompt).toMatch(/10\+/);
-    expect(prompt).toContain('персональная ссылка');
+    // Owner requirement: the booking link goes into the chat dialog, guest fills
+    // contacts + presses «Забронировать» — never routed to the guest's email.
+    expect(prompt).toContain('mode "link"');
+    expect(prompt).toMatch(/RIGHT HERE IN THIS CHAT/i);
+    expect(prompt).toMatch(/Забронировать/);
   });
 
   it('handles multi-part requests without abandoning parts', () => {
@@ -120,7 +159,7 @@ describe('buildSystemPrompt: anti-jailbreak', () => {
 
 describe('buildSystemPrompt: sister hotels', () => {
   it('includes sister hotel names and knowledge when passed', () => {
-    const sisters = propertyList.filter((p) => p.key !== almaty.key);
+    const sisters = propertyList.filter((p) => p.key !== almaty.key && p.bookable !== false);
     const p = buildSystemPrompt(almaty, { sisterHotels: sisters });
     expect(p).toContain('Hotel Kazzhol Astana');
     expect(p).toContain('Hotel Kazzhol Park Almaty');

@@ -18,6 +18,10 @@ interface CachedToken {
 // Refetch this many ms before the real expiry, to avoid using a token mid-flight as it dies.
 const EXPIRY_SKEW_MS = 60_000;
 
+// Bound the auth call so a hanging token endpoint can never stall a caller (incl. boot, which
+// awaits the initial content sync). Matches the Exely 10s SLA used for data calls.
+const AUTH_TIMEOUT_MS = 10_000;
+
 export class ExelyTokenManager {
   private cached: CachedToken | null = null;
   private readonly fetchFn: typeof fetch;
@@ -41,6 +45,7 @@ export class ExelyTokenManager {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body,
+      signal: AbortSignal.timeout(AUTH_TIMEOUT_MS),
     });
     if (!res.ok) {
       throw new Error(`Exely auth failed: ${res.status}`);

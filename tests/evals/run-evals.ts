@@ -19,6 +19,11 @@ import { Engine } from '../../src/core/engine';
 import { RateLimiter } from '../../src/core/rateLimit';
 import { StubAmoCrm } from '../../src/integrations/amocrm';
 import { StubAvailabilityProvider } from '../../src/integrations/exely/stub';
+import type {
+  AvailabilityProvider,
+  AvailabilityQuery,
+  AvailabilityResult,
+} from '../../src/integrations/exely';
 import { StubPaymentGateway } from '../../src/integrations/payments';
 import { NullTranscriber } from '../../src/integrations/transcribe';
 import { properties } from '../../src/knowledge';
@@ -30,6 +35,36 @@ import { fileURLToPath } from 'node:url';
 
 const ENGINE_MODEL = process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-5';
 const JUDGE_MODEL = 'claude-sonnet-5';
+
+/**
+ * Eval availability: the deterministic stub catalogue (same known prices the judge
+ * grounds on), but tagged source:'exely' so the production stub-price guard treats it
+ * as live and does NOT hand off, and enriched with ids/checksum + a booking link so
+ * create_booking returns a real mode:'link'. Lets the eval exercise the full
+ * quote → in-chat-link flow deterministically and offline.
+ */
+class EvalAvailabilityProvider implements AvailabilityProvider {
+  private readonly stub = new StubAvailabilityProvider();
+  async checkAvailability(q: AvailabilityQuery): Promise<AvailabilityResult> {
+    const r = await this.stub.checkAvailability(q);
+    // Pre-opening hotels have no live prices — keep source:'stub' so the guard hands off (prod-like).
+    if (properties[q.property]?.bookable === false) return r;
+    const pid = properties[q.property]?.exelyPropertyId ?? '801';
+    return {
+      ...r,
+      source: 'exely',
+      offers: r.offers.map((o, i) => ({
+        ...o,
+        roomTypeId: String(6000 + i),
+        ratePlanId: String(300 + i),
+        ratePlanName: o.ratePlanName ?? 'Стандартный тариф',
+        totalPrice: o.pricePerNight,
+        checksum: `eval-cs-${i}`,
+        bookingFormLink: `https://kazzhol.com/ru/booking?hotel_id=${pid}&room-type=${6000 + i}&tl-offer=${300 + i}&tl-date=${q.checkIn}&tl-nights=1&tl-adults=${q.guests}&tl-cur=KZT&tl-lng=ru`,
+      })),
+    };
+  }
+}
 const PASS_THRESHOLD = 0.8;
 
 /** Special turn marker: send a voice note instead of text. */
@@ -61,7 +96,365 @@ interface Scenario {
   };
 }
 
+/**
+ * Language-parity block (added 2026-08-14). The contract puts ru/kk/en/zh on equal footing, but
+ * coverage was ru×32 vs en×2 / zh×2 — so en/zh regressions were structurally invisible. These
+ * mirror the core Russian journeys (price → booking link → escalation → complaint) in each
+ * language, plus the new official-register rules.
+ */
+const LANGUAGE_PARITY: Scenario[] = [
+  {
+    id: 'en-price-to-booking-link',
+    channel: 'instagram',
+    property: 'almaty',
+    turns: [
+      'Hi! Do you have a room for 2 adults from 25 to 27 August?',
+      'The standard one works, how do I book it?',
+    ],
+    expect: {
+      language: 'en',
+      requiredTool: 'check_availability',
+      notes:
+        'Full English journey. Prices ONLY from the tool. On the booking request the bot must ' +
+        'hand over the Exely booking link in this chat and explain that the guest fills in their ' +
+        'own contacts there and the confirmation is emailed to them automatically. Polite, ' +
+        'professional English throughout.',
+      mustNot: [
+        'replying in Russian',
+        'invented prices',
+        'promising to send the link by email',
+        'any emoji or «)» smiley',
+        'markdown or bullet lists',
+      ],
+    },
+  },
+  {
+    id: 'zh-price-to-booking-link',
+    channel: 'instagram',
+    property: 'astana',
+    turns: ['你好，8月25日到27日有双人间吗？', '好的，怎么预订？'],
+    expect: {
+      language: 'zh',
+      requiredTool: 'check_availability',
+      notes:
+        'Full Chinese journey. Polite, simple, slightly formal Chinese. Prices ONLY from the ' +
+        'tool. On the booking request the bot gives the booking link in chat and explains the ' +
+        'confirmation arrives by email automatically.',
+      mustNot: [
+        'replying in Russian or English',
+        'invented prices',
+        'any emoji or «)» smiley',
+        'markdown or bullet lists',
+      ],
+    },
+  },
+  {
+    id: 'kk-price-to-booking-link',
+    channel: 'whatsapp',
+    property: 'almaty',
+    turns: ['Сәлеметсіз бе! 25 тамызға екі адамға бөлме бар ма?', 'Жақсы, қалай брондауға болады?'],
+    expect: {
+      language: 'kk',
+      requiredTool: 'check_availability',
+      notes:
+        'Full Kazakh journey, polite «сіз» form. Prices ONLY from the tool. Booking request → ' +
+        'booking link in chat + email confirmation explanation, in Kazakh.',
+      mustNot: [
+        'replying in Russian',
+        'invented prices',
+        'any emoji or «)» smiley',
+        'markdown or bullet lists',
+      ],
+    },
+  },
+  {
+    id: 'en-ask-for-human',
+    channel: 'instagram',
+    property: 'almaty',
+    turns: ['Can I talk to a real person please?', 'No, I really want a human agent. Now.'],
+    expect: {
+      language: 'en',
+      requiredTool: 'escalate_to_human',
+      notes:
+        'First request: the bot offers to solve it itself, politely, without escalating. SECOND ' +
+        'explicit demand: it must call escalate_to_human and tell the guest a colleague will ' +
+        'join this chat. All in English.',
+      mustNot: ['replying in Russian', 'escalating on the FIRST request', 'refusing to escalate'],
+    },
+  },
+  {
+    id: 'zh-ask-for-human',
+    channel: 'instagram',
+    property: 'astana',
+    turns: ['我想和人工客服说话', '不行，我要真人客服，现在就要'],
+    expect: {
+      language: 'zh',
+      requiredTool: 'escalate_to_human',
+      notes:
+        'Same escalation discipline in Chinese: try once, then escalate on the second explicit ' +
+        'demand and say a colleague will join the chat.',
+      mustNot: ['replying in Russian or English', 'escalating on the FIRST request'],
+    },
+  },
+  {
+    id: 'en-formal-register-under-slang',
+    channel: 'instagram',
+    property: 'almaty',
+    turns: ['yo whats the price for tmrw night bro'],
+    expect: {
+      language: 'en',
+      notes:
+        'Very casual English guest. The hotel stays courteous and professional, answers the ' +
+        'question directly, asks for the missing details. It never mirrors the slang and never ' +
+        'comments on how the guest writes.',
+      mustNot: [
+        'mirroring the slang («yo», «bro»)',
+        'any emoji or «)» smiley',
+        'lecturing the guest about their wording',
+        'invented prices',
+      ],
+    },
+  },
+];
+
+/**
+ * Кросс-канальная проверка (2026-08-16). Правила живут в общем движке, но «должно работать
+ * везде» без прогона — это допущение. Эти сценарии гоняют РЕАЛЬНЫЙ Engine по каждому каналу.
+ */
+const CROSS_CHANNEL: Scenario[] = (['telegram', 'webwidget', 'whatsapp'] as const).flatMap(
+  (ch): Scenario[] => [
+    {
+      id: `${ch}-direct-answer-no-filler`,
+      channel: ch,
+      property: 'almaty',
+      turns: ['смарт тв есть?'],
+      expect: {
+        language: 'ru',
+        forbiddenTools: ['check_availability'],
+        notes:
+          'Короткий вопрос про удобство. Первое предложение отвечает ПРО ТЕЛЕВИЗОР. Никаких ' +
+          'категорий номеров, цен и предложения забронировать. Канал: ' + ch,
+        mustNot: [
+          'listing room categories or prices',
+          'offering to book or asking for dates',
+          'a long multi-paragraph reply',
+          'saying it cannot help as a final answer',
+        ],
+      },
+    },
+    {
+      id: `${ch}-no-refusal`,
+      channel: ch,
+      property: 'almaty',
+      turns: ['а гладильная доска в номере есть?'],
+      expect: {
+        language: 'ru',
+        notes:
+          'Деталь может отсутствовать в базе знаний. Бот не отказывает и не выдумывает: обещает ' +
+          'уточнить у коллег. Отель нигде не выставляется в плохом свете. Канал: ' + ch,
+        mustNot: [
+          'a bare «не знаю» or «не могу помочь» as the final answer',
+          'inventing the answer',
+          'apologising for the hotel or implying it is poorly equipped',
+        ],
+      },
+    },
+    {
+      id: `${ch}-handoff-second-request`,
+      channel: ch,
+      property: 'almaty',
+      turns: ['переключите на оператора', 'нет, мне нужен живой человек, сейчас'],
+      expect: {
+        language: 'ru',
+        requiredTool: 'escalate_to_human',
+        notes:
+          'Первая просьба — бот пытается помочь сам. ВТОРАЯ — обязан вызвать escalate_to_human и ' +
+          'сказать, что коллега подключится. Канал: ' + ch,
+        mustNot: ['escalating on the FIRST request', 'refusing to hand over'],
+      },
+    },
+  ],
+);
+
+const MANAGER_GAPS: Scenario[] = [
+  {
+    id: 'fitness-price-no-handoff',
+    channel: 'instagram',
+    property: 'almaty',
+    turns: ['сколько стоит абонемент в фитнес?'],
+    expect: {
+      language: 'ru',
+      forbiddenTools: ['escalate_to_human'],
+      notes:
+        'Реальный провал (2026-08-17): бот перевёл гостя на менеджера вместо ответа. Прайс AquaFit ' +
+        'теперь в базе знаний. Бот обязан назвать конкретные цены абонементов и НЕ звать человека.',
+      mustNot: [
+        'handing over to a human',
+        'saying it will check with colleagues',
+        'inventing prices not in the knowledge base',
+        'a long multi-paragraph reply',
+      ],
+    },
+  },
+  {
+    id: 'restaurant-hours-direct',
+    channel: 'instagram',
+    property: 'almaty',
+    turns: ['во сколько завтрак?'],
+    expect: {
+      language: 'ru',
+      forbiddenTools: ['escalate_to_human', 'check_availability'],
+      notes:
+        'Часы завтрака есть в базе знаний (07:00–10:00 в будни, до 11:00 в выходные). Ответ — одна ' +
+        'фраза с временем. Никаких номеров, дат и предложения бронировать.',
+      mustNot: [
+        'handing over to a human',
+        'offering rooms or asking for dates',
+        'a long reply',
+      ],
+    },
+  },
+  {
+    id: 'smart-tv-direct-answer',
+    channel: 'instagram',
+    property: 'almaty',
+    turns: ['смарт тв есть?'],
+    expect: {
+      language: 'ru',
+      forbiddenTools: ['check_availability'],
+      notes:
+        'Жалоба менеджеров 2026-08-16: на вопрос про смарт-ТВ бот начал рассказывать про номера и ' +
+        'предлагать бронирование. Короткий вопрос без контекста — это полноценный вопрос. Первое ' +
+        'предложение должно отвечать ПРО ТЕЛЕВИЗОР. Если точных данных нет — сказать, что уточнит ' +
+        'у коллег, но НЕ отказывать и НЕ выдумывать.',
+      mustNot: [
+        'listing room categories or prices',
+        'offering to book or asking for dates',
+        'asking a clarifying question instead of answering',
+        'saying it cannot help or has no such information as a final answer',
+        'a long multi-paragraph reply',
+      ],
+    },
+  },
+  {
+    id: 'story-mention-review',
+    channel: 'instagram',
+    property: 'almaty',
+    turns: ['[гость упомянул отель в своей истории (сторис) — обычно это отзыв или благодарность]'],
+    expect: {
+      language: 'ru',
+      notes:
+        'Гость отметил отель в своей сторис — почти всегда отзыв. Бот должен коротко и тепло ' +
+        'поблагодарить, одной-двумя строками. Раньше отвечал «не могу открыть этот тип сообщения».',
+      mustNot: [
+        'saying it cannot open the message',
+        'asking the guest to resend as text',
+        'ignoring the mention and pitching rooms',
+        'a long reply',
+      ],
+    },
+  },
+  {
+    id: 'no-refusal-unknown-detail',
+    channel: 'instagram',
+    property: 'almaty',
+    turns: ['а гладильная доска в номере есть?'],
+    expect: {
+      language: 'ru',
+      notes:
+        'Деталь, которой может не быть в базе знаний. Бот НЕ отказывает и НЕ выдумывает: говорит, ' +
+        'что уточнит у коллег и вернётся, и фиксирует запрос. Отель нигде не выставляется в плохом свете.',
+      mustNot: [
+        'a bare «не знаю» or «не могу помочь» as the final answer',
+        'inventing whether the item exists',
+        'apologising for the hotel or implying it is poorly equipped',
+      ],
+    },
+  },
+  {
+    id: 'bare-greeting-no-dump',
+    channel: 'instagram',
+    property: 'almaty',
+    turns: [
+      'Здравствуйте! Есть номер на 15-17 октября, двое взрослых?',
+      'Здравствуйте',
+    ],
+    expect: {
+      language: 'ru',
+      notes:
+        'Владелец (2026-08-15): на голое «Здравствуйте» бот вываливал номер, цену, условия отмены ' +
+        'и требовал имя с телефоном. Второй ход — просто приветствие без запроса. Правильный ' +
+        'ответ: приветствие и ОДИН открытый вопрос вроде «Чем могу помочь?». Память сохраняется, ' +
+        'но не пересказывается.',
+      mustNot: [
+        'repeating the price or the room type from the previous turn',
+        'repeating the dates or cancellation terms',
+        'asking for name and phone',
+        'asking whether to continue the booking',
+        'listing what the bot can do',
+      ],
+    },
+  },
+  {
+    id: 'group-of-six-no-rooms-lie',
+    channel: 'instagram',
+    property: 'almaty',
+    turns: ['Здравствуйте! Нас шестеро, нужен ночлег с 20 по 22 сентября. Что есть?'],
+    expect: {
+      language: 'ru',
+      notes:
+        'Group of 6. Availability search for 6 adults returns nothing because it looks for ONE ' +
+        'room. The bot must NOT say the hotel is full. It should explain the party needs several ' +
+        'rooms, optionally price one room for 2-3 guests, and capture a lead so the team builds ' +
+        'the group booking.',
+      mustNot: [
+        'saying there are no rooms / мест нет',
+        'inventing a group price',
+        'dropping the guest without recording a request',
+      ],
+    },
+  },
+  {
+    id: 'cancel-must-not-claim-success',
+    channel: 'instagram',
+    property: 'almaty',
+    turns: ['Отмените бронь 55821, пожалуйста', 'да, отменяйте'],
+    expect: {
+      language: 'ru',
+      notes:
+        'The hotel system cannot confirm the cancellation (write access is off), so cancel_booking ' +
+        'comes back localOnly. The bot must say the REQUEST has been passed to colleagues who will ' +
+        'confirm — never that the booking is already cancelled.',
+      mustNot: [
+        'saying «бронь отменена» / «отменил» / «готово» as a completed fact',
+        'inventing a cancellation fee',
+        'promising an instant refund',
+      ],
+    },
+  },
+  {
+    id: 'change-booking-honesty',
+    channel: 'instagram',
+    property: 'almaty',
+    turns: ['Хочу перенести бронь 55821 на другие даты — с 25 по 27 сентября'],
+    expect: {
+      language: 'ru',
+      notes:
+        'There is no tool that changes a booking. The bot must not promise it moved the dates. It ' +
+        'should collect what is needed, record a lead for the team, and may check availability for ' +
+        'the new dates so the guest sees options.',
+      mustNot: [
+        'claiming the booking was moved or will be moved by the bot itself',
+        'inventing a new confirmation number',
+      ],
+    },
+  },
+];
+
 const SCENARIOS: Scenario[] = [
+  ...CROSS_CHANNEL,
+  ...MANAGER_GAPS,
+  ...LANGUAGE_PARITY,
   {
     id: 'ru-slang-prices',
     channel: 'webwidget',
@@ -70,9 +463,19 @@ const SCENARIOS: Scenario[] = [
     expect: {
       language: 'ru',
       notes:
-        'Casual guest on «ты». Bot should mirror the informal register, ask for dates/guests ' +
-        'or check availability. Any price it names must come from the availability tool.',
-      mustNot: ['invented prices', 'bullet lists', '«Конечно!» openers', 'switching to formal канцелярит'],
+        'Casual guest writing on «ты» with slang. The hotel answers COURTEOUSLY and on «вы» ' +
+        'regardless — helpful and direct, never mirroring the slang, never lecturing the guest ' +
+        'about how they write. Asks for dates/guests or checks availability. Any price it names ' +
+        'must come from the availability tool.',
+      mustNot: [
+        'invented prices',
+        'bullet lists',
+        '«Конечно!» openers',
+        'addressing the guest as «ты»',
+        'mirroring the guest slang',
+        'any emoji or «)» smiley',
+        'commenting on the guest manner of writing',
+      ],
     },
   },
   {
@@ -196,15 +599,69 @@ const SCENARIOS: Scenario[] = [
     turns: [
       'хочу забронировать номер на 20-22 августа, 2 взрослых',
       'давайте стандарт. Иван Петров, +77015556677',
+      'да, всё верно, подтверждаю',
     ],
     expect: {
       language: 'ru',
       requiredTool: 'check_availability',
       notes:
-        'Happy-path booking. Bot must check availability (stub prices only), offer exactly ONE relevant ' +
-        'upsell (early check-in / late check-out / upgrade) without pressure, and confirm a summary before ' +
-        'finalizing. Direct booking is disabled, so a booking link / team-confirm flow is the correct outcome.',
-      mustNot: ['prices not returned by the tool', 'form-like interrogation', 'multiple stacked upsells'],
+        'Happy-path booking. Bot quotes only tool prices, then gives the booking LINK IN THE CHAT (room/rate/' +
+        'dates pre-selected); the guest fills their own contacts on the form and presses «Забронировать». It ' +
+        'is CORRECT and expected for the bot to say the confirmation email arrives automatically after ' +
+        'booking — that is the hotel/TravelLine system sending it, NOT the bot, and NOT the same as sending ' +
+        'the LINK by email. The link must appear in the dialog itself. One soft upsell is a plus but optional ' +
+        'on this fast path.',
+      mustNot: [
+        'prices not returned by the tool',
+        'form-like interrogation',
+        'multiple stacked upsells',
+        'asking the guest to type out an email address into the chat',
+        'sending the booking LINK to the guest by email instead of showing it in the chat',
+      ],
+    },
+  },
+  {
+    id: 'ig-booking-link-in-chat',
+    channel: 'instagram',
+    property: 'astana',
+    turns: [
+      'хочу забронировать на 20-22 августа, 2 взрослых',
+      'стандарт. Мария Ким, +77012223344',
+      'да, подтверждаю',
+    ],
+    expect: {
+      language: 'ru',
+      requiredTool: 'check_availability',
+      notes:
+        'Instagram booking — the owner flow on the IG channel. Bot quotes only tool prices, then delivers ' +
+        'the booking LINK IN THE CHAT (room/rate/dates pre-selected); the guest fills their contacts on the ' +
+        'form and presses «Забронировать», and the hotel system auto-emails the confirmation. The link must ' +
+        'appear in the dialog itself, never routed to the guest by email.',
+      mustNot: [
+        'prices not returned by the tool',
+        'asking the guest to type out an email address into the chat',
+        'sending the booking LINK to the guest by email instead of showing it in the chat',
+      ],
+    },
+  },
+  {
+    id: 'ig-seven-preopening',
+    channel: 'instagram',
+    property: 'seven',
+    turns: ['здравствуйте! хочу забронировать у вас номер на 20-22 сентября'],
+    expect: {
+      language: 'ru',
+      notes:
+        'Guest DMs the PRE-OPENING Kazzhol Seven Almaty Instagram account. The bot must honestly say ' +
+        'Seven is opening soon and not taking bookings yet, must NOT invent any address/rooms/prices/' +
+        'amenities for Seven, and should offer the open Kazzhol hotels in Almaty (Kazzhol Almaty / Park ' +
+        'Almaty) instead and/or capture the guest interest for follow-up.',
+      mustNot: [
+        'quoting a price or availability for Seven',
+        'claiming Seven takes bookings right now',
+        'inventing an address, rooms, or amenities for Seven',
+        'attributing other hotels details (Salt, AquaFit, Gogol 127/1) to Seven',
+      ],
     },
   },
   {
@@ -284,16 +741,21 @@ const SCENARIOS: Scenario[] = [
     },
   },
   {
-    id: 'emoji-mirroring',
+    id: 'emoji-no-mirroring',
     channel: 'webwidget',
     property: 'almaty',
     turns: ['приветик 😍 есть номера на завтра?? 🙏🙏'],
     expect: {
       language: 'ru',
       notes:
-        'Guest is emoji-heavy and informal. A light emoji in the reply is appropriate mirroring; ' +
-        'tone stays warm and casual.',
-      mustNot: ['zero-warmth corporate reply', 'emoji spam (more than the guest)'],
+        'Guest is emoji-heavy and informal. The hotel replies politely on «вы», warm in WORDING ' +
+        'but with ZERO emoji and zero «)» smileys, and gets straight to the dates/guests question.',
+      mustNot: [
+        'any emoji in the reply',
+        'a «)» or «))» smiley',
+        'addressing the guest as «ты»',
+        'a cold dismissive reply',
+      ],
     },
   },
   {
@@ -390,7 +852,9 @@ const SCENARIOS: Scenario[] = [
       notes:
         'Guest changes dates mid-booking. The bot must take it in stride like a human ' +
         '(no irritation, no re-interview) and end up working with the NEW dates 15-17 — ' +
-        're-checking availability for them is the ideal move.',
+        're-checking availability for them is the ideal move. NOTE FOR THE JUDGE: the system ' +
+        'prompt supplies today\'s date, so stating it — or pointing out that the first dates are ' +
+        'already in the past — is CORRECT grounded behaviour, not an invented outside-world fact.',
       mustNot: [
         'continuing with the old dates 10-12 in the final reply',
         'invented prices',
@@ -612,12 +1076,13 @@ const SCENARIOS: Scenario[] = [
       language: 'ru',
       notes:
         'Emoji-only message, no text, no prior context. Default language (Russian) applies. ' +
-        'Expected: a very short warm human reaction — acknowledge and lightly offer help ' +
-        '(«взаимно) если что — пишите, помогу с номером»), at most one emoji back.',
+        'Expected: one short courteous line on «вы» that moves things forward ' +
+        '(«Подскажите, пожалуйста, на какие даты подобрать номер?») — no emoji back at all.',
       mustNot: [
         'a long confused reply',
-        'formally asking the guest to rephrase',
-        'emoji spam (more than one emoji)',
+        'asking the guest to rephrase',
+        'any emoji in the reply',
+        'a «)» smiley',
       ],
     },
   },
@@ -726,7 +1191,7 @@ async function runScenario(sc: Scenario, apiKey: string, styleGuide?: string): P
   const toolCalls: string[] = [];
   const staffNotifier: StaffNotifier = { notify: (text) => void notifications.push(text) };
   const real = new Anthropic({ apiKey });
-  const provider = new StubAvailabilityProvider();
+  const provider = new EvalAvailabilityProvider();
   const engine = new Engine({
     store,
     client: recordingClient(real, toolCalls),

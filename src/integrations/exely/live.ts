@@ -37,6 +37,7 @@ export class LiveAvailabilityProvider implements AvailabilityProvider {
       query.checkIn,
       query.checkOut,
       query.guests,
+      query.childAges ?? [],
     )) as ExelySearchResponse;
 
     const nights = Math.max(
@@ -44,7 +45,26 @@ export class LiveAvailabilityProvider implements AvailabilityProvider {
       Math.round((Date.parse(query.checkOut) - Date.parse(query.checkIn)) / DAY_MS),
     );
 
-    let offers = (data.roomStays ?? []).map((rs) => normalizeRoomStay(rs, nights));
+    // `include: roomTypeShortContent|ratePlanShortContent` fills this block with the real names;
+    // without the lookup the guest is told the room is called «2 взрослых на основных местах».
+    const raw = data as unknown as {
+      content?: {
+        roomTypes?: Array<{ id?: unknown; name?: unknown }>;
+        ratePlans?: Array<{ id?: unknown; name?: unknown }>;
+      };
+    };
+    const nameById = (list?: Array<{ id?: unknown; name?: unknown }>): Record<string, string> =>
+      Object.fromEntries(
+        (list ?? [])
+          .filter((x) => x?.id !== undefined && typeof x?.name === 'string' && x.name !== '')
+          .map((x) => [String(x.id), x.name as string]),
+      );
+    const roomTypeNames = nameById(raw.content?.roomTypes);
+    const ratePlanNames = nameById(raw.content?.ratePlans);
+
+    let offers = (data.roomStays ?? []).map((rs) =>
+      normalizeRoomStay(rs, nights, roomTypeNames, ratePlanNames),
+    );
     if (query.roomType) {
       const needle = query.roomType.toLowerCase();
       offers = offers.filter((o) => o.roomType.toLowerCase().includes(needle));
@@ -59,7 +79,12 @@ export class LiveAvailabilityProvider implements AvailabilityProvider {
   }
 }
 
-function normalizeRoomStay(rs: ExelyRoomStay, nights: number): RoomOffer {
+function normalizeRoomStay(
+  rs: ExelyRoomStay,
+  nights: number,
+  roomTypeNames: Record<string, string> = {},
+  ratePlanNames: Record<string, string> = {},
+): RoomOffer {
   const roomType = rs.roomType ?? {};
   const total = rs.total ?? {};
   // "null if unknown": a roomStay without any price must never surface as 0 KZT.
@@ -69,16 +94,32 @@ function normalizeRoomStay(rs: ExelyRoomStay, nights: number): RoomOffer {
     .filter((p) => p.code !== undefined)
     .map((p) => String(p.code));
   return {
-    roomType: roomType.name ?? rs.fullPlacementsName ?? 'Room',
+    roomType:
+      roomType.name ??
+      (roomType.id !== undefined ? roomTypeNames[String(roomType.id)] : undefined) ??
+      rs.fullPlacementsName ??
+      'Room',
     available: (rs.availability ?? 1) > 0,
     pricePerNight: totalPrice === null ? null : Math.round(totalPrice / nights),
     currency: rs.currencyCode ?? 'KZT',
     roomTypeId: roomType.id !== undefined ? String(roomType.id) : null,
     ratePlanId: rs.ratePlan?.id !== undefined ? String(rs.ratePlan.id) : null,
-    ratePlanName: rs.ratePlan?.name ?? null,
+    ratePlanName:
+      rs.ratePlan?.name ??
+      (rs.ratePlan?.id !== undefined ? (ratePlanNames[String(rs.ratePlan.id)] ?? null) : null),
     totalPrice,
     checksum: rs.checksum ?? null,
     placements,
     bookingFormLink: rs.bookingFormLink ?? null,
+    discounts: (rs.availableDiscounts ?? [])
+      .map((d) => (d as { name?: string; title?: string })?.name ?? (d as { title?: string })?.title)
+      .filter((n): n is string => typeof n === 'string' && n.trim() !== ''),
+    cancellationPolicy: rs.cancellationPolicy
+      ? {
+          freeCancellationPossible: rs.cancellationPolicy.freeCancellationPossible ?? false,
+          freeCancellationDeadline: rs.cancellationPolicy.freeCancellationDeadlineLocal ?? null,
+          penaltyAmount: rs.cancellationPolicy.penaltyAmount ?? null,
+        }
+      : null,
   };
 }

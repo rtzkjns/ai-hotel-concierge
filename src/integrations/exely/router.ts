@@ -16,6 +16,9 @@ export interface CabinetProviders {
   reservationFor: (property: string) => ExelyReservation | undefined;
   bookingEnabledFor: (property: string) => boolean;
   propertyIdResolver: (property: string) => string | undefined;
+  /** Pull the hotel's static catalog (Content API) — used to keep the bot's knowledge fresh.
+   *  Returns undefined for a hotel with no configured cabinet. */
+  contentFor: (property: string) => Promise<unknown> | undefined;
 }
 
 interface Cabinet {
@@ -23,6 +26,7 @@ interface Cabinet {
   reservation: ExelyReservation;
   bookingEnabled: boolean;
   propertyId: string;
+  http: ExelyHttp;
 }
 
 /**
@@ -52,6 +56,7 @@ export function createCabinetProviders(
       reservation: new ExelyReservation(http),
       bookingEnabled: cab.bookingEnabled,
       propertyId: cab.propertyId,
+      http,
     };
   }
 
@@ -67,5 +72,9 @@ export function createCabinetProviders(
     reservationFor: (property) => byProperty[property]?.reservation,
     bookingEnabledFor: (property) => byProperty[property]?.bookingEnabled ?? false,
     propertyIdResolver: (property) => byProperty[property]?.propertyId,
+    contentFor: (property) => {
+      const cabinet = byProperty[property];
+      return cabinet ? cabinet.http.content(cabinet.propertyId) : undefined;
+    },
   };
 }

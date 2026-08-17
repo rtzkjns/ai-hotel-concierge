@@ -7,7 +7,7 @@
 // (not enabled hotel-side) — place()/cancel() degrade to ok:false, never throw.
 import type { RoomOffer } from './types';
 
-const COMMENT_MAX_CHARS = 500;
+export const COMMENT_MAX_CHARS = 500;
 
 /** The subset of ExelyHttp the Reservation API needs (structural, for easy faking). */
 export interface ReservationHttp {
@@ -29,7 +29,7 @@ export interface BookingRq {
     ratePlan: { id: string };
     roomType: { id: string; placements: Array<{ code: string }> };
     guests: Array<{ firstName: string; lastName: string }>;
-    guestCount: { adultCount: number };
+    guestCount: { adultCount: number; childCount?: number };
     checksum: string;
     services?: Array<{ id: string }>;
   }>;
@@ -52,7 +52,7 @@ interface VerifiedBooking {
 interface CreatedBooking {
   number?: string;
   status?: string;
-  total?: { priceBeforeTax?: number };
+  total?: { priceBeforeTax?: number; taxAmount?: number };
   warnings?: unknown[];
 }
 
@@ -77,7 +77,9 @@ export function buildBooking(
   adults: number,
   guest: GuestInfo,
   comment = '',
+  childAges: number[] = [],
 ): BookingRq {
+  const childCount = childAges.length;
   return {
     propertyId,
     roomStays: [
@@ -89,7 +91,10 @@ export function buildBooking(
           placements: offer.placements.map((code) => ({ code })),
         },
         guests: [{ firstName: guest.first, lastName: guest.last }],
-        guestCount: { adultCount: Math.max(1, adults) },
+        guestCount:
+          childCount > 0
+            ? { adultCount: Math.max(1, adults), childCount }
+            : { adultCount: Math.max(1, adults) },
         checksum: offer.checksum ?? '',
       },
     ],
@@ -154,11 +159,17 @@ export class ExelyReservation {
         };
       }
       const created = await this.create(booking, token);
+      // The guest pays the tax-inclusive total — never quote priceBeforeTax on a receipt.
+      const t = created.total;
+      const total =
+        t && (t.priceBeforeTax !== undefined || t.taxAmount !== undefined)
+          ? (t.priceBeforeTax ?? 0) + (t.taxAmount ?? 0)
+          : undefined;
       return {
         ok: Boolean(created.number),
         number: created.number,
         status: created.status,
-        total: created.total?.priceBeforeTax,
+        total,
         warnings: created.warnings ?? [],
       };
     } catch (err) {

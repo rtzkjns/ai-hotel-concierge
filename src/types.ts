@@ -27,6 +27,22 @@ export interface Conversation {
 
 export type LeadKind = 'booking' | 'generic';
 
+/** Editable per-hotel knowledge injected LIVE into the prompt each turn (promos, announcements,
+ *  facts, rate-plan names). Lets a hotel add an offer and have both bots know it next message. */
+export interface HotelContent {
+  id: number;
+  property: string;
+  kind: 'promo' | 'announcement' | 'fact' | 'rate_plan';
+  title: string;
+  body: string;
+  source: 'staff' | 'excel' | 'exely';
+  active: boolean;
+  startsAt: string | null;
+  endsAt: string | null;
+  updatedAt: string;
+  createdAt: string;
+}
+
 export interface BookingLead {
   id?: number;
   conversationId: string;
@@ -102,4 +118,18 @@ export interface StaffSession {
   login: string;
   role: string;
   expiresAt: string; // ISO timestamp
+}
+
+/** Запись базы знаний, управляемая из админ-панели отеля. */
+export interface KbEntry {
+  id: number;
+  /** Ключ отеля; пустая строка = применяется ко всем отелям сети. */
+  property: string;
+  /** 'fact' — знание, 'tone' — правило общения, 'source' — ссылка-источник. */
+  kind: 'fact' | 'tone' | 'source';
+  title: string;
+  body: string;
+  url?: string | null;
+  active: boolean | number;
+  updatedAt?: string;
 }

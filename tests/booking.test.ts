@@ -85,7 +85,18 @@ describe('BookingService.createBooking', () => {
 
     const result = await service.createBooking(args);
 
-    expect(result).toEqual({ mode: 'confirmed', number: 'KZ-77', total: 120000, currency: 'KZT' });
+    expect(result).toEqual({
+      mode: 'confirmed',
+      number: 'KZ-77',
+      total: 120000, // tax-inclusive
+      currency: 'KZT',
+      checkIn: '2026-08-10',
+      checkOut: '2026-08-13',
+      roomType: 'Comfort Double',
+      ratePlanName: 'Best Available Rate',
+      guests: 2,
+      cancellation: null,
+    });
 
     // Fresh availability was re-searched — never a stale checksum.
     expect(provider.checkAvailability).toHaveBeenCalledWith({
@@ -325,5 +336,116 @@ describe('BookingService.bookingStatus', () => {
 
     const missing = await service.bookingStatus('NOPE');
     expect(missing).toEqual({ source: 'local', status: null });
+  });
+});
+
+describe('BookingService.createBooking — Round-2 hardening', () => {
+  function confirmedHttp() {
+    const http = { resPost: vi.fn(), resGet: vi.fn() };
+    http.resPost
+      .mockResolvedValueOnce({ booking: { createBookingToken: 'tok-1' } })
+      .mockResolvedValueOnce({
+        booking: {
+          number: 'KZ-77',
+          status: 'confirmed',
+          total: { priceBeforeTax: 100000, taxAmount: 20000 },
+        },
+      });
+    return http;
+  }
+  function svc(http: ReturnType<typeof confirmedHttp>, store = fakeStore()) {
+    return {
+      store,
+      service: new BookingService({
+        store,
+        provider: fakeProvider([offer]),
+        reservation: new ExelyReservation(http),
+        bookingEnabled: true,
+        propertyIdResolver: resolver,
+      }),
+    };
+  }
+
+  it('sends the owner-confirmed 15:00 check-in / 12:00 check-out to Exely', async () => {
+    const http = confirmedHttp();
+    await svc(http).service.createBooking(args);
+    const [, payload] = http.resPost.mock.calls[0] as [
+      string,
+      { booking: { roomStays: Array<{ stayDates: { arrivalDateTime: string; departureDateTime: string } }> } },
+    ];
+    expect(payload.booking.roomStays[0].stayDates.arrivalDateTime).toBe('2026-08-10T15:00:00');
+    expect(payload.booking.roomStays[0].stayDates.departureDateTime).toBe('2026-08-13T12:00:00');
+  });
+
+  it('is idempotent: a repeated confirmation returns the SAME booking, no second remote create', async () => {
+    const http = confirmedHttp();
+    const { service, store } = svc(http);
+    const first = await service.createBooking(args);
+    const second = await service.createBooking(args); // guest double-taps «подтверждаю»
+    expect(first.mode).toBe('confirmed');
+    expect(second.mode).toBe('confirmed');
+    if (first.mode === 'confirmed' && second.mode === 'confirmed') {
+      expect(second.number).toBe(first.number);
+    }
+    expect(http.resPost).toHaveBeenCalledTimes(2); // verify+create ONCE, not twice
+    expect(store.saveBooking).toHaveBeenCalledTimes(1);
+  });
+
+  it('still confirms (never loses the number) when saveBooking throws after a real create', async () => {
+    const http = confirmedHttp();
+    const store = fakeStore();
+    store.saveBooking = vi.fn(() => {
+      throw new Error('db locked');
+    });
+    const { service } = svc(http, store);
+    const result = await service.createBooking(args);
+    expect(result.mode).toBe('confirmed');
+    if (result.mode === 'confirmed') expect(result.number).toBe('KZ-77');
+    expect(store.events).toContain('booking_save_failed');
+  });
+
+  it('threads childAges into the re-search and childCount into the Exely booking', async () => {
+    const http = confirmedHttp();
+    const store = fakeStore();
+    const provider = fakeProvider([offer]);
+    const service = new BookingService({
+      store,
+      provider,
+      reservation: new ExelyReservation(http),
+      bookingEnabled: true,
+      propertyIdResolver: resolver,
+    });
+    await service.createBooking({ ...args, childAges: [7] });
+    expect(provider.checkAvailability).toHaveBeenCalledWith(expect.objectContaining({ childAges: [7] }));
+    const [, payload] = http.resPost.mock.calls[0] as [
+      string,
+      { booking: { roomStays: Array<{ guestCount: { adultCount: number; childCount?: number } }> } },
+    ];
+    expect(payload.booking.roomStays[0].guestCount.childCount).toBe(1);
+  });
+
+  it('reserves the upsell tag so a long guest comment never clips it', async () => {
+    const http = confirmedHttp();
+    await svc(http).service.createBooking({
+      ...args,
+      comment: 'x'.repeat(600),
+      upsellAccepted: ['early_checkin'],
+    });
+    const [, payload] = http.resPost.mock.calls[0] as [string, { booking: { customer: { comment: string } } }];
+    const comment = payload.booking.customer.comment;
+    expect(comment).toContain('[upsell: early_checkin]'); // tag survived
+    expect(comment.length).toBeLessThanOrEqual(500);
+  });
+
+  it('falls back to the offer price when Exely returns a zero total (never «итого 0»)', async () => {
+    const http = { resPost: vi.fn(), resGet: vi.fn() };
+    http.resPost
+      .mockResolvedValueOnce({ booking: { createBookingToken: 'tok-1' } })
+      .mockResolvedValueOnce({
+        booking: { number: 'KZ-77', status: 'confirmed', total: { priceBeforeTax: 0, taxAmount: 0 } },
+      });
+    const result = await svc(http).service.createBooking(args);
+    expect(result.mode).toBe('confirmed');
+    if (result.mode === 'confirmed') expect(result.total).toBe(120000); // offer.totalPrice, not 0
   });
 });

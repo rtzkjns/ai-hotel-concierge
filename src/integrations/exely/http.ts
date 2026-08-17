@@ -64,6 +64,11 @@ export class ExelyHttp {
       childAges,
       arrivalDate: arrival,
       departureDate: departure,
+      // WITHOUT this the response carries only ids — roomType={id, placements}, ratePlan={id} —
+      // and the bot fell back to `fullPlacementsName`, telling the guest the room is called
+      // «2 взрослых на основных местах». The flag is in Exely's own OpenAPI schema and fills a
+      // `content` block with the real category and rate names.
+      include: 'roomTypeShortContent|ratePlanShortContent',
     });
   }
 

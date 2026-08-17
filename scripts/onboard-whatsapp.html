@@ -1,0 +1,106 @@
+<!doctype html>
+<!--
+  onboard-whatsapp.html — our own Embedded Signup page (replaces 360dialog's hosted
+  onboarding UI). Serve it over HTTPS from our own domain, which must be listed in the
+  Meta app → Facebook Login for Business → Client OAuth Settings. Full flow:
+  docs/REVERSE-360DIALOG.md.
+
+  Open:  https://bot.<domain>/admin/onboard/whatsapp?app_id=<APP_ID>&config_id=<CONFIG_ID>
+  It runs the Coexistence Embedded Signup, then prints the `code` + `waba_id` and the
+  exact command to finish onboarding with scripts/onboard-whatsapp.ts. No secret ever
+  touches the browser (the app_secret stays server-side in the script).
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Kazzhol — connect WhatsApp (Coexistence)</title>
+    <style>
+      body { font-family: system-ui, sans-serif; max-width: 640px; margin: 3rem auto; padding: 0 1rem; }
+      button { font-size: 1rem; padding: 0.75rem 1.25rem; border: 0; border-radius: 8px;
+               background: #1877f2; color: #fff; cursor: pointer; }
+      button:disabled { background: #9db; cursor: default; }
+      pre { background: #f4f4f5; padding: 1rem; border-radius: 8px; overflow-x: auto; white-space: pre-wrap; }
+      .out { margin-top: 1.5rem; }
+      code { background: #f4f4f5; padding: 0.1rem 0.35rem; border-radius: 4px; }
+      .err { color: #b91c1c; }
+    </style>
+  </head>
+  <body>
+    <h1>Connect the hotel WhatsApp number</h1>
+    <p>
+      This links <b>+7 708 709 3000</b> to the Cloud API via <b>Coexistence</b> — the WhatsApp
+      Business app keeps working, no downtime. You scan one QR on the reception phone inside the popup.
+    </p>
+    <p id="cfg" class="err"></p>
+    <button id="go" disabled>Connect WhatsApp</button>
+    <div id="result" class="out"></div>
+
+    <script>
+      const q = new URLSearchParams(location.search);
+      const APP_ID = q.get('app_id');
+      const CONFIG_ID = q.get('config_id');
+      const cfgEl = document.getElementById('cfg');
+      const btn = document.getElementById('go');
+      const out = document.getElementById('result');
+
+      if (!APP_ID || !CONFIG_ID) {
+        cfgEl.textContent = 'Missing ?app_id=…&config_id=… in the URL — add both and reload.';
+      }
+
+      // Captured from the two ES channels: the popup postMessage (waba_id) and the
+      // FB.login callback (code). Both are needed by scripts/onboard-whatsapp.ts.
+      let wabaId = null;
+
+      window.addEventListener('message', (ev) => {
+        if (ev.origin !== 'https://www.facebook.com' && ev.origin !== 'https://web.facebook.com') return;
+        try {
+          const data = JSON.parse(ev.data);
+          if (data.type === 'WA_EMBEDDED_SIGNUP' && data.event === 'FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING') {
+            wabaId = data.data && data.data.waba_id;
+          }
+        } catch (_) { /* non-JSON postMessages are not ours */ }
+      });
+
+      window.fbAsyncInit = function () {
+        FB.init({ appId: APP_ID, autoLogAppEvents: true, xfbml: false, version: 'v23.0' });
+        if (APP_ID && CONFIG_ID) btn.disabled = false;
+      };
+      (function (d, s, id) {
+        const fjs = d.getElementsByTagName(s)[0];
+        if (d.getElementById(id)) return;
+        const js = d.createElement(s); js.id = id;
+        js.src = 'https://connect.facebook.net/en_US/sdk.js';
+        fjs.parentNode.insertBefore(js, fjs);
+      })(document, 'script', 'facebook-jssdk');
+
+      btn.addEventListener('click', () => {
+        FB.login(
+          (response) => {
+            const code = response && response.authResponse && response.authResponse.code;
+            if (!code) {
+              out.innerHTML = '<p class="err">No code returned — the signup was cancelled or blocked.</p>';
+              return;
+            }
+            const cmd =
+              'WHATSAPP_APP_ID=' + APP_ID + ' WHATSAPP_APP_SECRET=<secret> \\\n' +
+              '  npx tsx scripts/onboard-whatsapp.ts --code ' + code + ' --waba ' + (wabaId || '<WABA_ID>');
+            out.innerHTML =
+              '<h3>Signup done — finish on the server</h3>' +
+              '<p>code: <code>' + code + '</code><br>waba_id: <code>' + (wabaId || '(not received — check the popup)') + '</code></p>' +
+              '<p>Run this on the server (fill the app secret):</p><pre>' + cmd + '</pre>';
+          },
+          {
+            config_id: CONFIG_ID,
+            response_type: 'code',
+            override_default_response_type: true,
+            // v3 names the coexistence flow here; on a v4 config the flow is chosen
+            // inside the config itself and featureType can be omitted.
+            extras: { setup: {}, featureType: 'whatsapp_business_app_onboarding', sessionInfoVersion: '3' },
+          },
+        );
+      });
+    </script>
+  </body>
+</html>

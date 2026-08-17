@@ -58,7 +58,7 @@ describe('InstagramAdapter', () => {
     expect(calls.length).toBe(2);
     for (const call of calls) {
       // The reply goes back from the SAME IG account the guest wrote to.
-      expect(call.url).toBe(`https://graph.facebook.com/v23.0/${IG_ID}/messages`);
+      expect(call.url).toBe(`https://graph.instagram.com/v26.0/${IG_ID}/messages`);
       expect((call.init?.headers as Record<string, string>).Authorization).toBe('Bearer ig-token');
     }
     const bodies = calls.map((c) => JSON.parse(String(c.init?.body)));
@@ -70,7 +70,7 @@ describe('InstagramAdapter', () => {
     const { adapter, calls } = makeAdapter();
     await adapter.typing(SENDER);
     expect(calls.length).toBe(1);
-    expect(calls[0].url).toBe(`https://graph.facebook.com/v23.0/${IG_ID}/messages`);
+    expect(calls[0].url).toBe(`https://graph.instagram.com/v26.0/${IG_ID}/messages`);
     expect(JSON.parse(String(calls[0].init?.body))).toEqual({
       recipient: { id: PSID },
       sender_action: 'typing_on',
@@ -99,7 +99,7 @@ describe('InstagramAdapter', () => {
     expect(adapter.parseWebhook(igPayload([echo, read, delivery]))).toEqual([]);
   });
 
-  it('parseWebhook: an attachment-only message becomes the unsupported placeholder', () => {
+  it('parseWebhook: an attachment-only message is described by kind, not rejected', () => {
     const { adapter } = makeAdapter();
     const att = {
       sender: { id: PSID },
@@ -107,7 +107,7 @@ describe('InstagramAdapter', () => {
     };
     const parsed = adapter.parseWebhook(igPayload([att]));
     expect(parsed.length).toBe(1);
-    expect(parsed[0].text).toContain('unsupported message type');
+    expect(parsed[0].text).toContain('фотографию');
   });
 
   it('parseWebhook: malformed bodies yield no messages and never throw', () => {
@@ -118,15 +118,42 @@ describe('InstagramAdapter', () => {
     expect(adapter.parseWebhook({ entry: [{ messaging: [{}] }] })).toEqual([]);
   });
 
-  it('send: splits a >1000-char message into multiple posts', async () => {
+  it('send: splits a long message so each chunk is ≤1000 BYTES (multi-byte safe)', async () => {
     const { adapter, calls } = makeAdapter();
-    const long = 'а'.repeat(1500);
+    const long = 'а'.repeat(1500); // Cyrillic 'а' = 2 bytes → 3000 bytes total
     await adapter.send(SENDER, [{ text: long, delayMs: 0 }]);
-    expect(calls.length).toBe(2);
+    expect(calls.length).toBeGreaterThanOrEqual(3); // 3000 bytes / 1000 → ≥3 posts
+    const enc = new TextEncoder();
+    for (const c of calls) {
+      const txt = JSON.parse(String(c.init?.body)).message.text;
+      expect(enc.encode(txt).length).toBeLessThanOrEqual(1000);
+    }
     const total = calls
       .map((c) => JSON.parse(String(c.init?.body)).message.text.length)
       .reduce((a, b) => a + b, 0);
-    expect(total).toBeGreaterThanOrEqual(1500 - 4); // minus trimmed spaces at the split
+    expect(total).toBeGreaterThanOrEqual(1500 - 6); // minus trimmed spaces at the splits
+  });
+
+  it('send: honors a custom baseUrl (e.g. the Facebook-Login path)', async () => {
+    const { fn, calls } = fakeFetch(() => undefined);
+    const adapter = new InstagramAdapter(
+      { accessToken: 't', igIds: { almaty: IG_ID }, baseUrl: 'https://graph.facebook.com/v26.0' },
+      fn,
+    );
+    await adapter.send(SENDER, [{ text: 'hi', delayMs: 0 }]);
+    expect(calls[0].url).toBe(`https://graph.facebook.com/v26.0/${IG_ID}/messages`);
+  });
+
+  it('send: uses the account-specific token (Instagram Login = one token per account)', async () => {
+    const { fn, calls } = fakeFetch(() => undefined);
+    const adapter = new InstagramAdapter(
+      { accessToken: 'fallback', igIds: { almaty: IG_ID }, tokens: { almaty: 'per-account-token' } },
+      fn,
+    );
+    await adapter.send(SENDER, [{ text: 'hi', delayMs: 0 }]);
+    expect((calls[0].init?.headers as Record<string, string>).Authorization).toBe(
+      'Bearer per-account-token',
+    );
   });
 });
 
@@ -220,5 +247,33 @@ describe('Instagram webhook round-trip', () => {
     expect(res.statusCode).toBe(200);
     expect(engine.handle).not.toHaveBeenCalled();
     await app.close();
+  });
+});
+
+/** Жалоба менеджеров 2026-08-16: гости кидают сторис с отзывами, бот отвечал «не могу открыть». */
+describe('InstagramAdapter: сторис и вложения', () => {
+  const adapter = new InstagramAdapter({ igIds: { almaty: '111' }, accessToken: 't' });
+  const evt = (message: unknown) => ({
+    entry: [{ messaging: [{ sender: { id: 'g1' }, recipient: { id: '111' }, message }] }],
+  });
+
+  it('упоминание отеля в сторис распознаётся как отзыв', () => {
+    const [m] = adapter.parseWebhook(evt({ mid: 'm1', attachments: [{ type: 'story_mention' }] }));
+    expect(m.text).toContain('упомянул отель в своей истории');
+  });
+
+  it('ответ на историю отеля помечается и сохраняет текст гостя', () => {
+    const [m] = adapter.parseWebhook(
+      evt({ mid: 'm2', text: 'а завтрак во сколько?', reply_to: { story: { id: 's1' } } }),
+    );
+    expect(m.text).toContain('ответил на историю');
+    expect(m.text).toContain('завтрак');
+  });
+
+  it('reels и пересланная публикация различаются', () => {
+    const [reel] = adapter.parseWebhook(evt({ mid: 'm3', attachments: [{ type: 'ig_reel' }] }));
+    expect(reel.text).toContain('reels');
+    const [share] = adapter.parseWebhook(evt({ mid: 'm4', attachments: [{ type: 'share' }] }));
+    expect(share.text).toContain('переслал');
   });
 });

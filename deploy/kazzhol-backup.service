@@ -1,0 +1,17 @@
+# Oneshot nightly SQLite backup (paired with kazzhol-backup.timer).
+# Install is handled by deploy/deploy.sh.
+[Unit]
+Description=Kazzhol AI bot — nightly SQLite backup
+After=kazzhol-bot.service
+
+[Service]
+Type=oneshot
+User=kazzhol
+EnvironmentFile=/opt/kazzhol-ai/.env
+ExecStart=/usr/bin/env bash /opt/kazzhol-ai/deploy/backup.sh
+# Same write confinement as the main unit.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/kazzhol-ai
+PrivateTmp=true

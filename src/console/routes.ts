@@ -6,12 +6,15 @@ import formbody from '@fastify/formbody';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { MetricsSummary } from '../core/events';
 import { maskPII } from '../core/pii';
+import { propertyList } from '../knowledge';
+import type { KbEntry } from '../types';
 import type {
   Booking,
   BookingLead,
   ChatMessage,
   Conversation,
   ConversationStatus,
+  HotelContent,
   MiceRequest,
   StaffMember,
   StoredEvent,
@@ -39,6 +42,14 @@ const SNIPPET_CHARS = 80;
 
 /** The subset of Store the console needs (structural, for easy faking). */
 export interface ConsoleStore extends SessionStore {
+  /** Админ-панель базы знаний: факты, правила общения, источники. */
+  listKbEntries?(property?: string, kind?: string): KbEntry[];
+  addKbEntry?(e: Omit<KbEntry, 'id' | 'updatedAt'>): number;
+  updateKbEntry?(
+    id: number,
+    patch: Partial<Pick<KbEntry, 'title' | 'body' | 'url' | 'active'>>,
+  ): void;
+  deleteKbEntry?(id: number): void;
   findStaffByLogin(login: string): StaffMember | null;
   deleteSession(token: string): void;
   listConversations(activeWithinDays?: number): Conversation[];
@@ -56,6 +67,18 @@ export interface ConsoleStore extends SessionStore {
     data?: { conversationId?: string; property?: string; channel?: string; payload?: unknown },
   ): void;
   listEvents(sinceIso: string): StoredEvent[];
+  listContentForAdmin(property?: string): HotelContent[];
+  addContent(c: {
+    property: string;
+    kind: HotelContent['kind'];
+    title?: string;
+    body: string;
+    source?: HotelContent['source'];
+    startsAt?: string | null;
+    endsAt?: string | null;
+  }): number;
+  setContentActive(id: number, active: boolean): void;
+  deleteContent(id: number): void;
 }
 
 /**
@@ -71,6 +94,10 @@ export interface ConsoleDeps {
   store: ConsoleStore;
   metricsSummary: (store: { listEvents(sinceIso: string): StoredEvent[] }) => MetricsSummary;
   sendToConversation: SendToConversation;
+  /** Last-synced status of each hotel's Exely-sourced knowledge (optional). */
+  knowledgeStatus?: () => Array<{ property: string; syncedAt: string | null }>;
+  /** Force a live re-pull of all hotels' catalog from Exely (optional). */
+  refreshKnowledge?: () => Promise<unknown>;
 }
 
 // --- HTML helpers ------------------------------------------------------------------
@@ -142,7 +169,12 @@ function nav(staff: AuthedStaff): string {
     ['/console/chats', 'Чаты'],
   ];
   if (staff.role === 'admin') {
-    links.push(['/console/leads', 'Лиды'], ['/console/bookings', 'Брони']);
+    links.push(
+      ['/console/leads', 'Лиды'],
+      ['/console/bookings', 'Брони'],
+      ['/console/content', 'Акции'],
+      ['/console/kb', 'База знаний'],
+    );
   }
   links.push(['/console/mice', 'MICE']);
   if (staff.role === 'admin') links.push(['/console/data-deletion', 'Удаление ПД']);
@@ -435,6 +467,239 @@ export async function registerConsoleRoutes(
     });
 
     // --- Leads & bookings (admin only) ----------------------------------------------------
+
+    // --- Hotel content: live promos / announcements the bot uses next message (ТЗ п.1.10) ---
+
+    const CONTENT_KINDS = ['promo', 'announcement', 'fact', 'rate_plan'];
+
+    // Админ-панель базы знаний: владелец и менеджеры сами учат бота — без разработчика.
+    // Три типа записей: факт (что знать), правило общения (как говорить), источник (откуда брать).
+    // Всё читается движком на КАЖДОМ сообщении гостя, поэтому правка действует сразу.
+    scope.get('/console/kb', { preHandler: requireRole('admin') }, async (req, reply) => {
+      const staff = req.staff!;
+      const csrf = csrfTokenFor(req.sessionToken!);
+      const csrfField = `<input type="hidden" name="_csrf" value="${escapeHtml(csrf)}">`;
+      const rows: KbEntry[] = store.listKbEntries?.() ?? [];
+      const KIND_LABEL: Record<string, string> = {
+        fact: 'Факт',
+        tone: 'Правило общения',
+        source: 'Источник',
+      };
+      const hotelOptions =
+        '<option value="">Вся сеть</option>' +
+        propertyList.map((h) => `<option value="${escapeHtml(h.key)}">${escapeHtml(h.name)}</option>`).join('');
+
+      const group = (kind: string, hint: string): string => {
+        const list = rows.filter((r) => r.kind === kind);
+        const items = list.length
+          ? list
+              .map(
+                (r) =>
+                  `<tr><td>${escapeHtml(r.property || 'вся сеть')}</td>` +
+                  `<td><b>${escapeHtml(r.title || '—')}</b><br><span class="muted">${escapeHtml(r.body).slice(0, 400)}</span>` +
+                  (r.url ? `<br><a href="${escapeHtml(r.url)}" target="_blank" rel="noreferrer">${escapeHtml(r.url)}</a>` : '') +
+                  `</td><td>${r.active ? '🟢 включено' : '⚪️ выключено'}</td>` +
+                  `<td><form method="post" action="/console/kb/toggle" style="display:inline">${csrfField}` +
+                  `<input type="hidden" name="id" value="${escapeHtml(String(r.id))}"><button>${r.active ? 'Выкл' : 'Вкл'}</button></form> ` +
+                  `<form method="post" action="/console/kb/delete" style="display:inline" onsubmit="return confirm('Удалить запись?')">${csrfField}` +
+                  `<input type="hidden" name="id" value="${escapeHtml(String(r.id))}"><button>Удалить</button></form></td></tr>`,
+              )
+              .join('')
+          : `<tr><td colspan="4" class="muted">Пока пусто. ${escapeHtml(hint)}</td></tr>`;
+        return `<table><tr><th>Отель</th><th>Запись</th><th>Статус</th><th></th></tr>${items}</table>`;
+      };
+
+      const body =
+        '<h1>База знаний бота</h1>' +
+        '<p>Всё, что вы добавите здесь, бот учтёт <b>со следующего сообщения гостя</b> — перезапуск не нужен. ' +
+        'Записи можно выключать, не удаляя.</p>' +
+
+        '<h2>Факты об отеле</h2>' +
+        '<p class="muted">Услуги, цены на дополнительные услуги, правила, акции. Бот отвечает по ним прямо и считает их достоверными.</p>' +
+        group('fact', 'Например: «Поздний выезд до 16:00 — 50% стоимости суток».') +
+        `<form method="post" action="/console/kb/add">${csrfField}
+          <input type="hidden" name="kind" value="fact">
+          <p><select name="property">${hotelOptions}</select></p>
+          <p><input name="title" placeholder="Короткий заголовок, например «Поздний выезд»" style="width:100%"></p>
+          <p><textarea name="body" rows="3" placeholder="Что именно должен знать бот" style="width:100%" required></textarea></p>
+          <p><button type="submit">Добавить факт</button></p>
+        </form>` +
+
+        '<hr><h2>Правила общения</h2>' +
+        '<p class="muted">Как боту говорить и как не говорить. Эти правила приоритетнее общих настроек стиля.</p>' +
+        group('tone', 'Например: «Не предлагать бронирование, если гость спросил только про услугу».') +
+        `<form method="post" action="/console/kb/add">${csrfField}
+          <input type="hidden" name="kind" value="tone">
+          <p><select name="property">${hotelOptions}</select></p>
+          <p><input name="title" placeholder="Короткий заголовок правила" style="width:100%"></p>
+          <p><textarea name="body" rows="3" placeholder="Например: всегда уточнять число гостей до предложения номера" style="width:100%" required></textarea></p>
+          <p><button type="submit">Добавить правило</button></p>
+        </form>` +
+
+        '<hr><h2>Источники</h2>' +
+        '<p class="muted">Ссылка на страницу отеля, акцию или прайс. Текст со страницы подтягивается и попадает в знания бота.</p>' +
+        group('source', 'Например: страница фитнес-центра на сайте отеля.') +
+        `<form method="post" action="/console/kb/add">${csrfField}
+          <input type="hidden" name="kind" value="source">
+          <p><select name="property">${hotelOptions}</select></p>
+          <p><input name="title" placeholder="Что это за источник" style="width:100%"></p>
+          <p><input name="url" type="url" placeholder="https://kazzhol.com/..." style="width:100%" required></p>
+          <p><textarea name="body" rows="2" placeholder="Необязательно: краткое пояснение для бота" style="width:100%"></textarea></p>
+          <p><button type="submit">Добавить источник</button></p>
+        </form>`;
+
+      return reply.type('text/html; charset=utf-8').send(page('База знаний', body, { staff, csrf }));
+    });
+
+    scope.post('/console/kb/add', { preHandler: requireRole('admin') }, async (req, reply) => {
+      const b = req.body as Record<string, string>;
+      const kind = b.kind === 'tone' ? 'tone' : b.kind === 'source' ? 'source' : 'fact';
+      const bodyText = (b.body ?? '').trim();
+      const url = (b.url ?? '').trim();
+      // Источник без ссылки и факт без текста бессмысленны — молча не сохраняем мусор.
+      if (kind === 'source' ? url === '' : bodyText === '') {
+        return reply.redirect('/console/kb');
+      }
+      store.addKbEntry?.({
+        property: (b.property ?? '').trim(),
+        kind,
+        title: (b.title ?? '').trim(),
+        body: bodyText || (kind === 'source' ? `Источник: ${url}` : ''),
+        url: url || null,
+        active: true,
+      });
+      return reply.redirect('/console/kb');
+    });
+
+    scope.post('/console/kb/toggle', { preHandler: requireRole('admin') }, async (req, reply) => {
+      const id = Number((req.body as Record<string, string>).id);
+      const cur = (store.listKbEntries?.() ?? []).find((r: KbEntry) => Number(r.id) === id);
+      if (cur) store.updateKbEntry?.(id, { active: !cur.active });
+      return reply.redirect('/console/kb');
+    });
+
+    scope.post('/console/kb/delete', { preHandler: requireRole('admin') }, async (req, reply) => {
+      store.deleteKbEntry?.(Number((req.body as Record<string, string>).id));
+      return reply.redirect('/console/kb');
+    });
+
+    scope.get('/console/content', { preHandler: requireRole('admin') }, async (req, reply) => {
+      const staff = req.staff!;
+      const csrf = csrfTokenFor(req.sessionToken!);
+      const csrfField = `<input type="hidden" name="_csrf" value="${escapeHtml(csrf)}">`;
+      const rows = store.listContentForAdmin();
+      const table = rows.length
+        ? '<table><tr><th>Отель</th><th>Тип</th><th>Заголовок</th><th>Текст</th><th>Период</th><th>Статус</th><th></th></tr>' +
+          rows
+            .map(
+              (c) =>
+                `<tr><td>${escapeHtml(c.property)}</td><td>${escapeHtml(c.kind)}</td>` +
+                `<td>${escapeHtml(c.title || '—')}</td><td>${escapeHtml(c.body)}</td>` +
+                `<td>${escapeHtml((c.startsAt ?? '—') + ' … ' + (c.endsAt ?? '∞'))}</td>` +
+                `<td>${c.active ? '🟢 вкл' : '⚪️ выкл'}</td>` +
+                `<td><form method="post" action="/console/content/toggle" style="display:inline">${csrfField}` +
+                `<input type="hidden" name="id" value="${escapeHtml(c.id)}"><button>${c.active ? 'Выкл' : 'Вкл'}</button></form> ` +
+                `<form method="post" action="/console/content/delete" style="display:inline">${csrfField}` +
+                `<input type="hidden" name="id" value="${escapeHtml(c.id)}"><button>Удалить</button></form></td></tr>`,
+            )
+            .join('') +
+          '</table>'
+        : '<p>Пока нет акций/анонсов. Добавьте первую ниже — бот увидит её со следующего сообщения гостя.</p>';
+      // Live-from-Exely knowledge: last-synced status + a manual "refresh now" for staff.
+      const knowledgePanel = deps.knowledgeStatus
+        ? `<h2>Знания из Exely (авто-синхронизация)</h2>` +
+          `<p>Номера, услуги и правила бот берёт напрямую из системы Exely и обновляет сам (при старте и каждые 12 ч). Цены — всегда живые из Exely на даты гостя.</p>` +
+          '<table><tr><th>Отель</th><th>Обновлено из Exely</th></tr>' +
+          deps
+            .knowledgeStatus()
+            .map(
+              (s) =>
+                `<tr><td>${escapeHtml(s.property)}</td><td>${escapeHtml(
+                  s.syncedAt ? s.syncedAt.replace('T', ' ').slice(0, 16) + ' UTC' : '— (статичные знания)',
+                )}</td></tr>`,
+            )
+            .join('') +
+          '</table>' +
+          (deps.refreshKnowledge
+            ? `<form method="post" action="/console/knowledge/refresh">${csrfField}<p><button type="submit">Обновить сейчас из Exely</button></p></form>`
+            : '') +
+          '<hr>'
+        : '';
+      const hotelOpts = propertyList
+        .map((p) => `<option value="${escapeHtml(p.key)}">${escapeHtml(p.name)}</option>`)
+        .join('');
+      const kindOpts = CONTENT_KINDS.map((k) => `<option value="${k}">${k}</option>`).join('');
+      const form =
+        `<h2>Добавить акцию / анонс</h2>` +
+        `<form method="post" action="/console/content/add">${csrfField}` +
+        `<p>Отель: <select name="property" required>${hotelOpts}</select> Тип: <select name="kind">${kindOpts}</select></p>` +
+        `<p>Заголовок: <input name="title" placeholder="напр. Осенняя акция"></p>` +
+        `<p>Текст: <textarea name="body" required placeholder="напр. действует раннее бронирование, работает новый спа-центр"></textarea></p>` +
+        `<p style="color:#8a6d00">⚠ Не указывайте конкретную цену за номер — бот всегда берёт цену из системы бронирования на даты гостя. Опишите условия акции словами (что за акция, для кого), без суммы.</p>` +
+        `<p>Действует с <input type="date" name="startsAt"> по <input type="date" name="endsAt"> (необязательно — истекает само)</p>` +
+        `<p><button type="submit">Добавить</button></p></form>`;
+      return sendHtml(
+        reply,
+        page(
+          'Акции и знания — консоль',
+          `<h1>Акции и знания отелей</h1>${knowledgePanel}${table}${form}`,
+          { staff, csrf },
+        ),
+      );
+    });
+
+    scope.post(
+      '/console/knowledge/refresh',
+      { preHandler: requireRole('admin') },
+      async (_req, reply) => {
+        if (deps.refreshKnowledge) {
+          try {
+            await deps.refreshKnowledge();
+          } catch {
+            // The status table will simply show the timestamp didn't advance.
+          }
+        }
+        return reply.redirect('/console/content');
+      },
+    );
+
+    scope.post('/console/content/add', { preHandler: requireRole('admin') }, async (req, reply) => {
+      const b = (req.body ?? {}) as Record<string, unknown>;
+      const property = typeof b.property === 'string' ? b.property : '';
+      // A promo is a short line, not a document — cap length to keep prompt cost bounded.
+      const bodyText = typeof b.body === 'string' ? b.body.trim().slice(0, 600) : '';
+      const title = typeof b.title === 'string' ? b.title.trim().slice(0, 120) : '';
+      const kind = CONTENT_KINDS.includes(String(b.kind)) ? (b.kind as HotelContent['kind']) : 'promo';
+      if (property && bodyText) {
+        store.addContent({
+          property,
+          kind,
+          title,
+          body: bodyText,
+          source: 'staff',
+          // Store the admin's bare calendar date (YYYY-MM-DD); the bot compares on the hotel's
+          // local date (UTC+5), so no timezone suffix is needed here.
+          startsAt: typeof b.startsAt === 'string' && b.startsAt ? b.startsAt : null,
+          endsAt: typeof b.endsAt === 'string' && b.endsAt ? b.endsAt : null,
+        });
+      }
+      return reply.redirect('/console/content');
+    });
+
+    scope.post('/console/content/toggle', { preHandler: requireRole('admin') }, async (req, reply) => {
+      const id = Number((req.body as Record<string, unknown>)?.id);
+      if (Number.isFinite(id)) {
+        const cur = store.listContentForAdmin().find((c) => c.id === id);
+        if (cur) store.setContentActive(id, !cur.active);
+      }
+      return reply.redirect('/console/content');
+    });
+
+    scope.post('/console/content/delete', { preHandler: requireRole('admin') }, async (req, reply) => {
+      const id = Number((req.body as Record<string, unknown>)?.id);
+      if (Number.isFinite(id)) store.deleteContent(id);
+      return reply.redirect('/console/content');
+    });
 
     scope.get('/console/leads', { preHandler: requireRole('admin') }, async (req, reply) => {
       const rows = store

@@ -2,8 +2,16 @@ export interface AvailabilityQuery {
   property: string; // property key, e.g. 'astana'
   checkIn: string; // YYYY-MM-DD
   checkOut: string; // YYYY-MM-DD
-  guests: number;
+  guests: number; // number of adults
+  /** Ages of children on the stay, if any — hotels price children by age. */
+  childAges?: number[];
   roomType?: string;
+}
+
+export interface CancellationPolicy {
+  freeCancellationPossible: boolean;
+  freeCancellationDeadline: string | null; // ISO local, e.g. '2026-09-13T14:59'
+  penaltyAmount: number | null;
 }
 
 export interface RoomOffer {
@@ -20,6 +28,10 @@ export interface RoomOffer {
   checksum: string | null; // required by the Reservation API; stale after prices change
   placements: string[]; // placement codes, e.g. ['adult-1', 'adult-2']
   bookingFormLink: string | null; // guest-facing payment/booking page
+  /** Names of discounts Exely already applied to this offer (early-booking, long-stay, …). Live. */
+  discounts?: string[];
+  /** Cancellation terms for this rate, straight from Search — used in the booking receipt. */
+  cancellationPolicy?: CancellationPolicy | null;
 }
 
 export interface AvailabilityResult {
@@ -48,7 +60,12 @@ export interface ExelyRoomStay {
   availability?: number;
   checksum?: string;
   bookingFormLink?: string;
-  availableDiscounts?: unknown[];
+  availableDiscounts?: Array<{ name?: string; title?: string } | unknown>;
+  cancellationPolicy?: {
+    freeCancellationPossible?: boolean;
+    freeCancellationDeadlineLocal?: string;
+    penaltyAmount?: number;
+  };
   placements?: ExelyPlacement[];
   fullPlacementsName?: string;
 }

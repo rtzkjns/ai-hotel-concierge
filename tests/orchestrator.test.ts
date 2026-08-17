@@ -42,6 +42,9 @@ describe('tool definitions', () => {
       'check_promo_code',
       'create_payment',
       'submit_mice_request',
+      // Гость оформляет бронь сам по ссылке, а Reservation-scope закрыт (403) — этот инструмент
+      // единственный способ зафиксировать факт брони и подтвердить его гостю.
+      'register_completed_booking',
       'capture_lead',
       'escalate_to_human',
     ]);

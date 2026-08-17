@@ -166,14 +166,16 @@ describe('Engine.handle', () => {
 
     expect(parts).not.toBeNull();
     expect(parts!.length).toBe(2);
-    expect(parts![0].text).toBe('привет!');
-    expect(parts![1].text).toBe('чем могу помочь?');
+    // enforceOfficialTone поднимает первую букву каждой части — официальный регистр.
+    expect(parts![0].text).toBe('Привет!');
+    expect(parts![1].text).toBe('Чем могу помочь?');
     for (const p of parts!) expect(p.delayMs).toBeGreaterThanOrEqual(200);
 
     const convo = store.conversations.get('telegram:1')!;
     expect(convo.history).toEqual([
       { role: 'user', content: 'привет, есть номера?' },
-      { role: 'assistant', content: 'привет! ||| чем могу помочь?' },
+      // В историю пишется УЖЕ очищенный ответ: иначе модель копировала бы смайлы из себя же.
+      { role: 'assistant', content: 'Привет!|||Чем могу помочь?' },
     ]);
     expect(convo.language).toBe('ru');
 
@@ -331,6 +333,25 @@ describe('Engine.handle', () => {
     expect(args.property).toBe('park_almaty');
   });
 
+  it('check_availability on a stub-backed hotel hides prices and hands off (no fake rates)', async () => {
+    // The default availabilityProvider mock returns source:'stub' — the guard must
+    // strip prices/availability, capture a lead, and alert staff instead of quoting.
+    const { engine, store, notifier } = makeEngine({
+      client: fakeClient([
+        toolUse('check_availability', { checkIn: '2026-08-01', checkOut: '2026-08-02', guests: 2 }),
+        finalText('передал ваши даты команде — подтвердят наличие и цену'),
+      ]),
+    });
+    withProperty(store, 'telegram', '7', 'astana');
+
+    await engine.handle(textMsg('есть номера на 1 августа?', 'telegram', '7'));
+
+    expect(store.leads.length).toBe(1);
+    expect(store.leads[0].kind).toBe('generic');
+    expect(store.leads[0].specialRequests).toContain('astana');
+    expect(notifier.texts.some((t) => t.includes('без живых цен'))).toBe(true);
+  });
+
   it('applies the 0.6 delay multiplier on the web widget channel', async () => {
     const reply = finalText('секунду, гляну по датам — сейчас всё расскажу подробно');
     const tg = makeEngine({ client: fakeClient([reply]) });
@@ -384,5 +405,90 @@ describe('Engine.handle', () => {
     expect(store.events.map((e) => e.type)).toContain('mice_created');
     expect(notifier.texts.length).toBe(1);
     expect(notifier.texts[0]).not.toContain('0001122');
+  });
+});
+
+describe('Engine.handle — live hotel content (fresh knowledge)', () => {
+  const promo = {
+    id: 1,
+    property: 'almaty',
+    kind: 'promo' as const,
+    title: 'Акция',
+    body: 'РАННЕЕ БРОНИРОВАНИЕ действует до конца месяца',
+    source: 'staff' as const,
+    active: true,
+    startsAt: null,
+    endsAt: null,
+    updatedAt: '2026-08-12T00:00:00Z',
+    createdAt: '2026-08-12T00:00:00Z',
+  };
+  type CreateMock = { mock: { calls: Array<[{ system: string }]> } };
+
+  it.each(['whatsapp', 'instagram'] as Channel[])(
+    'injects an active promo into the system prompt on %s (both bots share one engine)',
+    async (channel) => {
+      const store = fakeStore();
+      store.listActiveContent = (property: string) => (property === 'almaty' ? [promo] : []);
+      const { engine, deps } = makeEngine({ store });
+      withProperty(store, channel, '1', 'almaty');
+
+      await engine.handle(textMsg('привет', channel, '1'));
+
+      const createMock = deps.client.messages.create as unknown as CreateMock;
+      expect(createMock.mock.calls.length).toBeGreaterThan(0);
+      expect(createMock.mock.calls[0][0].system).toContain('РАННЕЕ БРОНИРОВАНИЕ');
+    },
+  );
+
+  it("does NOT leak one hotel's promo into another hotel's prompt", async () => {
+    const store = fakeStore();
+    store.listActiveContent = (property: string) => (property === 'almaty' ? [promo] : []);
+    const { engine, deps } = makeEngine({ store });
+    withProperty(store, 'whatsapp', '2', 'astana');
+
+    await engine.handle(textMsg('привет', 'whatsapp', '2'));
+
+    const createMock = deps.client.messages.create as unknown as CreateMock;
+    expect(createMock.mock.calls[0][0].system).not.toContain('РАННЕЕ БРОНИРОВАНИЕ');
+  });
+});
+
+describe('Engine — live-synced knowledge (Exely Content)', () => {
+  it('prefers knowledgeFor over static, and rebuildPrompts picks up an Exely change mid-run', async () => {
+    let knowledge: Record<string, string> = { almaty: 'SYNCED-ALMATY-FACTS-V1' };
+    const store = fakeStore();
+    store.listActiveContent = () => [];
+    const { engine, deps } = makeEngine({
+      store,
+      client: fakeClient([finalText('ответ 1'), finalText('ответ 2')]),
+      knowledgeFor: (p: string) => knowledge[p],
+    });
+    withProperty(store, 'whatsapp', '3', 'almaty');
+
+    await engine.handle(textMsg('привет', 'whatsapp', '3'));
+    type CreateMock = { mock: { calls: Array<[{ system: string }]> } };
+    const createMock = deps.client.messages.create as unknown as CreateMock;
+    expect(createMock.mock.calls[0][0].system).toContain('SYNCED-ALMATY-FACTS-V1');
+
+    // Hotel edits its catalog in Exely → sync updates knowledgeFor → rebuildPrompts → next message.
+    knowledge = { almaty: 'SYNCED-ALMATY-FACTS-V2' };
+    engine.rebuildPrompts();
+    await engine.handle(textMsg('ещё вопрос', 'whatsapp', '3'));
+    expect(createMock.mock.calls[1][0].system).toContain('SYNCED-ALMATY-FACTS-V2');
+    expect(createMock.mock.calls[1][0].system).not.toContain('SYNCED-ALMATY-FACTS-V1');
+  });
+
+  it('falls back to the STATIC hotel knowledge when nothing has synced (knowledgeFor undefined)', async () => {
+    const store = fakeStore();
+    store.listActiveContent = () => [];
+    const { engine, deps } = makeEngine({ store, knowledgeFor: () => undefined });
+    withProperty(store, 'whatsapp', '5', 'almaty');
+
+    await engine.handle(textMsg('привет', 'whatsapp', '5'));
+
+    type CreateMock = { mock: { calls: Array<[{ system: string }]> } };
+    const createMock = deps.client.messages.create as unknown as CreateMock;
+    // The static Almaty knowledge (src/knowledge) names the AquaFit wellness complex.
+    expect(createMock.mock.calls[0][0].system).toContain('AquaFit');
   });
 });

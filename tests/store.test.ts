@@ -9,6 +9,26 @@ function daysAgoIso(days: number): string {
   return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
 }
 
+describe('Store: hotel_content (live per-hotel promos/announcements)', () => {
+  it('listActiveContent returns only active, in-window entries for the hotel', () => {
+    const s = new Store(':memory:');
+    s.addContent({ property: 'almaty', kind: 'promo', title: 'Осенняя акция', body: '-15% на выходные' });
+    const inactive = s.addContent({ property: 'almaty', kind: 'promo', body: 'снятая акция' });
+    s.setContentActive(inactive, false);
+    s.addContent({ property: 'almaty', kind: 'announcement', body: 'прошлогодняя', endsAt: '2020-01-01T00:00:00Z' });
+    s.addContent({ property: 'almaty', kind: 'announcement', body: 'будущая', startsAt: '2999-01-01T00:00:00Z' });
+    s.addContent({ property: 'astana', kind: 'promo', body: 'для Астаны' });
+
+    const active = s.listActiveContent('almaty', '2026-08-12T00:00:00Z');
+    expect(active.map((e) => e.body)).toEqual(['-15% на выходные']);
+    expect(active[0].title).toBe('Осенняя акция');
+    expect(active[0].active).toBe(true);
+    // admin surface sees every entry for the hotel regardless of status/window
+    expect(s.listContentForAdmin('almaty').length).toBe(4);
+    expect(s.listActiveContent('astana', '2026-08-12T00:00:00Z').length).toBe(1);
+  });
+});
+
 describe('Store', () => {
   let store: Store;
   beforeEach(() => {

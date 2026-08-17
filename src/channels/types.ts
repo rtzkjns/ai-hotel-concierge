@@ -29,5 +29,9 @@ export interface ChannelAdapter {
 
 /** Where staff alerts go (Telegram staff chat or console fallback). Text must be pre-masked. */
 export interface StaffNotifier {
-  notify(text: string): Promise<void> | void;
+  /**
+   * `property` маршрутизирует уведомление в чат КОНКРЕТНОГО отеля: менеджеры Астаны не должны
+   * видеть заявки Алматы. Без него — в общий чат (владелец/дежурный).
+   */
+  notify(text: string, property?: string): Promise<void> | void;
 }
