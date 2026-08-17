@@ -57,6 +57,10 @@ a{color:var(--brand);}
   line-height:56px;}
 .topbar nav a[aria-current="page"]{color:var(--text);font-weight:600;
   box-shadow:inset 0 -2px 0 var(--brand);}
+.count{display:inline-block;margin-left:6px;padding:1px 7px;border-radius:var(--r-pill);
+  background:var(--wait-bg);color:var(--wait-tx);font:600 12px/1.5 var(--font);
+  font-variant-numeric:tabular-nums;}
+.tabbar a span{white-space:nowrap;}
 .topbar__right{margin-left:auto;position:relative;}
 main{max-width:1100px;margin:0 auto;padding:var(--sp-4);}
 @media(min-width:641px){main{padding:var(--sp-5);}}
@@ -80,8 +84,10 @@ h1{font-size:20px;line-height:1.3;font-weight:600;letter-spacing:-.01em;margin:0
   .tabbar a[aria-current="page"]{color:var(--brand);}
   .tabbar svg{width:22px;height:22px;stroke:currentColor;stroke-width:1.5;fill:none;}
   main{padding-bottom:76px;}
+  /* Заголовок уже стоит в шапке телефона — в контенте он дублируется. */
+  main>h1,main>.narrow>h1{display:none;}
   .chat__head .who{display:none;}
-  .chat__head{padding:8px 16px;}
+  .chat__head{padding:8px 16px;top:48px;}
 }
 
 /* ---------- popover (Ещё) ---------- */
@@ -189,7 +195,7 @@ details.quiet>summary{cursor:pointer;font:600 15px/1.4 var(--font);color:var(--t
 .empty{max-width:360px;margin:0 auto;padding:var(--sp-7) var(--sp-4);text-align:center;}
 .empty h3{font:600 17px/1.4 var(--font);margin:var(--sp-3) 0 var(--sp-2);}
 .empty p{font-size:15px;line-height:1.55;color:var(--text-2);margin:0 0 var(--sp-4);}
-.empty svg{width:32px;height:32px;stroke:var(--ok);stroke-width:1.5;fill:none;}
+.empty svg{width:32px;height:32px;stroke-width:1.5;fill:none;}
 
 /* ---------- tiles (Итоги) ---------- */
 .lede{font:600 22px/1.35 var(--font);margin:0 0 var(--sp-5);}
@@ -211,7 +217,7 @@ details.quiet>summary{cursor:pointer;font:600 15px/1.4 var(--font);color:var(--t
 
 /* ---------- chat ---------- */
 .chat{max-width:720px;margin:0 auto;}
-.chat__head{position:sticky;top:0;z-index:10;background:var(--surface);
+.chat__head{position:sticky;top:56px;z-index:10;background:var(--surface);
   border-bottom:1px solid var(--border);padding:12px 16px;}
 .chat__head .who{font:600 16px/1.35 var(--font);}
 .chat__head .meta{font-size:13px;color:var(--text-3);margin-top:2px;}
@@ -274,7 +280,10 @@ tbody tr:last-child td{border-bottom:0;}
 .stack{display:flex;gap:var(--sp-2);flex-wrap:wrap;align-items:center;}
 .sticky-actions{position:sticky;bottom:0;background:var(--surface);border-top:1px solid var(--border);
   padding:12px 0 max(12px,env(safe-area-inset-bottom));display:flex;gap:var(--sp-2);
-  flex-wrap:wrap;margin-top:var(--sp-5);}
+  flex-wrap:wrap;margin-top:var(--sp-5);z-index:15;}
+/* Липкая панель действий обязана стоять НАД таб-панелью, иначе «Сохранить»
+   физически прячется под ней и правку невозможно применить с телефона. */
+@media(max-width:640px){.sticky-actions{bottom:calc(56px + env(safe-area-inset-bottom));}}
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;}}
 `.trim();
 
@@ -394,10 +403,26 @@ export function field(
   return `<div class="field"><label for="${name}">${escapeHtml(label)}</label>${input}${hint}</div>`;
 }
 
-export function emptyState(title: string, text: string, action?: string): string {
+const EMPTY_ICONS = {
+  ok: { path: '<path d="M20 6 9 17l-5-5"/>', color: 'var(--ok)' },
+  none: { path: '<circle cx="12" cy="12" r="9"/><path d="M8 12h8"/>', color: 'var(--text-3)' },
+  lost: { path: '<circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/>', color: 'var(--text-3)' },
+};
+
+/**
+ * Иконка несёт смысл: галочка означает «всё в порядке» и не должна встречать
+ * человека на экране «диалог не найден» или на пустом списке заявок.
+ */
+export function emptyState(
+  title: string,
+  text: string,
+  action?: string,
+  icon: keyof typeof EMPTY_ICONS = 'none',
+): string {
+  const { path, color } = EMPTY_ICONS[icon];
   return (
     `<div class="empty">` +
-    `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>` +
+    `<svg viewBox="0 0 24 24" aria-hidden="true" style="stroke:${color}">${path}</svg>` +
     `<h3>${escapeHtml(title)}</h3><p>${escapeHtml(text)}</p>${action ?? ''}</div>`
   );
 }
@@ -469,8 +494,11 @@ export function shell(title: string, body: string, opts: ShellOpts = {}): string
 
   const items = navItems(staff.role, waiting);
   const isActive = (href: string): boolean => (active ?? '') === href;
+  // Счётчик — единственное место в навигации с сигнальным цветом: у него тикают часы.
   const label = (i: NavItem): string =>
-    i.count ? `${i.label} · ${i.count}` : i.label;
+    i.count
+      ? `${escapeHtml(i.label)}<span class="count">${i.count}</span>`
+      : escapeHtml(i.label);
 
   const topbar =
     `<header class="topbar"><a class="topbar__brand" href="/console">Kazzhol<span>консоль</span></a>` +
@@ -478,7 +506,7 @@ export function shell(title: string, body: string, opts: ShellOpts = {}): string
     items
       .map(
         (i) =>
-          `<a href="${i.href}"${isActive(i.href) ? ' aria-current="page"' : ''}>${escapeHtml(label(i))}</a>`,
+          `<a href="${i.href}"${isActive(i.href) ? ' aria-current="page"' : ''}>${label(i)}</a>`,
       )
       .join('') +
     `</nav><div class="topbar__right">${moreMenu(staff, csrf)}</div></header>`;
@@ -496,7 +524,7 @@ export function shell(title: string, body: string, opts: ShellOpts = {}): string
         (i) =>
           `<a href="${i.href}"${isActive(i.href) ? ' aria-current="page"' : ''}>` +
           `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[i.icon]}</svg>` +
-          `<span>${escapeHtml(label(i))}</span></a>`,
+          `<span>${label(i)}</span></a>`,
       )
       .join('') +
     `</nav>`;
@@ -513,11 +541,16 @@ export function shell(title: string, body: string, opts: ShellOpts = {}): string
   );
 }
 
+const ROLE_LABEL: Record<string, string> = {
+  admin: 'владелец',
+  mice_manager: 'менеджер',
+};
+
 function moreMenu(staff: { login: string; role: string }, csrf?: string): string {
   const admin = staff.role === 'admin';
   return (
     `<details class="more"><summary>Ещё</summary><div class="pop">` +
-    `<div class="who">${escapeHtml(staff.login)} · ${escapeHtml(staff.role)}</div>` +
+    `<div class="who">${escapeHtml(staff.login)} · ${escapeHtml(ROLE_LABEL[staff.role] ?? staff.role)}</div>` +
     (admin ? `<a href="/console/kb/archive">Архив знаний</a>` : '') +
     (admin ? `<a href="/console/data-deletion">Удаление данных гостя</a>` : '') +
     `<form method="post" action="/console/logout">` +

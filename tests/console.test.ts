@@ -331,10 +331,12 @@ describe('chat takeover and staff replies', () => {
     expect(res.statusCode).toBe(302);
     expect(sendCalls).toEqual([{ conversationId: convo.id, text: 'сейчас всё решим' }]);
     const history = store.getConversation(convo.id)!.history;
-    expect(history[history.length - 1]).toEqual({
+    expect(history[history.length - 1]).toMatchObject({
       role: 'assistant',
       content: '[менеджер] сейчас всё решим',
     });
+    // Время проставляется хранилищем — на нём держатся часы и разделители дней в консоли.
+    expect(history[history.length - 1].createdAt).toBeTruthy();
     await app.close();
   });
 
@@ -358,6 +360,97 @@ describe('chat takeover and staff replies', () => {
     expect(res.headers.location).toContain('err=');
     expect(decodeURIComponent(res.headers.location as string)).toContain('guest offline');
     expect(store.getConversation(convo.id)!.history).toEqual([]);
+    await app.close();
+  });
+});
+
+// --- Регрессии, найденные разбором редизайна ------------------------------------------
+
+describe('console redesign regressions', () => {
+  it('serves the stylesheet without a session — the login screen must not render bare', async () => {
+    const { app } = await makeApp();
+    const res = await app.inject({ method: 'GET', url: '/console/app.v1.css' });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toContain('text/css');
+    expect(res.body).toContain('--brand');
+    await app.close();
+  });
+
+  it('keeps the typed reply when delivery fails', async () => {
+    const harness = await makeApp();
+    const { app, store } = harness;
+    harness.sendResult.ok = false;
+    harness.sendResult.error = 'guest offline';
+    const convo = store.getOrCreateConversation('webwidget', 'draft-1');
+    store.setStatus(convo.id, 'handed_off');
+    const { cookie, token } = await login(app, 'admin', 'admin-pass');
+
+    const res = await post(app, `/console/chats/${encodeURIComponent(convo.id)}/send`, cookie, csrfTokenFor(token!), {
+      text: 'Добрый день! Счёт на компанию подготовим сегодня.',
+    });
+    const back = await app.inject({
+      method: 'GET',
+      url: res.headers.location as string,
+      headers: { cookie },
+    });
+    // Текст обязан вернуться в поле: баннер обещает именно это.
+    expect(back.body).toContain('Счёт на компанию подготовим сегодня.');
+    expect(back.body).toContain('Не доставлено');
+    await app.close();
+  });
+
+  it('does not 500 when the delivery error contains a percent sign', async () => {
+    const { app, store } = await makeApp();
+    const convo = store.getOrCreateConversation('webwidget', 'pct-1');
+    store.setStatus(convo.id, 'handed_off');
+    const { cookie } = await login(app, 'admin', 'admin-pass');
+    const res = await app.inject({
+      method: 'GET',
+      url: `/console/chats/${encodeURIComponent(convo.id)}?err=${encodeURIComponent('timeout 50%')}`,
+      headers: { cookie },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain('timeout 50%');
+    await app.close();
+  });
+
+  it('saves a knowledge entry moved to another hotel instead of silently dropping it', async () => {
+    const { app, store } = await makeApp();
+    const id = store.addKbEntry({ property: '', kind: 'fact', title: 'Поздний выезд', body: 'до 16:00', url: null, active: true });
+    const { cookie, token } = await login(app, 'admin', 'admin-pass');
+    await post(app, `/console/kb/${id}`, cookie, csrfTokenFor(token!), {
+      kind: 'fact',
+      title: 'Поздний выезд',
+      body: 'до 16:00',
+      property: 'almaty',
+    });
+    expect(store.getKbEntry(id)?.property).toBe('almaty');
+    await app.close();
+  });
+
+  it('restoring from the archive brings the entry back into service', async () => {
+    const { app, store } = await makeApp();
+    const id = store.addKbEntry({ property: '', kind: 'fact', title: 'Парковка', body: 'бесплатно', url: null, active: true });
+    const { cookie, token } = await login(app, 'admin', 'admin-pass');
+    await post(app, `/console/kb/${id}/archive`, cookie, csrfTokenFor(token!), {});
+    expect(store.listKbEntries().some((e) => Number(e.id) === id)).toBe(false);
+    await post(app, `/console/kb/${id}/restore`, cookie, csrfTokenFor(token!), {});
+    const back = store.listKbEntries().find((e) => Number(e.id) === id);
+    // Вернуть запись и оставить её выключенной — то же самое, что не вернуть.
+    expect(back).toBeTruthy();
+    expect(Boolean(back!.active)).toBe(true);
+    await app.close();
+  });
+
+  it('sends a receptionist back to the inbox after handing a chat to the bot', async () => {
+    const { app, store } = await makeApp();
+    const convo = store.getOrCreateConversation('webwidget', 'rel-1');
+    store.setStatus(convo.id, 'handed_off');
+    store.setTakenBy(convo.id, 'aigul');
+    const { cookie, token } = await login(app, 'aigul', 'mice-pass');
+    const res = await post(app, `/console/chats/${encodeURIComponent(convo.id)}/release`, cookie, csrfTokenFor(token!), {});
+    // Диалог снова у бота и ресепшену недоступен — возврат на него дал бы голое 403.
+    expect(res.headers.location).toBe('/console');
     await app.close();
   });
 });

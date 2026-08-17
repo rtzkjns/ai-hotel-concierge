@@ -1,6 +1,8 @@
 export type Role = 'user' | 'assistant';
 
 export interface ChatMessage {
+  /** Проставляется хранилищем при записи; у старых сообщений отсутствует. */
+  createdAt?: string;
   role: Role;
   content: string;
 }

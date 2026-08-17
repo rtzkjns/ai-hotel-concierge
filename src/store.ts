@@ -46,7 +46,10 @@ export class Store {
     if (property) { sql += " AND (property = ? OR property = '')"; args.push(property); }
     if (kind) { sql += ' AND kind = ?'; args.push(kind); }
     sql += ' ORDER BY kind, id DESC';
-    return this.db.prepare(sql).all(...(args as never[])) as KbEntry[];
+    const rows = this.db.prepare(sql).all(...(args as never[])) as Array<
+      KbEntry & { updated_at?: string }
+    >;
+    return rows.map((r) => ({ ...r, updatedAt: r.updatedAt ?? r.updated_at }));
   }
 
   addKbEntry(e: Omit<KbEntry, 'id' | 'updatedAt'>): number {
@@ -60,7 +63,10 @@ export class Store {
   }
 
   getKbEntry(id: number): KbEntry | null {
-    return (this.db.prepare('SELECT * FROM kb_entries WHERE id = ?').get(id) as KbEntry) ?? null;
+    const r = this.db.prepare('SELECT * FROM kb_entries WHERE id = ?').get(id) as
+      | (KbEntry & { updated_at?: string })
+      | undefined;
+    return r ? { ...r, updatedAt: r.updatedAt ?? r.updated_at } : null;
   }
 
   /**
@@ -73,16 +79,22 @@ export class Store {
       .run(archived ? 1 : 0, archived ? 1 : 0, new Date().toISOString(), id);
   }
 
-  updateKbEntry(id: number, patch: Partial<Pick<KbEntry, 'title' | 'body' | 'url' | 'active'>>): void {
+  updateKbEntry(
+    id: number,
+    patch: Partial<Pick<KbEntry, 'title' | 'body' | 'url' | 'active' | 'property'>>,
+  ): void {
     const cur = this.db.prepare('SELECT * FROM kb_entries WHERE id = ?').get(id) as KbEntry | undefined;
     if (!cur) return;
     this.db
-      .prepare('UPDATE kb_entries SET title=?, body=?, url=?, active=?, updated_at=? WHERE id=?')
+      .prepare(
+        'UPDATE kb_entries SET title=?, body=?, url=?, active=?, property=?, updated_at=? WHERE id=?',
+      )
       .run(
         patch.title ?? cur.title,
         patch.body ?? cur.body,
         patch.url ?? cur.url ?? null,
         (patch.active ?? cur.active) ? 1 : 0,
+        patch.property ?? cur.property,
         new Date().toISOString(),
         id,
       );
@@ -337,7 +349,10 @@ export class Store {
       | { history: string }
       | undefined;
     const history = row ? (JSON.parse(row.history) as ChatMessage[]) : [];
-    history.push(message);
+    // Время проставляется здесь, на единственном пути записи: консоль показывает
+    // «бот · 14:31» и разделители дней, а без метки вся переписка выглядела
+    // как один бесконечный день.
+    history.push({ createdAt: nowIso(), ...message });
     const capped = history.slice(-HISTORY_CAP);
     this.db
       .prepare('UPDATE conversations SET history = ?, updated_at = ? WHERE id = ?')

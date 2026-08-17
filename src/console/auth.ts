@@ -76,6 +76,9 @@ export function requireAuth(store: SessionStore) {
   return async (req: FastifyRequest, reply: FastifyReply): Promise<void> => {
     const path = req.url.split('?')[0];
     if (path === '/console/login') return;
+    // Стили тоже открыты: иначе браузер запрашивает их без сессии, получает редирект
+    // на логин и рисует самый первый экран владельца голым HTML без единого стиля.
+    if (/^\/console\/app\.[\w.-]+\.css$/.test(path)) return;
     const token = req.cookies?.[SESSION_COOKIE];
     const session = token ? store.findSession(token) : null;
     if (!token || !session) {

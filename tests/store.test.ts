@@ -62,7 +62,8 @@ describe('Store', () => {
       store.appendMessage(id, { role: 'assistant', content: 'Здравствуйте!' });
       const convo = store.getOrCreateConversation('telegram', '111');
       expect(convo.history).toHaveLength(2);
-      expect(convo.history[0]).toEqual({ role: 'user', content: 'Привет' });
+      expect(convo.history[0]).toMatchObject({ role: 'user', content: 'Привет' });
+      expect(convo.history[0].createdAt).toBeTruthy();
     });
 
     it('caps history at 60 messages, dropping the oldest', () => {
