@@ -47,9 +47,14 @@ export class Store {
     if (kind) { sql += ' AND kind = ?'; args.push(kind); }
     sql += ' ORDER BY kind, id DESC';
     const rows = this.db.prepare(sql).all(...(args as never[])) as Array<
-      KbEntry & { updated_at?: string }
+      KbEntry & { updated_at?: string; fetched_at?: string | null; fetch_error?: string | null }
     >;
-    return rows.map((r) => ({ ...r, updatedAt: r.updatedAt ?? r.updated_at }));
+    return rows.map((r) => ({
+      ...r,
+      updatedAt: r.updatedAt ?? r.updated_at,
+      fetchedAt: r.fetchedAt ?? r.fetched_at ?? null,
+      fetchError: r.fetchError ?? r.fetch_error ?? null,
+    }));
   }
 
   addKbEntry(e: Omit<KbEntry, 'id' | 'updatedAt'>): number {
@@ -64,9 +69,23 @@ export class Store {
 
   getKbEntry(id: number): KbEntry | null {
     const r = this.db.prepare('SELECT * FROM kb_entries WHERE id = ?').get(id) as
-      | (KbEntry & { updated_at?: string })
+      | (KbEntry & { updated_at?: string; fetched_at?: string | null; fetch_error?: string | null })
       | undefined;
-    return r ? { ...r, updatedAt: r.updatedAt ?? r.updated_at } : null;
+    return r
+      ? {
+          ...r,
+          updatedAt: r.updatedAt ?? r.updated_at,
+          fetchedAt: r.fetchedAt ?? r.fetched_at ?? null,
+          fetchError: r.fetchError ?? r.fetch_error ?? null,
+        }
+      : null;
+  }
+
+  /** Отметка о вычитке источника: когда прочитан и чем закончилась последняя попытка. */
+  markKbFetched(id: number, at: string | null, error: string | null): void {
+    this.db
+      .prepare('UPDATE kb_entries SET fetched_at = ?, fetch_error = ? WHERE id = ?')
+      .run(at, error, id);
   }
 
   /**
@@ -177,6 +196,8 @@ export class Store {
         url        TEXT,
         active     INTEGER NOT NULL DEFAULT 1,
         archived   INTEGER NOT NULL DEFAULT 0,
+        fetched_at  TEXT,
+        fetch_error TEXT,
         updated_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS hotel_content (
@@ -242,6 +263,7 @@ export class Store {
         login      TEXT NOT NULL UNIQUE,
         pass_hash  TEXT NOT NULL,
         role       TEXT NOT NULL,
+        property   TEXT NOT NULL DEFAULT '',
         created_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS sessions (
@@ -273,6 +295,20 @@ export class Store {
     ) !== undefined;
     if (hasKb && !hasColumn('kb_entries', 'archived')) {
       this.db.exec('ALTER TABLE kb_entries ADD COLUMN archived INTEGER NOT NULL DEFAULT 0');
+    }
+    // Привязка сотрудника к отелю: ресепшен Астаны не должен видеть гостей Алматы.
+    const hasStaff = (
+      this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='staff'").get()
+    ) !== undefined;
+    if (hasStaff && !hasColumn('staff', 'property')) {
+      this.db.exec("ALTER TABLE staff ADD COLUMN property TEXT NOT NULL DEFAULT ''");
+    }
+    // Источники знаний вычитываются фоном — сохраняем текст страницы и время чтения.
+    if (hasKb && !hasColumn('kb_entries', 'fetched_at')) {
+      this.db.exec('ALTER TABLE kb_entries ADD COLUMN fetched_at TEXT');
+    }
+    if (hasKb && !hasColumn('kb_entries', 'fetch_error')) {
+      this.db.exec('ALTER TABLE kb_entries ADD COLUMN fetch_error TEXT');
     }
   }
 
@@ -669,11 +705,34 @@ export class Store {
 
   // --- Staff & sessions ------------------------------------------------------
 
-  createStaff(login: string, passHash: string, role: string): number {
+  createStaff(login: string, passHash: string, role: string, property = ''): number {
     const result = this.db
-      .prepare('INSERT INTO staff (login, pass_hash, role, created_at) VALUES (?, ?, ?, ?)')
-      .run(login, passHash, role, nowIso());
+      .prepare(
+        'INSERT INTO staff (login, pass_hash, role, property, created_at) VALUES (?, ?, ?, ?, ?)',
+      )
+      .run(login, passHash, role, property, nowIso());
     return Number(result.lastInsertRowid);
+  }
+
+  /** Смена пароля сотрудником — без неё панель нельзя отдать отелю. */
+  setStaffPassword(id: number, passHash: string): void {
+    this.db.prepare('UPDATE staff SET pass_hash = ? WHERE id = ?').run(passHash, id);
+  }
+
+  setStaffProperty(id: number, property: string): void {
+    this.db.prepare('UPDATE staff SET property = ? WHERE id = ?').run(property, id);
+  }
+
+  listStaff(): StaffMember[] {
+    const rows = this.db.prepare('SELECT * FROM staff ORDER BY id').all() as Array<Record<string, unknown>>;
+    return rows.map((row) => ({
+      id: row.id as number,
+      login: row.login as string,
+      passHash: row.pass_hash as string,
+      role: row.role as string,
+      property: (row.property as string) ?? '',
+      createdAt: row.created_at as string,
+    }));
   }
 
   findStaffByLogin(login: string): StaffMember | null {
@@ -686,6 +745,7 @@ export class Store {
       login: row.login as string,
       passHash: row.pass_hash as string,
       role: row.role as string,
+      property: (row.property as string) ?? '',
       createdAt: row.created_at as string,
     };
   }
@@ -704,12 +764,19 @@ export class Store {
   findSession(token: string): StaffSession | null {
     const row = this.db
       .prepare(
-        `SELECT s.token, s.staff_id, s.expires_at, st.login, st.role
+        `SELECT s.token, s.staff_id, s.expires_at, st.login, st.role, st.property
          FROM sessions s JOIN staff st ON st.id = s.staff_id
          WHERE s.token = ?`,
       )
       .get(token) as
-      | { token: string; staff_id: number; expires_at: string; login: string; role: string }
+      | {
+          token: string;
+          staff_id: number;
+          expires_at: string;
+          login: string;
+          role: string;
+          property?: string;
+        }
       | undefined;
     if (!row || row.expires_at <= nowIso()) return null;
     return {
@@ -717,6 +784,7 @@ export class Store {
       staffId: row.staff_id,
       login: row.login,
       role: row.role,
+      property: row.property ?? '',
       expiresAt: row.expires_at,
     };
   }

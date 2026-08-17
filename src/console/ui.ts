@@ -351,6 +351,12 @@ export function waitLabel(iso: string | undefined, now = Date.now()): string {
   return label === 'только что' || label === 'вчера' ? label : `ждёт ${label}`;
 }
 
+/** «14 мин назад», но «только что» и «вчера» — как есть: «только что назад» не по-русски. */
+export function agoLabel(iso: string | undefined, now = Date.now()): string {
+  const label = ago(iso, now);
+  return label === 'только что' || label === 'вчера' ? label : `${label} назад`;
+}
+
 export function minutesSince(iso: string | undefined, now = Date.now()): number {
   if (!iso) return 0;
   const then = Date.parse(iso);
@@ -468,7 +474,7 @@ export function navItems(role: string, waiting: number): NavItem[] {
 }
 
 export interface ShellOpts {
-  staff?: { login: string; role: string };
+  staff?: { login: string; role: string; property?: string };
   csrf?: string;
   active?: string;
   /** Mobile title bar back link — set on detail screens. */
@@ -546,11 +552,14 @@ const ROLE_LABEL: Record<string, string> = {
   mice_manager: 'менеджер',
 };
 
-function moreMenu(staff: { login: string; role: string }, csrf?: string): string {
+function moreMenu(staff: { login: string; role: string; property?: string }, csrf?: string): string {
   const admin = staff.role === 'admin';
   return (
     `<details class="more"><summary>Ещё</summary><div class="pop">` +
-    `<div class="who">${escapeHtml(staff.login)} · ${escapeHtml(ROLE_LABEL[staff.role] ?? staff.role)}</div>` +
+    `<div class="who">${escapeHtml(staff.login)} · ${escapeHtml(ROLE_LABEL[staff.role] ?? staff.role)}` +
+    (staff.property ? `<br>${escapeHtml(propertyLabel(staff.property))}` : '') +
+    `</div>` +
+    `<a href="/console/profile">Профиль и пароль</a>` +
     (admin ? `<a href="/console/kb/archive">Архив знаний</a>` : '') +
     (admin ? `<a href="/console/data-deletion">Удаление данных гостя</a>` : '') +
     `<form method="post" action="/console/logout">` +

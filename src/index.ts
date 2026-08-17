@@ -19,6 +19,7 @@ import { startRetention } from './core/retention';
 import { StubAmoCrm } from './integrations/amocrm';
 import { createCabinetProviders } from './integrations/exely';
 import { ExelyContentSync } from './knowledge/contentSync';
+import { SourceSync } from './knowledge/sourceSync';
 import { StubPaymentGateway } from './integrations/payments';
 import { createTranscriber } from './integrations/transcribe';
 import { buildServer } from './server';
@@ -95,6 +96,10 @@ async function main(): Promise<void> {
     properties: Object.keys(config.exelyByProperty),
     contentFor: cabinets.contentFor,
   });
+  // Ссылки, которые отель кладёт в панель, вычитываются фоном и складываются в базу
+  // знаний. Не на лету: страница может лечь, а ответ гостю ждать её не должен.
+  const sourceSync = new SourceSync(store);
+
   const bookingService = new BookingService({
     store,
     provider: availabilityProvider,
@@ -210,6 +215,7 @@ async function main(): Promise<void> {
             await contentSync.refreshAll();
             engine.rebuildPrompts();
           },
+          refreshSource: (entry) => sourceSync.refreshOne(entry),
         }),
       // Chatfuel bridge — temporary IG tenant path (answers all guests while our App Review pends).
       (a) => {
@@ -238,6 +244,22 @@ async function main(): Promise<void> {
     12 * 60 * 60 * 1000,
   );
   knowledgeTimer.unref();
+
+  // Источники отеля: читаем на старте и раз в час проверяем, не устарели ли.
+  // Сама вычитка бережная — только то, что старше 6 часов, и по одной странице.
+  void sourceSync
+    .refreshDue()
+    .then((r) => {
+      if (r.checked) console.log(`Источники отеля: прочитано ${r.updated}, не удалось ${r.failed}`);
+    })
+    .catch(() => undefined);
+  const sourceTimer = setInterval(
+    () => {
+      sourceSync.refreshDue().catch(() => undefined);
+    },
+    60 * 60 * 1000,
+  );
+  sourceTimer.unref();
 
   if (channels.includes('telegram') && config.telegram.botToken) {
     const tg = new TelegramChannel({

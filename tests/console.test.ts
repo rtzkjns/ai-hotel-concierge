@@ -19,6 +19,8 @@ async function makeApp(): Promise<Harness> {
   const store = new Store(':memory:');
   store.createStaff('admin', hashPassword('admin-pass'), 'admin');
   store.createStaff('aigul', hashPassword('mice-pass'), 'mice_manager');
+  // Ресепшен, привязанный к отелю: видит только своих гостей.
+  store.createStaff('astana-desk', hashPassword('desk-pass'), 'mice_manager', 'astana');
 
   const harness: Partial<Harness> = { sendCalls: [], sendResult: { ok: true } };
   const sendToConversation: SendToConversation = async (convo, text) => {
@@ -31,7 +33,21 @@ async function makeApp(): Promise<Harness> {
     adapters: {},
     store,
     config: { whatsapp: { phoneNumberIds: {} } },
-    extraRoutes: [(a) => registerConsoleRoutes(a, { store, metricsSummary, sendToConversation })],
+    extraRoutes: [
+      (a) =>
+        registerConsoleRoutes(a, {
+          store,
+          metricsSummary,
+          sendToConversation,
+          refreshSource: async (entry) => {
+            // Подменяем сеть: важно, что панель зовёт вычитку и показывает её результат.
+            if (entry.url?.includes('bad')) return { ok: false, error: 'Страница не найдена (404)' };
+            store.updateKbEntry(entry.id, { body: `Со страницы ${entry.url}:\nСкидка 20% осенью.` });
+            store.markKbFetched(entry.id, new Date().toISOString(), null);
+            return { ok: true };
+          },
+        }),
+    ],
   });
   harness.app = app;
   harness.store = store;
@@ -451,6 +467,117 @@ describe('console redesign regressions', () => {
     const res = await post(app, `/console/chats/${encodeURIComponent(convo.id)}/release`, cookie, csrfTokenFor(token!), {});
     // Диалог снова у бота и ресепшену недоступен — возврат на него дал бы голое 403.
     expect(res.headers.location).toBe('/console');
+    await app.close();
+  });
+});
+
+describe('per-hotel access', () => {
+  it('shows a hotel receptionist only their own hotel', async () => {
+    const { app, store } = await makeApp();
+    const ast = store.getOrCreateConversation('webwidget', 'g-ast');
+    store.setProperty(ast.id, 'astana');
+    store.setStatus(ast.id, 'handed_off');
+    const alm = store.getOrCreateConversation('webwidget', 'g-alm');
+    store.setProperty(alm.id, 'almaty');
+    store.setStatus(alm.id, 'handed_off');
+
+    const { cookie } = await login(app, 'astana-desk', 'desk-pass');
+    const inbox = await app.inject({ method: 'GET', url: '/console', headers: { cookie } });
+    expect(inbox.body).toContain(`/console/chats/${encodeURIComponent(ast.id)}`);
+    expect(inbox.body).not.toContain(`/console/chats/${encodeURIComponent(alm.id)}`);
+
+    // И открыть чужой диалог напрямую по ссылке тоже нельзя.
+    const direct = await app.inject({
+      method: 'GET',
+      url: `/console/chats/${encodeURIComponent(alm.id)}`,
+      headers: { cookie },
+    });
+    expect(direct.statusCode).toBe(403);
+    await app.close();
+  });
+
+  it('keeps a network-wide account seeing every hotel', async () => {
+    const { app, store } = await makeApp();
+    const alm = store.getOrCreateConversation('webwidget', 'w-alm');
+    store.setProperty(alm.id, 'almaty');
+    store.setStatus(alm.id, 'handed_off');
+    const { cookie } = await login(app, 'admin', 'admin-pass');
+    const inbox = await app.inject({ method: 'GET', url: '/console', headers: { cookie } });
+    expect(inbox.body).toContain(`/console/chats/${encodeURIComponent(alm.id)}`);
+    await app.close();
+  });
+});
+
+describe('profile password change', () => {
+  it('changes the password and refuses a wrong current one', async () => {
+    const { app, store } = await makeApp();
+    const { cookie, token } = await login(app, 'aigul', 'mice-pass');
+
+    const wrong = await post(app, '/console/profile', cookie, csrfTokenFor(token!), {
+      current: 'not-my-pass',
+      next: 'freshpass1',
+      repeat: 'freshpass1',
+    });
+    expect(wrong.statusCode).toBe(400);
+    expect(verifyPassword('mice-pass', store.findStaffByLogin('aigul')!.passHash)).toBe(true);
+
+    const ok = await post(app, '/console/profile', cookie, csrfTokenFor(token!), {
+      current: 'mice-pass',
+      next: 'freshpass1',
+      repeat: 'freshpass1',
+    });
+    expect(ok.statusCode).toBe(200);
+    expect(verifyPassword('freshpass1', store.findStaffByLogin('aigul')!.passHash)).toBe(true);
+    await app.close();
+  });
+
+  it('rejects a short password and a mismatched repeat', async () => {
+    const { app, store } = await makeApp();
+    const { cookie, token } = await login(app, 'aigul', 'mice-pass');
+    for (const body of [
+      { current: 'mice-pass', next: 'short', repeat: 'short' },
+      { current: 'mice-pass', next: 'longenough1', repeat: 'longenough2' },
+    ]) {
+      const res = await post(app, '/console/profile', cookie, csrfTokenFor(token!), body);
+      expect(res.statusCode).toBe(400);
+    }
+    expect(verifyPassword('mice-pass', store.findStaffByLogin('aigul')!.passHash)).toBe(true);
+    await app.close();
+  });
+});
+
+describe('knowledge sources', () => {
+  it('reads the page as soon as the owner pastes the link', async () => {
+    const { app, store } = await makeApp();
+    const { cookie, token } = await login(app, 'admin', 'admin-pass');
+    const res = await post(app, '/console/kb/add', cookie, csrfTokenFor(token!), {
+      kind: 'source',
+      url: 'https://kazzhol.com/promo',
+      title: 'Осенняя акция',
+    });
+    expect(res.headers.location).toContain('read=1');
+
+    const entry = store.listKbEntries(undefined, 'source')[0];
+    // Ссылка обещает боту знание страницы — значит текст обязан лежать в базе знаний.
+    expect(entry.body).toContain('Скидка 20% осенью');
+    expect(entry.fetchedAt).toBeTruthy();
+
+    const list = await app.inject({ method: 'GET', url: '/console/kb?kind=source', headers: { cookie } });
+    expect(list.body).toContain('Прочитано');
+    await app.close();
+  });
+
+  it('tells the owner in plain words when the page cannot be read', async () => {
+    const { app, store } = await makeApp();
+    const { cookie, token } = await login(app, 'admin', 'admin-pass');
+    const res = await post(app, '/console/kb/add', cookie, csrfTokenFor(token!), {
+      kind: 'source',
+      url: 'https://kazzhol.com/bad',
+      title: 'Битая страница',
+    });
+    expect(decodeURIComponent(res.headers.location as string)).toContain('Страница не найдена');
+    // Запись всё равно сохранена: отель поправит ссылку, а не заводит её заново.
+    expect(store.listKbEntries(undefined, 'source')).toHaveLength(1);
     await app.close();
   });
 });

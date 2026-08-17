@@ -20,6 +20,7 @@ import type {
 } from '../types';
 import {
   ago,
+  agoLabel,
   badge,
   banner,
   btn,
@@ -66,12 +67,15 @@ export interface ConsoleStore extends SessionStore {
   /** «В архив» вместо удаления — правка отеля обратима. */
   archiveKbEntry?(id: number, archived?: boolean): void;
   addKbEntry?(e: Omit<KbEntry, 'id' | 'updatedAt'>): number;
+  getKbEntry?(id: number): KbEntry | null;
   updateKbEntry?(
     id: number,
     patch: Partial<Pick<KbEntry, 'title' | 'body' | 'url' | 'active' | 'property'>>,
   ): void;
   deleteKbEntry?(id: number): void;
   findStaffByLogin(login: string): StaffMember | null;
+  /** Смена собственного пароля — иначе выданный при заведении пароль живёт вечно. */
+  setStaffPassword?(id: number, passHash: string): void;
   deleteSession(token: string): void;
   listConversations(activeWithinDays?: number): Conversation[];
   getConversation(id: string): Conversation | null;
@@ -119,6 +123,8 @@ export interface ConsoleDeps {
   knowledgeStatus?: () => Array<{ property: string; syncedAt: string | null }>;
   /** Force a live re-pull of all hotels' catalog from Exely (optional). */
   refreshKnowledge?: () => Promise<unknown>;
+  /** Прочитать конкретный источник по кнопке в панели (иначе — раз в 6 часов сам). */
+  refreshSource?: (entry: KbEntry) => Promise<{ ok: boolean; error?: string }>;
 }
 
 // --- HTML helpers ------------------------------------------------------------------
@@ -134,12 +140,25 @@ function chatUrl(id: string): string {
   return `/console/chats/${encodeURIComponent(id)}`;
 }
 
+/**
+ * Сотрудник, привязанный к отелю, работает только со своими гостями: ресепшен
+ * Астаны не должен видеть переписку Алматы — ни в очереди, ни в заявках.
+ * Пустой property = вся сеть (владелец).
+ */
+function canSee(staff: AuthedStaff, property: string | undefined): boolean {
+  if (!staff.property) return true;
+  // Диалог без отеля — гость ещё не выбрал, какой из них ему нужен. Такие
+  // видит вся сеть, иначе они зависли бы без ответа.
+  return !property || property === staff.property;
+}
+
+function visibleConversations(store: ConsoleStore, staff: AuthedStaff): Conversation[] {
+  return store.listConversations().filter((c) => canSee(staff, c.property));
+}
+
 /** Диалоги, которые бот передал человеку и которые ещё никто не взял. */
 function waitingFor(store: ConsoleStore, staff: AuthedStaff): Conversation[] {
-  return store
-    .listConversations()
-    .filter((c) => c.status === 'handed_off' && !c.takenBy)
-    .filter((c) => staff.role === 'admin' || true);
+  return visibleConversations(store, staff).filter((c) => c.status === 'handed_off' && !c.takenBy);
 }
 
 /** Момент последнего сообщения гостя — от него считается, сколько человек ждёт. */
@@ -283,7 +302,7 @@ export async function registerConsoleRoutes(
 
     scope.get('/console', async (req, reply) => {
       const staff = req.staff!;
-      const all = store.listConversations();
+      const all = visibleConversations(store, staff);
       const showProperty = new Set(all.map((c) => c.property)).size > 1;
 
       const waiting = all
@@ -383,6 +402,11 @@ export async function registerConsoleRoutes(
           }),
           404,
         );
+        return null;
+      }
+      // Чужой отель закрыт даже для владельца роли admin, если он привязан к отелю.
+      if (!canSee(req.staff!, convo.property)) {
+        await reply.code(403).type('text/html; charset=utf-8').send(FORBIDDEN_HTML);
         return null;
       }
       const notOwn =
@@ -577,10 +601,26 @@ export async function registerConsoleRoutes(
       { key: 'source', label: 'Источники', one: 'источник', none: 'Источников пока нет' },
     ];
 
+    /**
+     * Состояние источника словами: владелец должен видеть, прочитал бот страницу
+     * или нет, не заглядывая в логи. Молчание тут читалось бы как «всё работает».
+     */
+    const sourceStatus = (e: KbEntry): string => {
+      if (e.fetchError) {
+        return `<p class="card__meta" style="color:var(--err-tx)">Не удалось прочитать: ${escapeHtml(e.fetchError)}${
+          e.fetchedAt ? ` · бот пока пользуется текстом, прочитанным ${escapeHtml(agoLabel(e.fetchedAt))}` : ''
+        }</p>`;
+      }
+      if (e.fetchedAt) {
+        return `<p class="card__meta" style="color:var(--ok)">Прочитано ${escapeHtml(agoLabel(e.fetchedAt))} — бот использует эту страницу</p>`;
+      }
+      return `<p class="card__meta">Ещё не прочитано — бот прочитает страницу в течение часа</p>`;
+    };
+
     const kbKindOf = (v: unknown): 'fact' | 'tone' | 'source' =>
       v === 'tone' ? 'tone' : v === 'source' ? 'source' : 'fact';
 
-    const kbHead = (kind: string, prop: string): string => {
+    const kbHead = (kind: string, prop: string, scoped = false): string => {
       const kindPills = pills([
         ...KB_KINDS.map((k) => ({
           href: `/console/kb?kind=${k.key}&property=${encodeURIComponent(prop)}`,
@@ -589,27 +629,36 @@ export async function registerConsoleRoutes(
         })),
         { href: '/console/content', label: 'Акции', active: false },
       ]);
-      const propPills = pills([
-        { href: `/console/kb?kind=${kind}&property=`, label: 'Вся сеть', active: prop === '' },
-        ...PROPERTY_KEYS.map((k) => ({
-          href: `/console/kb?kind=${kind}&property=${k}`,
-          label: propertyLabel(k),
-          active: prop === k,
-        })),
-      ]);
+      const propPills = scoped
+        ? ''
+        : pills([
+            { href: `/console/kb?kind=${kind}&property=`, label: 'Вся сеть', active: prop === '' },
+            ...PROPERTY_KEYS.map((k) => ({
+              href: `/console/kb?kind=${kind}&property=${k}`,
+              label: propertyLabel(k),
+              active: prop === k,
+            })),
+          ]);
       return (
         kindPills +
         propPills +
-        `<p class="note">Записи из «Вся сеть» действуют во всех четырёх отелях. ` +
+        `<p class="note">${scoped ? 'Вы видите записи своего отеля и общие для сети. ' : 'Записи из «Вся сеть» действуют во всех четырёх отелях. '}` +
         `Изменения бот применит со следующего сообщения гостя — перезапуск не нужен.</p>`
       );
     };
 
     scope.get('/console/kb', { preHandler: requireRole('admin') }, async (req, reply) => {
       const staff = req.staff!;
-      const q = req.query as { kind?: string; property?: string; saved?: string };
+      const q = req.query as {
+        kind?: string;
+        property?: string;
+        saved?: string;
+        readerr?: string;
+        read?: string;
+      };
       const kind = kbKindOf(q.kind);
-      const prop = typeof q.property === 'string' ? q.property : '';
+      // Сотрудник, привязанный к отелю, всегда смотрит на свой — выбор ему не предлагается.
+      const prop = staff.property || (typeof q.property === 'string' ? q.property : '');
       const kindMeta = KB_KINDS.find((k) => k.key === kind)!;
       const one = kindMeta.one;
 
@@ -635,6 +684,7 @@ export async function registerConsoleRoutes(
             `<div class="card__top"><span class="card__who">${escapeHtml(e.title || (e.url ?? 'Без заголовка'))}</span>` +
             `<span style="margin-left:auto">${on ? badge('on', 'включено') : badge('off', 'выключено', true)}</span></div>` +
             `<p class="card__body">${escapeHtml(e.url && kind === 'source' ? e.url : e.body)}</p>` +
+            (kind === 'source' ? sourceStatus(e) : '') +
             `<p class="card__meta">${escapeHtml(meta)}</p></a>`
           );
         })
@@ -665,11 +715,17 @@ export async function registerConsoleRoutes(
         templates,
       );
 
-      const saved = q.saved ? banner('ok', 'Изменения сохранены. Бот применит их со следующего сообщения гостя.') : '';
+      const saved = q.read
+        ? banner('ok', 'Страница прочитана. Бот будет пользоваться ею со следующего сообщения гостя и перечитает её сам, когда она изменится.')
+        : q.readerr
+        ? banner('err', `Страницу прочитать не удалось: ${escapeHtml(q.readerr)}`)
+        : q.saved
+          ? banner('ok', 'Изменения сохранены. Бот применит их со следующего сообщения гостя.')
+          : '';
 
       const body =
         `<h1>Знания</h1>` +
-        kbHead(kind, prop) +
+        kbHead(kind, prop, Boolean(staff.property)) +
         saved +
         `<div class="stack" style="margin-bottom:16px">` +
         btn(`+ Добавить ${one}`, {
@@ -758,6 +814,12 @@ export async function registerConsoleRoutes(
         btn('Сохранить', { variant: 'primary' }) +
         (isNew ? '' : btn('Отмена', { variant: 'ghost', href: `/console/kb?kind=${entry.kind}` })) +
         `</div></form>` +
+        (!isNew && entry.kind === 'source' && deps.refreshSource
+          ? `<form method="post" action="/console/kb/${entry.id}/read" data-once style="margin-top:16px">` +
+            `<input type="hidden" name="_csrf" value="${escapeHtml(csrf)}">` +
+            btn('Прочитать страницу сейчас', { variant: 'secondary', attrs: 'data-busy="Читаю…"' }) +
+            `<p class="note">Обычно бот перечитывает источники сам, раз в несколько часов.</p></form>`
+          : '') +
         (isNew
           ? ''
           : `<form method="post" action="/console/kb/${entry.id}/archive" style="margin-top:16px">` +
@@ -859,6 +921,16 @@ export async function registerConsoleRoutes(
       return reply.redirect(`/console/kb?kind=${kbKindOf(b.kind)}&saved=1`);
     });
 
+    scope.post('/console/kb/:id/read', { preHandler: requireRole('admin') }, async (req, reply) => {
+      const id = Number((req.params as { id: string }).id);
+      const entry = store.getKbEntry?.(id);
+      if (!entry || !deps.refreshSource) return reply.redirect('/console/kb?kind=source');
+      const res = await deps.refreshSource(entry);
+      return reply.redirect(
+        `/console/kb?kind=source&${res.ok ? 'saved=1' : `readerr=${encodeURIComponent(res.error ?? 'не получилось')}`}`,
+      );
+    });
+
     scope.post('/console/kb/:id/archive', { preHandler: requireRole('admin') }, async (req, reply) => {
       store.archiveKbEntry?.(Number((req.params as { id: string }).id), true);
       return reply.redirect('/console/kb?saved=1');
@@ -882,7 +954,7 @@ export async function registerConsoleRoutes(
       if (kind === 'source' ? url === '' : bodyText === '') {
         return reply.redirect(`/console/kb?kind=${kind}`);
       }
-      store.addKbEntry?.({
+      const newId = store.addKbEntry?.({
         property: (b.property ?? '').trim(),
         kind,
         title: (b.title ?? '').trim(),
@@ -890,6 +962,21 @@ export async function registerConsoleRoutes(
         url: url || null,
         active: true,
       });
+
+      // Ссылку читаем сразу: человек только что её вставил и должен тут же узнать,
+      // получилось или нет. Ждать час, чтобы увидеть «страница закрыта», — издевательство.
+      if (kind === 'source' && newId && deps.refreshSource) {
+        const created = store.getKbEntry?.(newId);
+        if (created) {
+          const res = await deps.refreshSource(created);
+          if (!res.ok) {
+            return reply.redirect(
+              `/console/kb?kind=source&readerr=${encodeURIComponent(res.error ?? 'не получилось')}`,
+            );
+          }
+          return reply.redirect('/console/kb?kind=source&read=1');
+        }
+      }
       return reply.redirect(`/console/kb?kind=${kind}&saved=1`);
     });
 
@@ -997,7 +1084,7 @@ export async function registerConsoleRoutes(
               (st) =>
                 `<div class="row"><span class="name">${escapeHtml(propertyLabel(st.property))}</span>` +
                 `<span class="grow">${escapeHtml(
-                  st.syncedAt ? `обновлено ${ago(st.syncedAt)} назад` : 'используются статичные знания',
+                  st.syncedAt ? `обновлено ${agoLabel(st.syncedAt)}` : 'используются статичные знания',
                 )}</span></div>`,
             )
             .join('') +
@@ -1101,6 +1188,7 @@ export async function registerConsoleRoutes(
       if (tab === 'bookings' && admin) {
         const rows = store
           .listBookings()
+          .filter((b) => canSee(staff, b.property))
           .map(
             (b) =>
               `<tr><td data-label="Номер">${escapeHtml(b.exelyNumber)}</td>` +
@@ -1120,6 +1208,7 @@ export async function registerConsoleRoutes(
       } else if (tab === 'mice') {
         const rows = store
           .listMice()
+          .filter((m) => canSee(staff, m.property))
           .map(
             (m) =>
               `<tr><td data-label="Отель">${escapeHtml(propertyLabel(m.property))}</td>` +
@@ -1144,6 +1233,8 @@ export async function registerConsoleRoutes(
           : emptyState('Заявок на мероприятия нет', 'Сюда попадают запросы на конференц-залы и банкеты.');
       } else {
         const rows = (admin ? store.listLeads() : [])
+          // У лида нет своего отеля — берём его у диалога, из которого лид пришёл.
+          .filter((l) => canSee(staff, store.getConversation(l.conversationId)?.property))
           .map(
             (l) =>
               `<tr><td data-label="Что нужно">${escapeHtml(l.kind)} <span class="badge badge--off">ещё не бронь</span></td>` +
@@ -1231,6 +1322,74 @@ export async function registerConsoleRoutes(
       }
       store.setMiceStatus(id, status);
       return reply.redirect('/console/requests?tab=mice');
+    });
+
+    // --- Профиль: смена пароля -----------------------------------------------------
+    // Пароли выдаются при заведении учётки; без этого экрана сменить их может
+    // только разработчик, и передавать панель отелю в таком виде нельзя.
+
+    const profilePage = (
+      staff: AuthedStaff,
+      csrf: string,
+      msg?: { kind: 'ok' | 'err'; text: string },
+    ): string =>
+      shell(
+        'Профиль',
+        `<div class="narrow"><h1>Профиль</h1>` +
+          (msg ? banner(msg.kind, escapeHtml(msg.text)) : '') +
+          `<div class="card"><div class="card__top">` +
+          `<span class="card__who">${escapeHtml(staff.login)}</span></div>` +
+          `<p class="card__meta">${escapeHtml(
+            (staff.role === 'admin' ? 'Владелец' : 'Ресепшен') +
+              ' · ' +
+              (staff.property ? propertyLabel(staff.property) : 'вся сеть'),
+          )}</p></div>` +
+          `<h2 style="font-size:15px;color:var(--text-2);margin:24px 0 12px">Сменить пароль</h2>` +
+          `<form method="post" action="/console/profile" data-once>` +
+          `<input type="hidden" name="_csrf" value="${escapeHtml(csrf)}">` +
+          field('current', 'Текущий пароль', {
+            type: 'password',
+            required: true,
+            attrs: 'autocomplete="current-password"',
+          }) +
+          field('next', 'Новый пароль', {
+            type: 'password',
+            required: true,
+            attrs: 'autocomplete="new-password" minlength="8"',
+            hint: 'Не короче 8 знаков. Запишите его — восстановить пароль сама панель не умеет.',
+          }) +
+          field('repeat', 'Новый пароль ещё раз', {
+            type: 'password',
+            required: true,
+            attrs: 'autocomplete="new-password"',
+          }) +
+          btn('Сохранить пароль', { variant: 'primary' }) +
+          `</form></div>`,
+        { staff, csrf, active: '/console', waiting: waitingFor(store, staff).length },
+      );
+
+    scope.get('/console/profile', async (req, reply) =>
+      sendHtml(reply, profilePage(req.staff!, csrfTokenFor(req.sessionToken!))),
+    );
+
+    scope.post('/console/profile', async (req, reply) => {
+      const staff = req.staff!;
+      const csrf = csrfTokenFor(req.sessionToken!);
+      const b = (req.body ?? {}) as Record<string, string>;
+      const record = store.findStaffByLogin(staff.login);
+      const fail = (text: string) =>
+        sendHtml(reply, profilePage(staff, csrf, { kind: 'err', text }), 400);
+
+      if (!record || !verifyPassword(b.current ?? '', record.passHash)) {
+        return fail('Текущий пароль не подошёл. Проверьте раскладку и попробуйте ещё раз.');
+      }
+      if ((b.next ?? '').length < 8) return fail('Новый пароль должен быть не короче 8 знаков.');
+      if (b.next !== b.repeat) return fail('Пароли не совпали — введите новый пароль дважды одинаково.');
+      if (b.next === b.current) return fail('Новый пароль совпадает со старым.');
+
+      store.setStaffPassword?.(record.id, hashPassword(b.next));
+      store.recordEvent('password_changed', { payload: { staff: staff.login } });
+      return sendHtml(reply, profilePage(staff, csrf, { kind: 'ok', text: 'Пароль изменён.' }));
     });
 
     // --- Data deletion (admin only) --------------------------------------------------------------

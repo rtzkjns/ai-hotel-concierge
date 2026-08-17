@@ -111,6 +111,8 @@ export interface StaffMember {
   login: string;
   passHash: string;
   role: string;
+  /** Ключ отеля; пустая строка = доступ ко всей сети. */
+  property: string;
   createdAt: string; // ISO timestamp
 }
 
@@ -119,6 +121,8 @@ export interface StaffSession {
   staffId: number;
   login: string;
   role: string;
+  /** Отель сотрудника; пустая строка = вся сеть. */
+  property?: string;
   expiresAt: string; // ISO timestamp
 }
 
@@ -133,5 +137,8 @@ export interface KbEntry {
   body: string;
   url?: string | null;
   active: boolean | number;
+  /** Когда бот последний раз успешно вычитал источник и чем это закончилось. */
+  fetchedAt?: string | null;
+  fetchError?: string | null;
   updatedAt?: string;
 }

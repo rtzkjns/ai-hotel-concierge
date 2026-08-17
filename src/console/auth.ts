@@ -14,6 +14,8 @@ export interface AuthedStaff {
   staffId: number;
   role: string;
   login: string;
+  /** Отель сотрудника; пустая строка = вся сеть (владелец). */
+  property: string;
 }
 
 declare module 'fastify' {
@@ -64,9 +66,14 @@ export function csrfTokenFor(sessionToken: string): string {
 }
 
 export const FORBIDDEN_HTML =
-  '<!doctype html><html><head><meta charset="utf-8"><title>403</title></head>' +
-  '<body style="font-family:system-ui;padding:2rem"><h1>403 — недостаточно прав</h1>' +
-  '<p><a href="/console">← в консоль</a></p></body></html>';
+  '<!doctype html><html lang="ru"><head><meta charset="utf-8">' +
+  '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+  '<title>Нет доступа</title><link rel="stylesheet" href="/console/app.v1.css"></head>' +
+  '<body><main><div class="narrow" style="padding-top:48px;text-align:center">' +
+  '<h1>Этот раздел не для вашей роли</h1>' +
+  '<p class="note">Раздел доступен только владельцу. Если он нужен вам в работе — попросите открыть доступ.</p>' +
+  '<p><a class="btn btn--primary" href="/console">Вернуться к входящим</a></p>' +
+  '</div></main></body></html>';
 
 /**
  * onRequest hook for the /console scope: everything except the login page
@@ -85,7 +92,12 @@ export function requireAuth(store: SessionStore) {
       await reply.redirect('/console/login');
       return;
     }
-    req.staff = { staffId: session.staffId, role: session.role, login: session.login };
+    req.staff = {
+      staffId: session.staffId,
+      role: session.role,
+      login: session.login,
+      property: session.property ?? '',
+    };
     req.sessionToken = token;
   };
 }
