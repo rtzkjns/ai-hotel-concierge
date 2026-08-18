@@ -32,6 +32,8 @@ const MAX_REDIRECTS = 3;
 export interface FetchedSource {
   ok: boolean;
   text?: string;
+  /** Ссылка вела на PDF: байты, которые прочитает модель. */
+  pdf?: Buffer;
   /** Human-facing, shown to hotel staff in the panel — never a stack trace. */
   error?: string;
 }
@@ -290,6 +292,12 @@ export async function fetchSource(
       // Требуем ЯВНЫЙ текстовый тип: пустой заголовок раньше проходил как HTML,
       // а его не ставят как раз самописные внутренние сервисы.
       const type = res.headers.get('content-type') ?? '';
+      // PDF по ссылке — обычное дело у отелей (меню, прайс). Отдаём байты наверх,
+      // там их прочитает модель, как и загруженный вручную файл.
+      if (/application\/pdf/i.test(type)) {
+        const bytes = await readCappedBytes(res);
+        return { ok: true, pdf: bytes };
+      }
       if (!/text\/html|text\/plain|application\/xhtml/i.test(type)) {
         return { ok: false, error: 'По ссылке не страница с текстом (например, файл или картинка)' };
       }
@@ -321,8 +329,12 @@ export async function fetchSource(
 
 /** Reads at most MAX_BYTES so a huge page cannot exhaust memory. */
 async function readCapped(res: Response): Promise<string> {
+  return new TextDecoder('utf-8').decode(await readCappedBytes(res));
+}
+
+async function readCappedBytes(res: Response): Promise<Buffer> {
   const body = res.body;
-  if (!body) return await res.text();
+  if (!body) return Buffer.from(await res.arrayBuffer());
   const reader = body.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
@@ -337,5 +349,5 @@ async function readCapped(res: Response): Promise<string> {
       break;
     }
   }
-  return new TextDecoder('utf-8').decode(Buffer.concat(chunks.map((c) => Buffer.from(c))));
+  return Buffer.concat(chunks.map((c) => Buffer.from(c)));
 }

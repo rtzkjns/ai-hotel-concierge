@@ -19,6 +19,7 @@ import { startRetention } from './core/retention';
 import { StubAmoCrm } from './integrations/amocrm';
 import { createCabinetProviders } from './integrations/exely';
 import { ExelyContentSync } from './knowledge/contentSync';
+import { extractText } from './knowledge/documents';
 import { SourceSync } from './knowledge/sourceSync';
 import { StubPaymentGateway } from './integrations/payments';
 import { createTranscriber } from './integrations/transcribe';
@@ -98,7 +99,10 @@ async function main(): Promise<void> {
   });
   // Ссылки, которые отель кладёт в панель, вычитываются фоном и складываются в базу
   // знаний. Не на лету: страница может лечь, а ответ гостю ждать её не должен.
-  const sourceSync = new SourceSync(store);
+  const sourceSync = new SourceSync(store, {
+    readPdf: (buf, filename) =>
+      extractText(buf, filename, { client: anthropic, model: config.anthropicModel }),
+  });
 
   const bookingService = new BookingService({
     store,
@@ -218,6 +222,9 @@ async function main(): Promise<void> {
             engine.rebuildPrompts();
           },
           refreshSource: (entry) => sourceSync.refreshOne(entry),
+          // PDF и фотографии читает сама модель — один раз, при загрузке.
+          extractFile: (buf, filename) =>
+            extractText(buf, filename, { client: anthropic, model: config.anthropicModel }),
         }),
       // Chatfuel bridge — temporary IG tenant path (answers all guests while our App Review pends).
       (a) => {

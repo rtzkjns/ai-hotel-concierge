@@ -3,6 +3,7 @@
 // non-admin roles passes maskPII; all dynamic values pass escapeHtml.
 import cookie from '@fastify/cookie';
 import formbody from '@fastify/formbody';
+import multipart from '@fastify/multipart';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { MetricsSummary } from '../core/events';
 import { maskPII } from '../core/pii';
@@ -18,6 +19,7 @@ import type {
   StaffMember,
   StoredEvent,
 } from '../types';
+import { ACCEPTED_EXTENSIONS, MAX_UPLOAD_BYTES } from '../knowledge/documents';
 import {
   ago,
   agoLabel,
@@ -128,6 +130,8 @@ export interface ConsoleDeps {
   refreshKnowledge?: () => Promise<unknown>;
   /** Прочитать конкретный источник по кнопке в панели (иначе — раз в 6 часов сам). */
   refreshSource?: (entry: KbEntry) => Promise<{ ok: boolean; error?: string }>;
+  /** Достать текст из загруженного файла: PDF, Word, Excel, CSV, фото прайса. */
+  extractFile?: (buf: Buffer, filename: string) => Promise<{ ok: boolean; text?: string; error?: string }>;
 }
 
 // --- HTML helpers ------------------------------------------------------------------
@@ -184,6 +188,8 @@ export async function registerConsoleRoutes(
   await app.register(async (scope) => {
     await scope.register(cookie);
     await scope.register(formbody);
+    // Загрузка файлов: меню в PDF, прайс в Excel, фотография прайса с ресепшена.
+    await scope.register(multipart, { limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 } });
 
     scope.addHook('onRequest', requireAuth(store));
 
@@ -191,7 +197,11 @@ export async function registerConsoleRoutes(
     // per-session token in a hidden field (body is parsed by preHandler time).
     scope.addHook('preHandler', async (req, reply) => {
       if (req.method !== 'POST') return;
-      if (req.url.split('?')[0] === '/console/login') return;
+      const path = req.url.split('?')[0];
+      if (path === '/console/login') return;
+      // Загрузка файла приходит multipart-ом: тело здесь ещё не разобрано, поэтому
+      // токен проверяется внутри самого обработчика, полем формы.
+      if (path === '/console/kb/upload') return;
       const body = (req.body ?? {}) as Record<string, unknown>;
       if (!req.sessionToken || body._csrf !== csrfTokenFor(req.sessionToken)) {
         await reply.code(403).type('text/html; charset=utf-8').send(FORBIDDEN_HTML);
@@ -776,6 +786,12 @@ export async function registerConsoleRoutes(
           variant: 'primary',
           href: `/console/kb/new?kind=${kind}&property=${encodeURIComponent(prop)}`,
         }) +
+        (kind === 'fact' && deps.extractFile
+          ? btn('Загрузить файл', {
+              variant: 'secondary',
+              href: `/console/kb/upload?property=${encodeURIComponent(prop)}`,
+            })
+          : '') +
         `</div>` +
         (cards || empty);
 
@@ -788,6 +804,130 @@ export async function registerConsoleRoutes(
           waiting: waitingFor(store, staff).length,
         }),
       );
+    });
+
+    // --- Загрузка файла: меню в PDF, прайс в Excel, фотография прайса с ресепшена ---
+    // Текст достаётся один раз, при загрузке, и дальше живёт как обычный факт: держать
+    // файл в промпте на каждом сообщении гостя было бы медленно и дорого.
+
+    const uploadPage = (
+      req: FastifyRequest,
+      prop: string,
+      msg?: { kind: 'ok' | 'err'; text: string },
+      preview?: { title: string; text: string; property: string },
+    ): string => {
+      const staff = req.staff!;
+      const csrf = csrfTokenFor(req.sessionToken!);
+      const propOptions = [['', 'Вся сеть'], ...PROPERTY_KEYS.map((k) => [k, propertyLabel(k)])]
+        .map(([v, l]) => `<option value="${v}"${v === prop ? ' selected' : ''}>${escapeHtml(l)}</option>`)
+        .join('');
+
+      // Второй шаг: человек видит, ЧТО именно прочиталось, и только потом сохраняет.
+      // Без этого он узнавал бы о кривом распознавании от гостя.
+      const confirm = preview
+        ? `<div class="banner banner--ok">Файл прочитан. Проверьте текст и сохраните.</div>` +
+          `<form method="post" action="/console/kb/upload/save" data-once>` +
+          `<input type="hidden" name="_csrf" value="${escapeHtml(csrf)}">` +
+          `<input type="hidden" name="property" value="${escapeHtml(preview.property)}">` +
+          field('title', 'Название', { value: preview.title, required: true }) +
+          field('body', 'Что прочитал бот', {
+            textarea: true,
+            rows: 14,
+            value: preview.text,
+            required: true,
+            hint: 'Можно поправить прямо здесь — сохранится то, что вы видите.',
+          }) +
+          btn('Сохранить в базу знаний', { variant: 'primary' }) +
+          `</form>`
+        : '';
+
+      return shell(
+        'Загрузить файл',
+        `<div class="narrow"><h1>Загрузить файл</h1>` +
+          (msg ? banner(msg.kind, escapeHtml(msg.text)) : '') +
+          (confirm ||
+            `<p class="note">Подойдёт меню или прайс в PDF, документ Word, таблица Excel или CSV, ` +
+              `обычный текст — и даже фотография прайс-листа с ресепшена: бот прочитает её и ` +
+              `запомнит цены. Файл нигде не сохраняется, в базу знаний попадает только текст.</p>` +
+              `<form method="post" action="/console/kb/upload" enctype="multipart/form-data" data-once>` +
+              `<input type="hidden" name="_csrf" value="${escapeHtml(csrf)}">` +
+              `<div class="field"><label for="file">Файл</label>` +
+              `<input type="file" name="file" id="file" required accept="${ACCEPTED_EXTENSIONS.join(',')}">` +
+              `<p class="hint">До 12 МБ. Чтение фотографии занимает несколько секунд.</p></div>` +
+              (staff.property
+                ? `<input type="hidden" name="property" value="${escapeHtml(staff.property)}">`
+                : `<div class="field"><label for="property">Отель</label>` +
+                  `<select name="property" id="property">${propOptions}</select></div>`) +
+              btn('Прочитать файл', { variant: 'primary', attrs: 'data-busy="Читаю файл…"' }) +
+              `</form>`) +
+          `</div>`,
+        {
+          staff,
+          csrf,
+          active: '/console/kb',
+          back: { href: '/console/kb', label: 'Знания' },
+          waiting: waitingFor(store, staff).length,
+        },
+      );
+    };
+
+    scope.get('/console/kb/upload', { preHandler: requireRole('admin') }, async (req, reply) => {
+      const q = req.query as { property?: string };
+      return sendHtml(reply, uploadPage(req, q.property ?? ''));
+    });
+
+    scope.post('/console/kb/upload', { preHandler: requireRole('admin') }, async (req, reply) => {
+      if (!deps.extractFile) return reply.redirect('/console/kb?kind=fact');
+      let file: Awaited<ReturnType<FastifyRequest['file']>> | undefined;
+      try {
+        file = await req.file();
+      } catch {
+        return sendHtml(
+          reply,
+          uploadPage(req, '', { kind: 'err', text: 'Файл больше 12 МБ — пришлите файл поменьше.' }),
+          400,
+        );
+      }
+      if (!file) {
+        return sendHtml(reply, uploadPage(req, '', { kind: 'err', text: 'Файл не выбран.' }), 400);
+      }
+      // CSRF в multipart приходит полем формы, а не в body: проверяем вручную.
+      const fields = file.fields as Record<string, { value?: string } | undefined>;
+      const csrfField = fields?._csrf?.value;
+      if (!req.sessionToken || csrfField !== csrfTokenFor(req.sessionToken)) {
+        return reply.code(403).type('text/html; charset=utf-8').send(FORBIDDEN_HTML);
+      }
+      const prop = fields?.property?.value ?? '';
+
+      const buf = await file.toBuffer();
+      const res = await deps.extractFile(buf, file.filename);
+      if (!res.ok || !res.text) {
+        return sendHtml(
+          reply,
+          uploadPage(req, prop, { kind: 'err', text: res.error ?? 'Не удалось прочитать файл.' }),
+          400,
+        );
+      }
+      const title = file.filename.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim();
+      return sendHtml(
+        reply,
+        uploadPage(req, prop, undefined, { title: title || 'Из файла', text: res.text, property: prop }),
+      );
+    });
+
+    scope.post('/console/kb/upload/save', { preHandler: requireRole('admin') }, async (req, reply) => {
+      const b = req.body as Record<string, string>;
+      const body = (b.body ?? '').trim();
+      if (!body) return reply.redirect('/console/kb?kind=fact');
+      store.addKbEntry?.({
+        property: (b.property ?? '').trim(),
+        kind: 'fact',
+        title: (b.title ?? '').trim() || 'Из файла',
+        body,
+        url: null,
+        active: true,
+      });
+      return reply.redirect('/console/kb?kind=fact&saved=1');
     });
 
     /** Редактор одной записи — экрана правки не существовало вовсе. */

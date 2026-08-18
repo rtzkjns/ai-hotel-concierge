@@ -8,6 +8,7 @@
  */
 
 import type { KbEntry } from '../types';
+import type { ExtractResult } from './documents';
 import { fetchSource } from './sourceFetch';
 
 export interface SourceSyncStore {
@@ -31,7 +32,12 @@ export interface SyncResult {
 export class SourceSync {
   constructor(
     private readonly store: SourceSyncStore,
-    private readonly deps: { fetchImpl?: typeof fetch; now?: () => number } = {},
+    private readonly deps: {
+      fetchImpl?: typeof fetch;
+      now?: () => number;
+      /** Ссылка может вести на PDF — его читает модель, как и загруженный файл. */
+      readPdf?: (buf: Buffer, filename: string) => Promise<ExtractResult>;
+    } = {},
   ) {}
 
   private now(): number {
@@ -46,6 +52,23 @@ export class SourceSync {
     }
     const res = await fetchSource(entry.url, { fetchImpl: this.deps.fetchImpl });
     const stamp = new Date(this.now()).toISOString();
+
+    // Ссылка на PDF: страницы нет, есть документ — отдаём его модели.
+    if (res.ok && res.pdf) {
+      const read = this.deps.readPdf
+        ? await this.deps.readPdf(res.pdf, entry.url.split('/').pop() || 'document.pdf')
+        : { ok: false, error: 'Чтение PDF сейчас недоступно' };
+      if (read.ok && read.text) {
+        this.store.updateKbEntry(entry.id, {
+          body: `Из документа ${entry.url} (прочитано ботом):\n${read.text}`,
+        });
+        this.store.markKbFetched(entry.id, stamp, null);
+        return { ok: true };
+      }
+      this.store.markKbFetched(entry.id, entry.fetchedAt ?? null, read.error ?? 'Не удалось прочитать PDF');
+      return { ok: false, error: read.error };
+    }
+
     if (!res.ok || !res.text) {
       // The previously read text is deliberately kept: yesterday's menu still beats
       // nothing, and the panel shows the staff why the last read failed.

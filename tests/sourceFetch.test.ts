@@ -84,9 +84,17 @@ describe('fetchSource guards', () => {
     }
   });
 
-  it('refuses a PDF or an image instead of pretending it read them', async () => {
-    const fetchImpl = vi.fn(async () => reply('%PDF-1.4', { type: 'application/pdf' }));
-    const res = await fetchSource('https://example.com/prices.pdf', { fetchImpl: fetchImpl as never });
+  it('hands a linked PDF back as bytes for the model to read', async () => {
+    // Меню и прайсы у отелей чаще всего лежат именно PDF-файлом.
+    const fetchImpl = vi.fn(async () => reply('%PDF-1.4 fake', { type: 'application/pdf' }));
+    const res = await fetchSource('https://kazzhol.com/prices.pdf', { fetchImpl: fetchImpl as never });
+    expect(res.ok).toBe(true);
+    expect(res.pdf?.toString()).toContain('%PDF');
+  });
+
+  it('still refuses a format nobody can read as text', async () => {
+    const fetchImpl = vi.fn(async () => reply('\u0000\u0001', { type: 'image/tiff' }));
+    const res = await fetchSource('https://example.com/scan.tiff', { fetchImpl: fetchImpl as never });
     expect(res.ok).toBe(false);
     expect(res.error).toContain('не страница с текстом');
   });
