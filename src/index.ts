@@ -232,6 +232,20 @@ async function main(): Promise<void> {
           },
           refreshSource: (entry) => sourceSync.refreshOne(entry),
           botUsername: config.telegram.botUsername,
+          // Служебный вопрос из панели: тот же движок и та же база знаний, но
+          // отдельный разговор с префиксом console-test — он не попадает во «Входящие».
+          askBot: async (property, question) => {
+            const senderId = `console-test:${property}`;
+            const convo = store.getOrCreateConversation('webwidget', senderId);
+            store.resetConversation(convo.id);
+            store.setProperty(convo.id, property);
+            const parts = await engine.handle({
+              channel: 'webwidget',
+              senderId,
+              text: question,
+            });
+            return (parts ?? []).map((p) => p.text).join(' ').trim();
+          },
           // PDF и фотографии читает сама модель — один раз, при загрузке.
           extractFile: (buf, filename) =>
             extractText(buf, filename, { client: anthropic, model: config.anthropicModel }),

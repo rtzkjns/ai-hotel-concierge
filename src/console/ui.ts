@@ -126,6 +126,15 @@ details.more .pop .who{padding:6px 12px 10px;font-size:13px;color:var(--text-3);
 .field{margin-bottom:var(--sp-4);}
 .field>label{display:block;font:600 13px/1.4 var(--font);color:var(--text-2);margin-bottom:6px;}
 .field .hint{font-size:13px;color:var(--text-3);margin-top:6px;}
+/* Родная кнопка «Choose File» — единственный контрол не на русском и без стиля.
+   Прячем input и рисуем свою область, а имя файла подставляет BASE_SCRIPT. */
+.filefield{position:relative;border:1px dashed var(--border-input);border-radius:var(--r-card);
+  padding:20px 16px;text-align:center;background:var(--surface);cursor:pointer;}
+.filefield:hover{background:var(--hover);}
+.filefield input[type=file]{position:absolute;inset:0;opacity:0;width:100%;height:100%;cursor:pointer;}
+.filefield .pick{font:600 15px/1.4 var(--font);color:var(--brand);}
+.filefield .hintline{font-size:13px;color:var(--text-3);margin-top:6px;}
+.filefield .chosen{font-size:15px;color:var(--text);margin-top:8px;font-weight:500;}
 input[type=text],input[type=password],input[type=url],input[type=date],textarea,select{
   width:100%;min-height:44px;font:400 16px/1.5 var(--font);padding:10px 12px;color:var(--text);
   background:var(--surface);border:1px solid var(--border-input);border-radius:var(--r-ctl);}
@@ -560,6 +569,7 @@ function moreMenu(staff: { login: string; role: string; property?: string }, csr
     (staff.property ? `<br>${escapeHtml(propertyLabel(staff.property))}` : '') +
     `</div>` +
     `<a href="/console/profile">Профиль и пароль</a>` +
+    `<a href="/console/ask">Спросить бота</a>` +
     (admin ? `<a href="/console/managers">Кому идут заявки</a>` : '') +
     (admin ? `<a href="/console/kb/archive">Архив знаний</a>` : '') +
     (admin ? `<a href="/console/data-deletion">Удаление данных гостя</a>` : '') +
@@ -613,6 +623,15 @@ const BASE_SCRIPT = `<script>
     var b=f.querySelector('button[type=submit]');
     if(b){ if(b.disabled){e.preventDefault();return;} b.disabled=true; b.setAttribute('aria-busy','true');
       if(b.dataset.busy) b.textContent=b.dataset.busy; }
+  });
+  document.querySelectorAll('.filefield input[type=file]').forEach(function(inp){
+    inp.addEventListener('change',function(){
+      var box=inp.closest('.filefield'); if(!box) return;
+      var out=box.querySelector('.chosen'); var f=inp.files&&inp.files[0];
+      if(out) out.textContent=f?('Выбран файл: '+f.name+' · '+Math.max(1,Math.round(f.size/1024/1024*10)/10)+' МБ'):'';
+      var warn=box.querySelector('.toobig');
+      if(warn) warn.hidden=!(f&&f.size>32*1024*1024);
+    });
   });
   var prev=document.getElementById('kb-preview');
   if(prev){

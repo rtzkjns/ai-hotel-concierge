@@ -112,6 +112,11 @@ export interface ConsoleStore extends SessionStore {
   }): number;
   setContentActive(id: number, active: boolean): void;
   deleteContent(id: number): void;
+  getContent?(id: number): HotelContent | null;
+  updateContent?(
+    id: number,
+    patch: Partial<Pick<HotelContent, 'title' | 'body' | 'property' | 'startsAt' | 'endsAt'>>,
+  ): void;
 }
 
 /**
@@ -137,6 +142,8 @@ export interface ConsoleDeps {
   extractFile?: (buf: Buffer, filename: string) => Promise<{ ok: boolean; text?: string; error?: string }>;
   /** Имя Telegram-бота — из него собираются ссылки-приглашения для менеджеров. */
   botUsername?: string;
+  /** Служебный вопрос боту из панели: тот же движок, но разговор не уходит гостям. */
+  askBot?: (property: string, question: string) => Promise<string>;
 }
 
 // --- HTML helpers ------------------------------------------------------------------
@@ -165,7 +172,11 @@ function canSee(staff: AuthedStaff, property: string | undefined): boolean {
 }
 
 function visibleConversations(store: ConsoleStore, staff: AuthedStaff): Conversation[] {
-  return store.listConversations().filter((c) => canSee(staff, c.property));
+  return store
+    .listConversations()
+    // Разговоры из «Спросить бота» — служебные: в очереди менеджеров им не место.
+    .filter((c) => !c.senderId.startsWith('console-test:'))
+    .filter((c) => canSee(staff, c.property));
 }
 
 /** Диалоги, которые бот передал человеку и которые ещё никто не взял. */
@@ -624,6 +635,18 @@ export async function registerConsoleRoutes(
           `${chatUrl(convo.id)}?err=${encodeURIComponent(msg)}&draft=${encodeURIComponent(text)}`,
         );
       }
+      // Ответил — значит ведёшь. Без этого диалог оставался жёлтым в общей очереди,
+      // и следующий менеджер отвечал гостю второй раз.
+      if (!convo.takenBy) {
+        store.setStatus(convo.id, 'handed_off');
+        store.setTakenBy(convo.id, req.staff!.login);
+        store.recordEvent('takeover', {
+          conversationId: convo.id,
+          property: convo.property,
+          channel: convo.channel,
+          payload: { staff: req.staff!.login, via: 'reply' },
+        });
+      }
       // Stored with a staff marker; the guest just sees the plain text.
       store.appendMessage(convo.id, { role: 'assistant', content: `[менеджер] ${text}` });
       store.recordEvent('staff_message', {
@@ -695,7 +718,7 @@ export async function registerConsoleRoutes(
       const propPills = scoped
         ? ''
         : pills([
-            { href: `/console/kb?kind=${kind}&property=`, label: 'Вся сеть', active: prop === '' },
+            { href: `/console/kb?kind=${kind}&property=`, label: 'Все отели', active: prop === '' },
             ...PROPERTY_KEYS.map((k) => ({
               href: `/console/kb?kind=${kind}&property=${k}`,
               label: propertyLabel(k),
@@ -705,7 +728,7 @@ export async function registerConsoleRoutes(
       return (
         kindPills +
         propPills +
-        `<p class="note">${scoped ? 'Вы видите записи своего отеля и общие для сети. ' : 'Записи из «Вся сеть» действуют во всех четырёх отелях. '}` +
+        `<p class="note">${scoped ? 'Вы видите записи своего отеля и общие для сети. ' : 'Фильтр «Все отели» показывает все записи; выберите отель, чтобы увидеть только его. '}` +
         `Изменения бот применит со следующего сообщения гостя — перезапуск не нужен.</p>`
       );
     };
@@ -840,8 +863,17 @@ export async function registerConsoleRoutes(
         ? `<div class="banner banner--ok">Файл прочитан. Проверьте текст и сохраните.</div>` +
           `<form method="post" action="/console/kb/upload/save" data-once>` +
           `<input type="hidden" name="_csrf" value="${escapeHtml(csrf)}">` +
-          `<input type="hidden" name="property" value="${escapeHtml(preview.property)}">` +
-          field('title', 'Название', { value: preview.title, required: true }) +
+          `<div class="field"><label for="property">Отель</label>` +
+          `<select name="property" id="property">` +
+          [['', 'Вся сеть'], ...PROPERTY_KEYS.map((k) => [k, propertyLabel(k)])]
+            .map(([v, l]) => `<option value="${v}"${v === preview.property ? ' selected' : ''}>${escapeHtml(l)}</option>`)
+            .join('') +
+          `</select><p class="hint">Проверьте: запись увидит именно этот отель.</p></div>` +
+          field('title', 'Название', {
+            value: preview.title,
+            required: true,
+            hint: 'Так эта запись будет называться в списке знаний.',
+          }) +
           field('body', 'Что прочитал бот', {
             textarea: true,
             rows: 14,
@@ -849,8 +881,10 @@ export async function registerConsoleRoutes(
             required: true,
             hint: 'Можно поправить прямо здесь — сохранится то, что вы видите.',
           }) +
+          `<div class="stack">` +
           btn('Сохранить в базу знаний', { variant: 'primary' }) +
-          `</form>`
+          btn('Выбрать другой файл', { variant: 'secondary', href: '/console/kb/upload' }) +
+          `</div></form>`
         : '';
 
       return shell(
@@ -864,8 +898,14 @@ export async function registerConsoleRoutes(
               `<form method="post" action="/console/kb/upload" enctype="multipart/form-data" data-once>` +
               `<input type="hidden" name="_csrf" value="${escapeHtml(csrf)}">` +
               `<div class="field"><label for="file">Файл</label>` +
+              `<div class="filefield">` +
               `<input type="file" name="file" id="file" required accept="${ACCEPTED_EXTENSIONS.join(',')}">` +
-              `<p class="hint">До 12 МБ. Чтение фотографии занимает несколько секунд.</p></div>` +
+              `<div class="pick">Выберите файл или перетащите его сюда</div>` +
+              `<div class="hintline">PDF, Word, Excel, CSV, текст или фотография прайса. До 32 МБ.</div>` +
+              `<div class="chosen"></div>` +
+              `<div class="banner banner--warn toobig" hidden style="margin-top:12px">Этот файл больше 32 МБ — панель его не примет.</div>` +
+              `</div>` +
+              `<p class="hint">Чтение фотографии или PDF занимает несколько секунд.</p></div>` +
               (staff.property
                 ? `<input type="hidden" name="property" value="${escapeHtml(staff.property)}">`
                 : `<div class="field"><label for="property">Отель</label>` +
@@ -970,7 +1010,7 @@ export async function registerConsoleRoutes(
           .map(([v, l]) => `<option value="${v}"${v === prop ? ' selected' : ''}>${escapeHtml(l)}</option>`)
           .join('') +
         `</select>` +
-        `<p class="hint">«Вся сеть» — запись увидят все четыре отеля.</p></div>`;
+        `<p class="hint">«Общая» — запись будут использовать все четыре отеля.</p></div>`;
 
       const sourceField =
         entry.kind === 'source'
@@ -1012,8 +1052,9 @@ export async function registerConsoleRoutes(
                   ? 'Например: «Всегда предлагайте ранний заезд, если гость прилетает утром».'
                   : 'Пишите так, как объяснили бы новому сотруднику.',
             })) +
-        `<div class="banner banner--warn" id="price-warn" hidden>Здесь указана сумма. Цену на номер бот всегда берёт ` +
-        `из системы бронирования на даты гостя — опишите условие словами.</div>` +
+        `<div class="banner banner--warn" id="price-warn" hidden>Если это стоимость проживания — её лучше ` +
+        `не указывать: бот берёт цену номера из системы бронирования на даты гостя. ` +
+        `Цены услуг (фитнес, ресторан, трансфер) указывать можно и нужно.</div>` +
         (entry.kind === 'source' ? '' : sourceField) +
         propPicker +
         `<div class="field"><label>Что увидит бот</label>` +
@@ -1023,6 +1064,13 @@ export async function registerConsoleRoutes(
         btn('Сохранить', { variant: 'primary' }) +
         (isNew ? '' : btn('Отмена', { variant: 'ghost', href: `/console/kb?kind=${entry.kind}` })) +
         `</div></form>` +
+        (isNew
+          ? ''
+          : `<form method="post" action="/console/kb/toggle" style="margin-top:16px">` +
+            `<input type="hidden" name="_csrf" value="${escapeHtml(csrf)}">` +
+            `<input type="hidden" name="id" value="${entry.id}">` +
+            btn(entry.active ? 'Выключить' : 'Включить', { variant: 'secondary' }) +
+            `<p class="note">${entry.active ? 'Бот перестанет использовать эту запись, но она останется здесь.' : 'Сейчас бот эту запись не использует.'}</p></form>`) +
         (!isNew && entry.kind === 'source' && deps.refreshSource
           ? `<form method="post" action="/console/kb/${entry.id}/read" data-once style="margin-top:16px">` +
             `<input type="hidden" name="_csrf" value="${escapeHtml(csrf)}">` +
@@ -1193,9 +1241,9 @@ export async function registerConsoleRoutes(
 
     scope.post('/console/kb/toggle', { preHandler: requireRole('admin') }, async (req, reply) => {
       const id = Number((req.body as Record<string, string>).id);
-      const cur = (store.listKbEntries?.() ?? []).find((r: KbEntry) => Number(r.id) === id);
+      const cur = store.getKbEntry?.(id);
       if (cur) store.updateKbEntry?.(id, { active: !cur.active });
-      return reply.redirect('/console/kb');
+      return reply.redirect(`/console/kb?kind=${cur?.kind ?? 'fact'}&saved=1`);
     });
 
     scope.post('/console/kb/delete', { preHandler: requireRole('admin') }, async (req, reply) => {
@@ -1229,21 +1277,11 @@ export async function registerConsoleRoutes(
         ? rows
             .map(
               (c) =>
-                `<div class="card${c.active ? '' : ' card--off'}">` +
+                `<a class="card${c.active ? '' : ' card--off'}" href="/console/content/${c.id}">` +
                 `<div class="card__top"><span class="card__who">${escapeHtml(c.title || KIND_LABEL[c.kind] || c.kind)}</span>` +
                 `<span style="margin-left:auto">${c.active ? badge('on', 'включено') : badge('off', 'выключено', true)}</span></div>` +
                 `<p class="card__body">${escapeHtml(c.body)}</p>` +
-                `<p class="card__meta">${escapeHtml(propertyLabel(c.property))} · ${escapeHtml(KIND_LABEL[c.kind] ?? c.kind)} · ${escapeHtml(period(c))}</p>` +
-                `<div class="stack" style="margin-top:8px">` +
-                `<form method="post" action="/console/content/toggle" class="inline">${csrfField}` +
-                `<input type="hidden" name="id" value="${escapeHtml(c.id)}">` +
-                btn(c.active ? 'Выключить' : 'Включить', { variant: 'secondary', sm: true }) +
-                `</form>` +
-                `<details class="more"><summary>⋯</summary><div class="pop">` +
-                `<form method="post" action="/console/content/delete">${csrfField}` +
-                `<input type="hidden" name="id" value="${escapeHtml(c.id)}">` +
-                `<button type="submit" style="color:var(--err-tx)">Удалить навсегда</button></form>` +
-                `</div></details></div></div>`,
+                `<p class="card__meta">${escapeHtml(propertyLabel(c.property))} · ${escapeHtml(KIND_LABEL[c.kind] ?? c.kind)} · ${escapeHtml(period(c))}</p></a>`,
             )
             .join('')
         : emptyState(
@@ -1332,6 +1370,98 @@ export async function registerConsoleRoutes(
           back: { href: '/console/kb', label: 'Знания' },
           waiting: waitingFor(store, staff).length,
         }),
+      );
+    });
+
+    const contentEditor = (req: FastifyRequest, c: HotelContent): string => {
+      const staff = req.staff!;
+      const csrf = csrfTokenFor(req.sessionToken!);
+      const propOptions = [['', 'Вся сеть'], ...PROPERTY_KEYS.map((k) => [k, propertyLabel(k)])]
+        .map(([v, l]) => `<option value="${v}"${v === c.property ? ' selected' : ''}>${escapeHtml(l)}</option>`)
+        .join('');
+      return shell(
+        'Изменить акцию',
+        `<div class="narrow"><h1>Изменить акцию</h1>` +
+          `<form method="post" action="/console/content/${c.id}" data-once>` +
+          `<input type="hidden" name="_csrf" value="${escapeHtml(csrf)}">` +
+          field('title', 'Заголовок', { value: c.title ?? '', placeholder: 'Например: Осенняя акция' }) +
+          field('body', 'Текст', {
+            textarea: true,
+            rows: 5,
+            value: c.body,
+            required: true,
+            hint: 'Опишите условия словами: что за акция и для кого.',
+          }) +
+          `<div class="field"><label for="property">Отель</label>` +
+          `<select name="property" id="property">${propOptions}</select></div>` +
+          `<div class="field"><label for="startsAt">Действует с</label>` +
+          `<input type="date" name="startsAt" id="startsAt" value="${escapeHtml((c.startsAt ?? '').slice(0, 10))}"></div>` +
+          `<div class="field"><label for="endsAt">по</label>` +
+          `<input type="date" name="endsAt" id="endsAt" value="${escapeHtml((c.endsAt ?? '').slice(0, 10))}">` +
+          `<p class="hint">Можно не заполнять — тогда акция действует бессрочно.</p></div>` +
+          `<div class="sticky-actions">` +
+          btn('Сохранить', { variant: 'primary' }) +
+          btn('Отмена', { variant: 'ghost', href: '/console/content' }) +
+          `</div></form>` +
+          `<form method="post" action="/console/content/toggle" style="margin-top:16px">` +
+          `<input type="hidden" name="_csrf" value="${escapeHtml(csrf)}">` +
+          `<input type="hidden" name="id" value="${c.id}">` +
+          btn(c.active ? 'Выключить' : 'Включить', { variant: 'secondary' }) +
+          `</form>` +
+          `<form method="get" action="/console/content/${c.id}/delete" style="margin-top:8px">` +
+          btn('Удалить навсегда', { variant: 'danger' }) +
+          `</form></div>`,
+        {
+          staff,
+          csrf,
+          active: '/console/kb',
+          back: { href: '/console/content', label: 'Акции' },
+          waiting: waitingFor(store, staff).length,
+        },
+      );
+    };
+
+    scope.get('/console/content/:id', { preHandler: requireRole('admin') }, async (req, reply) => {
+      const c = store.getContent?.(Number((req.params as { id: string }).id));
+      if (!c) return reply.redirect('/console/content');
+      return sendHtml(reply, contentEditor(req, c));
+    });
+
+    scope.post('/console/content/:id', { preHandler: requireRole('admin') }, async (req, reply) => {
+      const b = req.body as Record<string, string>;
+      store.updateContent?.(Number((req.params as { id: string }).id), {
+        title: (b.title ?? '').trim(),
+        body: (b.body ?? '').trim(),
+        property: (b.property ?? '').trim(),
+        startsAt: (b.startsAt ?? '').trim() || null,
+        endsAt: (b.endsAt ?? '').trim() || null,
+      });
+      return reply.redirect('/console/content?added=1');
+    });
+
+    // Удаление навсегда — только после явного подтверждения на отдельном экране.
+    scope.get('/console/content/:id/delete', { preHandler: requireRole('admin') }, async (req, reply) => {
+      const c = store.getContent?.(Number((req.params as { id: string }).id));
+      if (!c) return reply.redirect('/console/content');
+      const csrf = csrfTokenFor(req.sessionToken!);
+      return sendHtml(
+        reply,
+        shell(
+          'Удалить акцию',
+          `<div class="narrow"><h1>Удалить акцию?</h1>` +
+            banner('warn', `«${escapeHtml(c.title || c.body.slice(0, 60))}» — это навсегда, вернуть будет нельзя.`) +
+            `<p class="note">Если акция просто закончилась, надёжнее её выключить: текст останется, ` +
+            `а бот перестанет о ней рассказывать.</p>` +
+            `<div class="stack">` +
+            `<form method="post" action="/console/content/delete" class="inline">` +
+            `<input type="hidden" name="_csrf" value="${escapeHtml(csrf)}">` +
+            `<input type="hidden" name="id" value="${c.id}">` +
+            btn('Да, удалить навсегда', { variant: 'danger' }) +
+            `</form>` +
+            btn('Отмена', { variant: 'secondary', href: `/console/content/${c.id}` }) +
+            `</div></div>`,
+          { staff: req.staff, csrf, active: '/console/kb', back: { href: '/console/content', label: 'Акции' } },
+        ),
       );
     });
 
@@ -1630,6 +1760,90 @@ export async function registerConsoleRoutes(
       store.setStaffPassword?.(record.id, hashPassword(b.next));
       store.recordEvent('password_changed', { payload: { staff: staff.login } });
       return sendHtml(reply, profilePage(staff, csrf, { kind: 'ok', text: 'Пароль изменён.' }));
+    });
+
+    // --- «Спросить бота» ------------------------------------------------------------
+    // Владелица внесла прайс — и до сих пор не могла проверить, что бот его выучил,
+    // кроме как написать боту с личного телефона как гость. Это тот же движок и та же
+    // база знаний, но разговор служебный: он не попадает во «Входящие» к менеджерам.
+
+    const askPage = (
+      req: FastifyRequest,
+      prop: string,
+      question?: string,
+      answer?: { text: string; ms: number },
+    ): string => {
+      const staff = req.staff!;
+      const csrf = csrfTokenFor(req.sessionToken!);
+      const scoped = staff.property;
+      const propOptions = PROPERTY_KEYS.map(
+        (k) => `<option value="${k}"${k === prop ? ' selected' : ''}>${escapeHtml(propertyLabel(k))}</option>`,
+      ).join('');
+      const samples = [
+        'Сколько стоит разовое посещение фитнеса?',
+        'Во сколько завтрак?',
+        'Какие сейчас есть акции?',
+        'Можно с животными?',
+      ];
+      return shell(
+        'Спросить бота',
+        `<div class="narrow"><h1>Спросить бота</h1>` +
+          `<p class="note">Задайте вопрос так, как его задал бы гость, и посмотрите, что ответит бот. ` +
+          `Этот разговор служебный: гостям он не уходит и в «Входящие» не попадает.</p>` +
+          (answer
+            ? `<div class="card"><p class="card__meta">Вопрос</p>` +
+              `<p class="card__body">${escapeHtml(question ?? '')}</p></div>` +
+              `<div class="card" style="border-color:var(--brand)"><p class="card__meta">Ответ бота · ` +
+              `${escapeHtml(String(answer.text.length))} символов · ${escapeHtml(String(Math.round(answer.ms / 100) / 10))} с</p>` +
+              `<p class="card__body" style="-webkit-line-clamp:99">${escapeHtml(answer.text)}</p></div>` +
+              (answer.text.length > 600
+                ? banner('warn', 'Ответ длинноват для мессенджера — гость такое читает по диагонали.')
+                : '')
+            : '') +
+          `<form method="post" action="/console/ask" data-once style="margin-top:16px">` +
+          `<input type="hidden" name="_csrf" value="${escapeHtml(csrf)}">` +
+          (scoped
+            ? `<input type="hidden" name="property" value="${escapeHtml(scoped)}">`
+            : `<div class="field"><label for="property">Отель</label>` +
+              `<select name="property" id="property">${propOptions}</select></div>`) +
+          field('question', 'Вопрос от имени гостя', {
+            textarea: true,
+            rows: 2,
+            value: question ?? '',
+            required: true,
+            attrs: 'data-autogrow',
+          }) +
+          btn('Спросить', { variant: 'primary', attrs: 'data-busy="Спрашиваю…"' }) +
+          `</form>` +
+          `<p class="note" style="margin-top:16px">Примеры:</p><div class="stack">` +
+          samples
+            .map((q) => btn(q, { variant: 'secondary', sm: true, href: `/console/ask?q=${encodeURIComponent(q)}&property=${encodeURIComponent(prop)}` }))
+            .join('') +
+          `</div></div>`,
+        {
+          staff,
+          csrf,
+          active: '/console/ask',
+          back: { href: '/console/kb', label: 'Знания' },
+          waiting: waitingFor(store, staff).length,
+        },
+      );
+    };
+
+    scope.get('/console/ask', async (req, reply) => {
+      const q = req.query as { q?: string; property?: string };
+      const prop = req.staff!.property || q.property || 'almaty';
+      return sendHtml(reply, askPage(req, prop, q.q));
+    });
+
+    scope.post('/console/ask', async (req, reply) => {
+      const b = req.body as Record<string, string>;
+      const prop = req.staff!.property || (b.property ?? 'almaty');
+      const question = (b.question ?? '').trim();
+      if (!question || !deps.askBot) return sendHtml(reply, askPage(req, prop, question));
+      const started = Date.now();
+      const text = await deps.askBot(prop, question);
+      return sendHtml(reply, askPage(req, prop, question, { text, ms: Date.now() - started }));
     });
 
     // --- Кому идут заявки от гостей -------------------------------------------------

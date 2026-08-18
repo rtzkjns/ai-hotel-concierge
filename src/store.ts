@@ -591,6 +591,48 @@ export class Store {
       .run(active ? 1 : 0, nowIso(), id);
   }
 
+  getContent(id: number): HotelContent | null {
+    const r = this.db.prepare('SELECT * FROM hotel_content WHERE id = ?').get(id) as
+      | Record<string, unknown>
+      | undefined;
+    if (!r) return null;
+    return {
+      id: r.id as number,
+      property: r.property as string,
+      kind: r.kind as HotelContent['kind'],
+      title: (r.title as string) ?? '',
+      body: r.body as string,
+      source: r.source as HotelContent['source'],
+      startsAt: (r.starts_at as string) ?? null,
+      endsAt: (r.ends_at as string) ?? null,
+      active: Boolean(r.active),
+      createdAt: (r.created_at as string) ?? (r.updated_at as string),
+      updatedAt: r.updated_at as string,
+    };
+  }
+
+  /** Правка акции: раньше опечатку в цене можно было исправить только удалив запись. */
+  updateContent(
+    id: number,
+    patch: Partial<Pick<HotelContent, 'title' | 'body' | 'property' | 'startsAt' | 'endsAt'>>,
+  ): void {
+    const cur = this.getContent(id);
+    if (!cur) return;
+    this.db
+      .prepare(
+        'UPDATE hotel_content SET title=?, body=?, property=?, starts_at=?, ends_at=?, updated_at=? WHERE id=?',
+      )
+      .run(
+        patch.title ?? cur.title,
+        patch.body ?? cur.body,
+        patch.property ?? cur.property,
+        patch.startsAt !== undefined ? patch.startsAt : cur.startsAt,
+        patch.endsAt !== undefined ? patch.endsAt : cur.endsAt,
+        new Date().toISOString(),
+        id,
+      );
+  }
+
   deleteContent(id: number): void {
     this.db.prepare('DELETE FROM hotel_content WHERE id = ?').run(id);
   }
