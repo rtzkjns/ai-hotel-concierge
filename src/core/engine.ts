@@ -20,7 +20,7 @@ import type { AvailabilityProvider } from '../integrations/exely/provider';
 import type { PaymentGateway } from '../integrations/payments';
 import type { Transcriber } from '../integrations/transcribe';
 import { properties, propertyList } from '../knowledge';
-import { enforceOfficialTone, humanDelays, styleSplit } from '../style/engine';
+import { dropRepeatedSentences, enforceOfficialTone, humanDelays, styleSplit } from '../style/engine';
 import type {
   BookingLead,
   Channel,
@@ -51,6 +51,36 @@ const WEBWIDGET_DELAY_MULTIPLIER = 0.6;
  * after 19:00 Almaty time, which silently shifts every «завтра» booking by one day.
  */
 const HOTEL_TIMEZONE = 'Asia/Almaty';
+
+/** Метка служебной записи в истории: модель её читает, гость никогда не видит. */
+export const ACTION_TRACE_PREFIX = '[выполнено]';
+
+/** Когда весь ответ оказался повтором: лучше короткая вежливость, чем то же самое снова. */
+const ACK_ONLY: Record<string, string> = {
+  ru: 'Пожалуйста.',
+  kk: 'Өтінемін.',
+  en: 'You are welcome.',
+  zh: '不客气。',
+};
+
+const TRACE_LABEL: Record<string, string> = {
+  submit_mice_request: 'заявка на мероприятие отправлена менеджерам',
+  capture_lead: 'контакт гостя записан, менеджеры уведомлены',
+  escalate_to_human: 'диалог передан живому менеджеру',
+  create_booking: 'бронь оформлена',
+  cancel_booking: 'бронь отменена',
+};
+
+/**
+ * Короткая запись о том, что уже сделано в этом разговоре. Складывается в историю
+ * как обычное сообщение ассистента: канал её не отправляет (см. фильтр в каналах),
+ * а модель видит и не повторяет ни действие, ни отчёт о нём.
+ */
+export function actionTrace(toolsUsed: string[]): string | null {
+  const labels = [...new Set(toolsUsed)].map((t) => TRACE_LABEL[t]).filter(Boolean);
+  if (!labels.length) return null;
+  return `${ACTION_TRACE_PREFIX} ${labels.join('; ')}. Гостю об этом уже сообщено — не повторяй и не вызывай эти инструменты снова по тому же поводу.`;
+}
 
 /** How many trailing messages the escalation transcript carries to staff. */
 const ESCALATION_TRANSCRIPT_MESSAGES = 10;
@@ -111,6 +141,9 @@ export interface EngineStore {
   appendMessage(id: string, message: ChatMessage): void;
   saveLead(lead: BookingLead): void;
   saveMice(m: MiceRequest): void;
+  /** Нужны, чтобы не отправить одну и ту же заявку дважды за один разговор. */
+  listLeads?(): BookingLead[];
+  listMice?(): MiceRequest[];
   recordEvent(type: string, data?: EventData): void;
   /** Live per-hotel promos/announcements for the prompt (optional; absent stores just skip it). */
   listActiveContent?(property: string, nowIso: string): HotelContent[];
@@ -363,6 +396,7 @@ export class Engine {
 
     let reply: string;
     let handedOff: boolean;
+    let usedTools: string[] = [];
     try {
       const result = await generateReply(history, {
         client: this.deps.client,
@@ -379,7 +413,25 @@ export class Engine {
       // history is fed back to the model, so an un-stripped smiley would teach it to keep
       // using them regardless of the prompt.
       reply = enforceOfficialTone(result.reply);
+      // Детерминированная защита от повтора: промпт это запрещает, но запрет вероятностный,
+      // а гость уже получал одну и ту же фразу трижды подряд.
+      const previousReplies = history
+        .filter((m) => m.role === 'assistant' && !m.content.startsWith(ACTION_TRACE_PREFIX))
+        .slice(-3)
+        .map((m) => m.content);
+      const deduped = dropRepeatedSentences(reply, previousReplies);
+      if (deduped !== reply) {
+        track(store, 'repeat_trimmed', {
+          conversationId: convo.id,
+          property: convo.property,
+          channel: convo.channel,
+          payload: { before: reply.length, after: deduped.length },
+        });
+      }
+      // Осталась пустота — значит нового сказать нечего: короткая вежливость лучше повтора.
+      reply = deduped.trim() || ACK_ONLY[convo.language ?? 'ru'];
       handedOff = result.handedOff;
+      usedTools = result.toolsUsed ?? [];
 
       // Dead end: the model burned every tool round without answering. The guest was just told a
       // manager will follow up — make that true, otherwise it is a promise nobody received.
@@ -419,6 +471,11 @@ export class Engine {
     }
 
     if (reply) store.appendMessage(convo.id, { role: 'assistant', content: reply });
+    // След выполненных действий. Без него модель на следующем ходу не знает, что заявку
+    // уже отправила, и по требованию промпта отчитывается о ней снова — так гость получил
+    // три сообщения «коллеги свяжутся в WhatsApp» подряд.
+    const trace = actionTrace(usedTools);
+    if (trace) store.appendMessage(convo.id, { role: 'assistant', content: trace });
     if (handedOff) store.setStatus(convo.id, 'handed_off');
 
     const parts = humanDelays(styleSplit(reply), {
@@ -645,6 +702,20 @@ export class Engine {
 
       submit_mice_request: async (raw) => {
         const input = raw as SubmitMiceRequestInput;
+        // Гость пишет «спасибо» — модель на новом ходу не помнит, что заявку уже
+        // отправила, и зовёт инструмент снова. Реальный случай: три одинаковые
+        // заявки и три уведомления менеджерам за 15 секунд. Считаем повтором
+        // любую заявку по тому же диалогу и той же дате в пределах часа.
+        const recentMice = store.listMice?.() ?? [];
+        const already = recentMice.find(
+          (m) =>
+            m.conversationId === convo.id &&
+            (m.eventDate ?? '') === (input.eventDate ?? '') &&
+            Date.now() - Date.parse(m.createdAt) < 60 * 60 * 1000,
+        );
+        if (already) {
+          return { ok: true, alreadySubmitted: true, note: 'Заявка уже отправлена ранее в этом диалоге — повторно не отправляю' };
+        }
         store.saveMice({
           conversationId: convo.id,
           property: convo.property,
@@ -680,6 +751,17 @@ export class Engine {
 
       capture_lead: async (raw) => {
         const input = raw as CaptureLeadInput;
+        // Та же защита, что и у заявок: без неё один гость дал четыре одинаковых лида
+        // и четыре уведомления персоналу.
+        const already = (store.listLeads?.() ?? []).find(
+          (l) =>
+            l.conversationId === convo.id &&
+            (l.specialRequests ?? '').slice(0, 60) === (input.summary ?? '').slice(0, 60) &&
+            Date.now() - Date.parse(l.createdAt) < 60 * 60 * 1000,
+        );
+        if (already) {
+          return { ok: true, alreadyCaptured: true, note: 'Эта заявка уже записана — повторно не записываю' };
+        }
         store.saveLead({
           conversationId: convo.id,
           kind: 'generic',

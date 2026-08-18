@@ -184,3 +184,46 @@ export function humanDelays(parts: string[], opts: HumanDelayOpts = {}): Delayed
 function clamp(value: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, value));
 }
+
+/* ------------------------------------------------------------------ anti-repeat */
+
+/** Sentence-level normalisation: case, punctuation and spacing stop mattering. */
+function normalise(sentence: string): string {
+  return sentence
+    .toLowerCase()
+    .replace(/[«»"'(),.!?;:—–-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function sentencesOf(text: string): string[] {
+  return text
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Removes sentences the guest has already been sent.
+ *
+ * A real guest received «коллеги свяжутся с вами в WhatsApp» three times in fifteen
+ * seconds, once per follow-up message they sent. The prompt forbids that, but prompt bans
+ * are probabilistic — this is the guarantee. Only near-identical sentences are dropped, so
+ * a genuinely new answer that happens to share a phrase survives.
+ *
+ * If everything was a repeat, the caller gets an empty string and substitutes a short
+ * acknowledgement: saying nothing new is better than saying the same thing again.
+ */
+export function dropRepeatedSentences(reply: string, previousReplies: string[]): string {
+  if (!reply.trim() || !previousReplies.length) return reply;
+  const seen = new Set(previousReplies.flatMap((p) => sentencesOf(p).map(normalise)).filter(Boolean));
+  if (!seen.size) return reply;
+
+  const kept = sentencesOf(reply).filter((s) => {
+    const key = normalise(s);
+    // Short courtesies may legitimately repeat («Пожалуйста», «Здравствуйте»).
+    if (key.length < 25) return true;
+    return !seen.has(key);
+  });
+  return kept.join(' ').replace(/\s+\|\|\|\s+/g, '|||').trim();
+}

@@ -510,6 +510,52 @@ describe('per-hotel access', () => {
   });
 });
 
+describe('escalation recipients', () => {
+  it('sends a hotel enquiry to that hotel managers and not to the owner', async () => {
+    const { store } = await makeApp();
+    store.setStaffChat('almaty', '111', 'Айгуль');
+    store.setStaffChat('almaty', '222', 'Ресепшен Алматы');
+    store.setStaffChat('astana', '333', 'Данияр');
+
+    expect(store.staffChatsFor('almaty').map((c) => c.chatId)).toEqual(['111', '222']);
+    expect(store.staffChatsFor('astana').map((c) => c.chatId)).toEqual(['333']);
+    // Отель без получателей — заявка не должна исчезнуть, её подхватывает владелец.
+    expect(store.staffChatsFor('seven')).toEqual([]);
+  });
+
+  it('lets a manager unsubscribe and does not duplicate on repeat registration', async () => {
+    const { store } = await makeApp();
+    store.setStaffChat('park_almaty', '444', 'Марат');
+    store.setStaffChat('park_almaty', '444', 'Марат Ж.');
+    expect(store.staffChatsFor('park_almaty')).toHaveLength(1);
+    expect(store.staffChatsFor('park_almaty')[0].title).toBe('Марат Ж.');
+
+    const entry = store.listStaffChats().find((c) => c.chatId === '444')!;
+    store.removeStaffChat(entry.id);
+    expect(store.staffChatsFor('park_almaty')).toEqual([]);
+  });
+
+  it('shows the owner an invite link per hotel', async () => {
+    const { app } = await makeApp();
+    const { cookie } = await login(app, 'admin', 'admin-pass');
+    const res = await app.inject({ method: 'GET', url: '/console/managers', headers: { cookie } });
+    expect(res.statusCode).toBe(200);
+    // Телефон менеджера подключить нельзя — работает только переход по ссылке.
+    expect(res.body).toContain('start=staff-almaty');
+    expect(res.body).toContain('start=staff-astana');
+    expect(res.body).toContain('нет получателей');
+    await app.close();
+  });
+
+  it('keeps the managers screen away from reception', async () => {
+    const { app } = await makeApp();
+    const { cookie } = await login(app, 'aigul', 'mice-pass');
+    const res = await app.inject({ method: 'GET', url: '/console/managers', headers: { cookie } });
+    expect(res.statusCode).toBe(403);
+    await app.close();
+  });
+});
+
 describe('per-hotel writes', () => {
   it('refuses to change the status of another hotel request, even by guessing its id', async () => {
     const { app, store } = await makeApp();

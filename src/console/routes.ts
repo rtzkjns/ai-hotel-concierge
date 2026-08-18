@@ -6,6 +6,7 @@ import formbody from '@fastify/formbody';
 import multipart from '@fastify/multipart';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { MetricsSummary } from '../core/events';
+import { ACTION_TRACE_PREFIX } from '../core/engine';
 import { maskPII } from '../core/pii';
 import type { KbEntry } from '../types';
 import type {
@@ -79,6 +80,8 @@ export interface ConsoleStore extends SessionStore {
   /** Код привязки Telegram-групп и список уже привязанных отелей — для профиля владельца. */
   bindCode?(): string;
   staffChatFor?(property: string): string | undefined;
+  listStaffChats?(): Array<{ id: number; property: string; chatId: string; title: string }>;
+  removeStaffChat?(id: number): void;
   /** Смена собственного пароля — иначе выданный при заведении пароль живёт вечно. */
   setStaffPassword?(id: number, passHash: string): void;
   deleteSession(token: string): void;
@@ -132,6 +135,8 @@ export interface ConsoleDeps {
   refreshSource?: (entry: KbEntry) => Promise<{ ok: boolean; error?: string }>;
   /** Достать текст из загруженного файла: PDF, Word, Excel, CSV, фото прайса. */
   extractFile?: (buf: Buffer, filename: string) => Promise<{ ok: boolean; text?: string; error?: string }>;
+  /** Имя Telegram-бота — из него собираются ссылки-приглашения для менеджеров. */
+  botUsername?: string;
 }
 
 // --- HTML helpers ------------------------------------------------------------------
@@ -289,7 +294,9 @@ export async function registerConsoleRoutes(
       staff: AuthedStaff,
       opts: { waiting?: boolean; mine?: boolean; overdue?: boolean; showProperty: boolean },
     ): string => {
-      const last = [...c.history].reverse().find((m) => m.role === 'user') ?? c.history[c.history.length - 1];
+      const last =
+        [...c.history].reverse().find((m) => m.role === 'user') ??
+        [...c.history].reverse().find((m) => !m.content.startsWith(ACTION_TRACE_PREFIX));
       const preview = last ? maskFor(staff, last.content) : '';
       const cls =
         'card' +
@@ -480,6 +487,8 @@ export async function registerConsoleRoutes(
       // ровно как ответ бота, и в истории было не разобрать, кто что сказал.
       let lastDay = '';
       const transcript = convo.history
+        // Служебные отметки о выполненных действиях — заметки для модели, а не переписка.
+        .filter((m) => !m.content.startsWith(ACTION_TRACE_PREFIX))
         .map((m) => {
           const created = m.createdAt;
           const day = created ? new Date(created).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' }) : '';
@@ -810,6 +819,9 @@ export async function registerConsoleRoutes(
     // Текст достаётся один раз, при загрузке, и дальше живёт как обычный факт: держать
     // файл в промпте на каждом сообщении гостя было бы медленно и дорого.
 
+    const TOO_BIG =
+      'Файл больше 32 МБ. Сожмите PDF или пришлите меню по частям — например, отдельно кухню и отдельно бар.';
+
     const uploadPage = (
       req: FastifyRequest,
       prop: string,
@@ -882,11 +894,7 @@ export async function registerConsoleRoutes(
       try {
         file = await req.file();
       } catch {
-        return sendHtml(
-          reply,
-          uploadPage(req, '', { kind: 'err', text: 'Файл больше 12 МБ — пришлите файл поменьше.' }),
-          400,
-        );
+        return sendHtml(reply, uploadPage(req, '', { kind: 'err', text: TOO_BIG }), 400);
       }
       if (!file) {
         return sendHtml(reply, uploadPage(req, '', { kind: 'err', text: 'Файл не выбран.' }), 400);
@@ -899,7 +907,14 @@ export async function registerConsoleRoutes(
       }
       const prop = fields?.property?.value ?? '';
 
-      const buf = await file.toBuffer();
+      // Превышение лимита выбрасывается именно здесь, при чтении потока: без своего
+      // перехвата владелица получала белую страницу с английским JSON.
+      let buf: Buffer;
+      try {
+        buf = await file.toBuffer();
+      } catch {
+        return sendHtml(reply, uploadPage(req, prop, { kind: 'err', text: TOO_BIG }), 400);
+      }
       const res = await deps.extractFile(buf, file.filename);
       if (!res.ok || !res.text) {
         return sendHtml(
@@ -1615,6 +1630,75 @@ export async function registerConsoleRoutes(
       store.setStaffPassword?.(record.id, hashPassword(b.next));
       store.recordEvent('password_changed', { payload: { staff: staff.login } });
       return sendHtml(reply, profilePage(staff, csrf, { kind: 'ok', text: 'Пароль изменён.' }));
+    });
+
+    // --- Кому идут заявки от гостей -------------------------------------------------
+    // Телефон менеджера сам по себе бесполезен: бот не может написать человеку первым и
+    // не может добавить его в группу. Зато переход по ссылке даёт нам его чат в один тап.
+
+    scope.get('/console/managers', { preHandler: requireRole('admin') }, async (req, reply) => {
+      const staff = req.staff!;
+      const csrf = csrfTokenFor(req.sessionToken!);
+      const bot = deps.botUsername ?? 'kazzzholBot';
+      const chats = store.listStaffChats?.() ?? [];
+
+      const hotels = PROPERTY_KEYS.map((key) => {
+        const mine = chats.filter((c) => c.property === key);
+        const link = `https://t.me/${bot}?start=staff-${key}`;
+        const rows = mine.length
+          ? mine
+              .map(
+                (c) =>
+                  `<div class="row"><span class="name">${escapeHtml(c.title)}</span>` +
+                  `<span class="grow">${escapeHtml(c.chatId.startsWith('-') ? 'группа' : 'личные сообщения')}</span>` +
+                  `<form method="post" action="/console/managers/remove" class="inline">` +
+                  `<input type="hidden" name="_csrf" value="${escapeHtml(csrf)}">` +
+                  `<input type="hidden" name="id" value="${c.id}">` +
+                  btn('Отключить', { variant: 'danger', sm: true }) +
+                  `</form></div>`,
+              )
+              .join('')
+          : `<p class="note" style="color:var(--wait-tx)">Пока никто не подключён — заявки этого отеля приходят владельцу.</p>`;
+
+        return (
+          `<div class="card" style="margin-bottom:16px">` +
+          `<div class="card__top"><span class="card__who">${escapeHtml(propertyLabel(key))}</span>` +
+          `<span style="margin-left:auto">${mine.length ? badge('on', `получателей: ${mine.length}`) : badge('wait', 'нет получателей')}</span></div>` +
+          rows +
+          `<p class="card__meta" style="margin-top:12px">Ссылка для менеджера этого отеля:</p>` +
+          `<div class="preview" style="user-select:all">${escapeHtml(link)}</div>` +
+          `<p class="card__meta">Отправьте её менеджеру в WhatsApp. Он откроет ссылку, нажмёт «Старт» — ` +
+          `и заявки начнут приходить ему.</p></div>`
+        );
+      }).join('');
+
+      const body =
+        `<div class="narrow"><h1>Кому идут заявки</h1>` +
+        `<p class="note">Когда бот не может помочь или гость просит человека, заявка уходит ` +
+        `менеджерам того отеля, о котором спрашивал гость. Пока у отеля нет ни одного получателя, ` +
+        `заявки идут владельцу.</p>` +
+        hotels +
+        `<details class="quiet" style="margin-top:24px"><summary>Если нужен общий чат смены</summary>` +
+        `<p class="note">Создайте группу, добавьте туда бота и менеджеров и напишите в ней команду ` +
+        `<br><code>/привязать almaty ${escapeHtml(store.bindCode?.() ?? '')}</code><br>` +
+        `Вместо almaty — astana, park_almaty или seven. Код нужен, чтобы посторонний не ` +
+        `перенаправил заявки отеля себе.</p></details></div>`;
+
+      return sendHtml(
+        reply,
+        shell('Кому идут заявки', body, {
+          staff,
+          csrf,
+          active: '/console/managers',
+          back: { href: '/console', label: 'Входящие' },
+          waiting: waitingFor(store, staff).length,
+        }),
+      );
+    });
+
+    scope.post('/console/managers/remove', { preHandler: requireRole('admin') }, async (req, reply) => {
+      store.removeStaffChat?.(Number((req.body as Record<string, string>).id));
+      return reply.redirect('/console/managers');
     });
 
     // --- Data deletion (admin only) --------------------------------------------------------------

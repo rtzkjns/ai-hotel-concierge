@@ -17,12 +17,21 @@ export interface TelegramEngine {
 
 export interface TelegramStore {
   /** Привязка группы менеджеров к отелю (команда /привязать в самой группе). */
-  setStaffChat?(property: string, chatId: string): void;
+  setStaffChat?(property: string, chatId: string, title?: string): void;
   staffChatFor?(property: string): string | undefined;
+  listStaffChats?(): Array<{ id: number; property: string; chatId: string; title: string }>;
+  removeStaffChat?(id: number): void;
   getOrCreateConversation(channel: Channel, senderId: string): Conversation;
   resetConversation(id: string): void;
   setProperty(id: string, property: string): void;
 }
+
+const HOTEL_TITLE: Record<string, string> = {
+  almaty: 'Kazzhol Алматы',
+  astana: 'Kazzhol Астана',
+  park_almaty: 'Kazzhol Park Almaty',
+  seven: 'Kazzhol Seven',
+};
 
 export interface TelegramChannelDeps {
   botToken: string;
@@ -54,11 +63,43 @@ export class TelegramChannel {
   constructor(private readonly deps: TelegramChannelDeps) {
     this.bot = new Telegraf(deps.botToken);
 
-    // /start always begins a fresh session and re-asks which hotel.
+    /**
+     * /start — начало гостевой сессии, но с меткой «staff-<отель>» это подключение
+     * менеджера. Телефон здесь ничего не даёт: бот не может написать человеку первым
+     * и не может добавить его в группу. Зато переход по ссылке t.me/бот?start=staff-almaty
+     * даёт нам его чат в один тап, и заявки отеля идут прямо ему.
+     */
     this.bot.start(async (ctx) => {
+      const payload = (ctx as { startPayload?: string }).startPayload ?? '';
+      const hotel = /^staff[-_](almaty|astana|park_almaty|seven)$/i.exec(payload)?.[1]?.toLowerCase();
+      if (hotel) {
+        const who =
+          [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(' ') ||
+          (ctx.from?.username ? `@${ctx.from.username}` : 'менеджер');
+        deps.store.setStaffChat?.(hotel, String(ctx.chat.id), who);
+        await ctx.reply(
+          `Здравствуйте, ${who}. Готово: заявки от гостей отеля ${HOTEL_TITLE[hotel] ?? hotel} ` +
+            'будут приходить вам сюда.\n\n' +
+            'Сообщение придёт, когда гость попросит человека или бот не сможет помочь. ' +
+            'В нём будет коротко: что нужно гостю и где продолжить разговор.\n\n' +
+            'Чтобы отписаться, напишите здесь /стоп.',
+        );
+        deps.onBindChanged?.(hotel, String(ctx.chat.id), undefined);
+        return;
+      }
       const convo = deps.store.getOrCreateConversation('telegram', String(ctx.chat.id));
       deps.store.resetConversation(convo.id);
       await ctx.reply(CHOOSE_HOTEL_MESSAGE, this.keyboard);
+    });
+
+    // Менеджер ушёл со смены или сменил номер — отписка одной командой.
+    this.bot.command(['стоп', 'stop'], async (ctx) => {
+      const removed = (deps.store.listStaffChats?.() ?? []).filter(
+        (c) => c.chatId === String(ctx.chat.id),
+      );
+      if (!removed.length) return;
+      for (const r of removed) deps.store.removeStaffChat?.(r.id);
+      await ctx.reply('Готово, заявки вам больше не приходят. Чтобы вернуть — откройте ссылку снова.');
     });
 
     // Guest picked a hotel from the inline keyboard.

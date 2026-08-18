@@ -560,6 +560,7 @@ function moreMenu(staff: { login: string; role: string; property?: string }, csr
     (staff.property ? `<br>${escapeHtml(propertyLabel(staff.property))}` : '') +
     `</div>` +
     `<a href="/console/profile">Профиль и пароль</a>` +
+    (admin ? `<a href="/console/managers">Кому идут заявки</a>` : '') +
     (admin ? `<a href="/console/kb/archive">Архив знаний</a>` : '') +
     (admin ? `<a href="/console/data-deletion">Удаление данных гостя</a>` : '') +
     `<form method="post" action="/console/logout">` +

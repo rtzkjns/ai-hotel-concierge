@@ -109,6 +109,8 @@ export function buildConfig(env: NodeJS.ProcessEnv) {
     dbPath: env.DB_PATH ?? './kazzhol.db',
     telegram: {
       botToken: env.TELEGRAM_BOT_TOKEN,
+      // Нужно, чтобы панель собирала ссылки-приглашения для менеджеров.
+      botUsername: env.TELEGRAM_BOT_USERNAME ?? 'kazzzholBot',
       staffGroupChatId: env.STAFF_GROUP_CHAT_ID,
       // Отдельный Telegram-чат на каждый отель: STAFF_CHAT_ID_ALMATY и т.д.
       // Если для отеля чат не задан — уведомление уходит в общий staffGroupChatId.

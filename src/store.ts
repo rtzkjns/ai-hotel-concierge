@@ -124,28 +124,51 @@ export class Store {
    * «/привязать <отель>» — id чата определяется сам, вручную ничего копировать не нужно.
    * Хранится в kb_entries (kind='staffchat'), чтобы не плодить таблицы.
    */
-  setStaffChat(property: string, chatId: string): void {
+  setStaffChat(property: string, chatId: string, title = 'Чат менеджеров'): void {
     const existing = this.db
-      .prepare("SELECT id FROM kb_entries WHERE kind='staffchat' AND property=?")
-      .get(property) as { id: number } | undefined;
+      .prepare("SELECT id FROM kb_entries WHERE kind='staffchat' AND property=? AND body=?")
+      .get(property, chatId) as { id: number } | undefined;
     if (existing) {
       this.db
-        .prepare('UPDATE kb_entries SET body=?, updated_at=? WHERE id=?')
-        .run(chatId, new Date().toISOString(), existing.id);
+        .prepare('UPDATE kb_entries SET title=?, active=1, updated_at=? WHERE id=?')
+        .run(title, new Date().toISOString(), existing.id);
       return;
     }
     this.db
       .prepare(
         `INSERT INTO kb_entries (property, kind, title, body, url, active, updated_at)
-         VALUES (?, 'staffchat', 'Чат менеджеров', ?, NULL, 1, ?)`,
+         VALUES (?, 'staffchat', ?, ?, NULL, 1, ?)`,
       )
-      .run(property, chatId, new Date().toISOString());
+      .run(property, title, chatId, new Date().toISOString());
   }
 
   /**
-   * Код привязки Telegram-групп: короткий секрет, который владелец видит в панели и
-   * диктует менеджеру. Без него команда «/привязать» позволяла кому угодно
-   * перенаправить заявки отеля себе.
+   * Все получатели заявок отеля: и личные чаты менеджеров, и группа смены.
+   * Заявка уходит каждому — на смене может не быть того, кто подключился первым.
+   */
+  staffChatsFor(property: string): Array<{ chatId: string; title: string }> {
+    const rows = this.db
+      .prepare(
+        "SELECT title, body FROM kb_entries WHERE kind='staffchat' AND property=? AND active=1 ORDER BY id",
+      )
+      .all(property) as Array<{ title: string; body: string }>;
+    return rows.map((r) => ({ chatId: r.body, title: r.title }));
+  }
+
+  listStaffChats(): Array<{ id: number; property: string; chatId: string; title: string }> {
+    const rows = this.db
+      .prepare("SELECT id, property, title, body FROM kb_entries WHERE kind='staffchat' ORDER BY property, id")
+      .all() as Array<{ id: number; property: string; title: string; body: string }>;
+    return rows.map((r) => ({ id: r.id, property: r.property, chatId: r.body, title: r.title }));
+  }
+
+  removeStaffChat(id: number): void {
+    this.db.prepare("DELETE FROM kb_entries WHERE id = ? AND kind='staffchat'").run(id);
+  }
+
+  /**
+   * Код привязки: короткий секрет, который владелец видит в панели. Без него команда
+   * «/привязать» позволяла кому угодно перенаправить заявки отеля себе.
    */
   bindCode(): string {
     const row = this.db
@@ -162,17 +185,14 @@ export class Store {
     return code;
   }
 
-  /** Смена кода — если он куда-то утёк. */
   resetBindCode(): string {
     this.db.prepare("DELETE FROM kb_entries WHERE kind='bindcode'").run();
     return this.bindCode();
   }
 
+  /** Совместимость: первый получатель отеля. */
   staffChatFor(property: string): string | undefined {
-    const r = this.db
-      .prepare("SELECT body FROM kb_entries WHERE kind='staffchat' AND property=? AND active=1")
-      .get(property) as { body: string } | undefined;
-    return r?.body;
+    return this.staffChatsFor(property)[0]?.chatId;
   }
 
   deleteKbEntry(id: number): void {

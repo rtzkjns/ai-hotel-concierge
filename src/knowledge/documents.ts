@@ -16,7 +16,12 @@ import { readZipText } from './zip';
 
 /** A photo or a scan is only worth reading if the model can see it. */
 export const VISION_MIME = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
-export const MAX_UPLOAD_BYTES = 12 * 1024 * 1024;
+/**
+ * Настоящие меню сети весят 14–34 МБ (сканы в PDF), поэтому 12 МБ отсекали ровно те
+ * файлы, ради которых загрузка и делалась. Потолок — 32 МБ: столько принимает сам
+ * API модели в одном запросе, выше отказ пришёл бы уже от него.
+ */
+export const MAX_UPLOAD_BYTES = 32 * 1024 * 1024;
 
 export interface ExtractResult {
   ok: boolean;
@@ -51,7 +56,13 @@ export async function extractText(
 ): Promise<ExtractResult> {
   if (!buf.length) return { ok: false, error: 'Файл пустой' };
   if (buf.length > MAX_UPLOAD_BYTES) {
-    return { ok: false, error: 'Файл больше 12 МБ — пришлите файл поменьше' };
+    const mb = Math.round(buf.length / 1024 / 1024);
+    return {
+      ok: false,
+      error:
+        `Файл ${mb} МБ, а панель принимает до 32 МБ. Сожмите PDF или пришлите меню ` +
+        'по частям — например, отдельно кухню и отдельно бар.',
+    };
   }
   const ext = extensionOf(filename);
 

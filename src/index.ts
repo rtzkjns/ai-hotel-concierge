@@ -28,38 +28,47 @@ import { registerChatfuelBridge } from './server/chatfuel';
 import { Store } from './store';
 
 /** Staff alerts: Telegram staff chat via raw Bot API when configured, console otherwise. */
-function createStaffNotifier(store: { staffChatFor?(p: string): string | undefined }): StaffNotifier {
+function createStaffNotifier(store: {
+  staffChatsFor?(p: string): Array<{ chatId: string; title: string }>;
+}): StaffNotifier {
   const token = config.telegram.botToken;
   const fallbackChat = config.telegram.staffGroupChatId;
   const byProperty = config.telegram.staffChatByProperty ?? {};
-  if (!token || (!fallbackChat && Object.values(byProperty).every((v) => !v))) {
-    return { notify: (text) => console.log('[staff]', text) };
-  }
+  if (!token) return { notify: (text) => console.log('[staff]', text) };
 
-  async function send(chatId: string, text: string): Promise<void> {
+  async function send(chatId: string, text: string): Promise<boolean> {
     try {
       const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: chatId, text }),
+        body: JSON.stringify({ chat_id: chatId, text, disable_web_page_preview: true }),
       });
-      if (!res.ok) console.error(`staff notify failed: Telegram HTTP ${res.status}`);
+      if (!res.ok) {
+        console.error(`staff notify failed: Telegram HTTP ${res.status} (chat ${chatId})`);
+        return false;
+      }
+      return true;
     } catch (err) {
       console.error('staff notify failed:', err instanceof Error ? err.message : 'unknown error');
+      return false;
     }
   }
 
   return {
     async notify(text, property) {
-      // Заявка уходит в чат СВОЕГО отеля; если для него чат не настроен — в общий.
-      // Общий чат владельца получает копию всегда, чтобы ничего не терялось.
-      // Привязка из Telegram-группы важнее .env: менеджеры настраивают её сами, без разработчика.
-      const hotelChat = property ? (store.staffChatFor?.(property) ?? byProperty[property]) : undefined;
-      const targets = new Set<string>();
-      if (hotelChat) targets.add(hotelChat);
-      if (fallbackChat) targets.add(fallbackChat);
-      if (targets.size === 0 && hotelChat === undefined && fallbackChat) targets.add(fallbackChat);
-      await Promise.all([...targets].map((c) => send(c, text)));
+      // Заявка идёт менеджерам СВОЕГО отеля. Владелец получает копию только тогда,
+      // когда у отеля нет ни одного получателя — иначе каждая мелочь падала бы ему,
+      // а он именно об этом и просил не делать.
+      const hotelChats = property ? (store.staffChatsFor?.(property) ?? []) : [];
+      const targets = new Set(hotelChats.map((c) => c.chatId));
+      if (property && !targets.size && byProperty[property]) targets.add(byProperty[property]);
+      if (!targets.size && fallbackChat) targets.add(fallbackChat);
+
+      const results = await Promise.all([...targets].map((c) => send(c, text)));
+      // Никто не получил — заявка гостя не должна пропасть молча.
+      if (results.every((ok) => !ok) && fallbackChat && !targets.has(fallbackChat)) {
+        await send(fallbackChat, `Не удалось доставить заявку менеджерам отеля.\n\n${text}`);
+      }
     },
   };
 }
@@ -222,6 +231,7 @@ async function main(): Promise<void> {
             engine.rebuildPrompts();
           },
           refreshSource: (entry) => sourceSync.refreshOne(entry),
+          botUsername: config.telegram.botUsername,
           // PDF и фотографии читает сама модель — один раз, при загрузке.
           extractFile: (buf, filename) =>
             extractText(buf, filename, { client: anthropic, model: config.anthropicModel }),
