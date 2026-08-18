@@ -70,11 +70,29 @@ function stripParenSmileys(text: string): string {
  * no emoji, no emoticons, no paren-smileys, no canned assistant openers, no «!!!» showers.
  * Runs BEFORE splitting so a stripped opener cannot leave an empty first message.
  */
+/**
+ * Markdown в мессенджере не рендерится: гость видит буквально «**Standard Twin**».
+ * За прогон утекло в 6 ответах из 45, включая экранирование «@kazzhol\\_seven».
+ * Запрет в промпте вероятностный — это гарантия.
+ */
+function stripMarkdown(text: string): string {
+  return text
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/(?<!\S)__(.+?)__(?!\S)/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/^\s*[-•*]\s+/gm, '')
+    .replace(/^\s*\d+[.)]\s+/gm, '')
+    .replace(/\\([_*`[\]()])/g, '$1')
+    .replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g, '$1: $2');
+}
+
 export function enforceOfficialTone(reply: string): string {
   const cleaned = reply
     .split('|||')
     .map((part) => {
       let p = part.replace(EMOJI_RE, '').replace(EMOTICON_RE, '');
+      p = stripMarkdown(p);
       p = stripParenSmileys(p);
       // A canned opener can survive as a second clause after another one is removed.
       for (let i = 0; i < 3 && CANNED_OPENER_RE.test(p); i += 1) p = p.replace(CANNED_OPENER_RE, '');

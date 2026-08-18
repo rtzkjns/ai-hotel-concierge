@@ -187,15 +187,32 @@ describe('Engine.handle', () => {
     expect((messageIn.data?.payload as { language?: string }).language).toBe('ru');
   });
 
-  it('stays silent when the conversation is handed off to a human', async () => {
+  it('stays silent once a manager has actually taken the chat', async () => {
     const { engine, store, deps } = makeEngine();
     const convo = withProperty(store, 'telegram', '1', 'almaty');
     convo.status = 'handed_off';
+    convo.takenBy = 'aigul';
 
     const parts = await engine.handle(textMsg('ало, вы тут?'));
 
     expect(parts).toBeNull();
     expect(deps.client.messages.create).not.toHaveBeenCalled();
+  });
+
+  it('acknowledges once while the request is still waiting for a manager', async () => {
+    const { engine, store, deps } = makeEngine();
+    const convo = withProperty(store, 'telegram', '1', 'almaty');
+    convo.status = 'handed_off';
+
+    // Гость с жалобой прямо в отеле раньше получал полную тишину — худший исход
+    // в самой горячей точке.
+    const first = await engine.handle(textMsg('Извинений мало. Что вы конкретно сделаете?'));
+    expect(first?.[0].text).toContain('менеджер');
+    expect(deps.client.messages.create).not.toHaveBeenCalled();
+
+    // Но повторять эту строку на каждое сообщение нельзя — это тоже поломка.
+    const second = await engine.handle(textMsg('ну?'));
+    expect(second).toBeNull();
   });
 
   it('still records the guest message in the transcript while handed off', async () => {
@@ -206,7 +223,7 @@ describe('Engine.handle', () => {
     await engine.handle(textMsg('ало, вы тут?'));
 
     const history = store.conversations.get('telegram:1')!.history;
-    expect(history[history.length - 1]).toEqual({ role: 'user', content: 'ало, вы тут?' });
+    expect(history).toContainEqual({ role: 'user', content: 'ало, вы тут?' });
     expect(store.events.some((e) => e.type === 'message_in')).toBe(true);
   });
 

@@ -87,10 +87,35 @@ describe('buildSystemPrompt: texting style', () => {
     expect(prompt).toContain("I'm an AI language model");
   });
 
-  it('gives approved official openers and forbids repeated openings', () => {
-    expect(prompt).toContain('Уточню наличие на ваши даты');
-    expect(prompt).toContain('қазір қарап берейін');
-    expect(prompt).toMatch(/never start two consecutive replies/i);
+  // Раньше промпт выдавал СПИСОК «одобренных» зачинов, половина которых — пустые фразы
+  // («Уточню наличие», «Проверяю, одну минуту»). Это и порождало воду: бот тратил первое
+  // предложение ни на что. Теперь требование обратное — первая фраза несёт факт или вопрос.
+  it('requires the first sentence to carry substance and bans empty openers', () => {
+    expect(prompt).toMatch(/OPEN WITH THE SUBSTANCE/);
+    expect(prompt).toMatch(/first sentence must carry a fact, a price, or the single question/i);
+    expect(prompt).toContain('are empty sentences');
+    // Пустые зачины больше не предлагаются как образец для подражания.
+    expect(prompt).not.toMatch(/Approved openers/i);
+  });
+
+  // Ключевой дефект прогона: гость спрашивает «парковка бесплатная? сколько мест?» — известную
+  // половину бот стирал и уходил в хендофф целиком.
+  it('forbids a missing price from erasing a confirmed service', () => {
+    expect(prompt).toMatch(/A MISSING PRICE NEVER ERASES A CONFIRMED SERVICE/);
+    expect(prompt).toMatch(/NEVER turn a confirmed «есть» into «уточню наличие»/);
+  });
+
+  // Бюджет ответа задан в символах: «одно-два предложения» модель не считает.
+  it('states the length budget in characters and applies the last-sentence test', () => {
+    expect(prompt).toMatch(/160 characters/);
+    expect(prompt).toMatch(/THE LAST-SENTENCE TEST/);
+    expect(prompt).toMatch(/NEVER drop or shorten an actual answer to fit the limit/);
+  });
+
+  // Процент — это цена: «невозвратный обычно даёт 15%» было выдумкой.
+  it('treats a percentage as a price', () => {
+    expect(prompt).toMatch(/A PERCENTAGE IS A PRICE/);
+    expect(prompt).toMatch(/PRICE OBJECTIONS AND COMPETITORS/);
   });
 
   // Владелец (2026-08-14): бот должен звучать как официальный менеджер, а не как приятель.

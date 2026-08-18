@@ -54,6 +54,42 @@ const HOTEL_TIMEZONE = 'Asia/Almaty';
 
 /** Метка служебной записи в истории: модель её читает, гость никогда не видит. */
 export const ACTION_TRACE_PREFIX = '[выполнено]';
+export const HOLDING_PREFIX = '[ожидание] ';
+
+/**
+ * Ответ, пока заявка ждёт менеджера. Гость должен видеть, что его слышат: полное
+ * молчание после «передаю коллегам» читается как поломка, особенно при жалобе.
+ */
+const HOLDING_MARK = HOLDING_PREFIX;
+const HOLDING_REPLY: Record<string, string> = {
+  ru: 'Ваше сообщение вижу и передаю менеджеру — он подключится к этому чату. Остаюсь на связи.',
+  kk: 'Хабарламаңызды көрдім, менеджерге жеткіздім — ол осы чатқа қосылады. Байланыстамын.',
+  en: 'I have your message and passed it to a manager — they will join this chat shortly.',
+  zh: '已收到您的消息并转交经理，他会尽快加入对话。',
+};
+
+/**
+ * Ответ пустой или свёлся к «передал коллегам» без единого факта.
+ *
+ * Это не стилистика: гость спросил две вещи, одну из которых мы знаем наверняка, и не
+ * получил ни одной. Дословно из прогона: «Парковка бесплатная? Сколько мест?» →
+ * «Передал вопрос коллегам» — при том, что про бесплатность бот отвечает без запинки,
+ * когда вопрос задан отдельно.
+ */
+/** Фразы, после которых гость ЖДЁТ ответа: если заявки нет — её надо создать. */
+const PROMISE_RE =
+  /(верн[уё]сь с ответом|уточню у коллег|передам коллегам|переда[юё] коллегам|коллеги свяжутся|уточню и вернусь)/i;
+const PROMISE_TOOLS = ['capture_lead', 'submit_mice_request', 'escalate_to_human'];
+
+export function needsSubstance(reply: string, toolsUsed: string[]): boolean {
+  const text = reply.trim();
+  if (!text) return true;
+  const passedOn = toolsUsed.includes('capture_lead') || toolsUsed.includes('submit_mice_request');
+  if (!passedOn) return false;
+  // Достаточно длинный ответ уже содержит факты — переписывать нечего.
+  if (text.length > 160) return false;
+  return /(уточн|передал|передаю|перед[аа]|коллег|вернусь)/i.test(text);
+}
 
 /** Когда весь ответ оказался повтором: лучше короткая вежливость, чем то же самое снова. */
 const ACK_ONLY: Record<string, string> = {
@@ -292,6 +328,19 @@ export class Engine {
           payload: { language: convo.language, handedOff: true },
         });
       }
+      // Пока диалог никем не взят, полное молчание — худший исход в самой горячей
+      // точке: гость с жалобой прямо в отеле писал и не получал вообще ничего.
+      // Одна короткая строка, не чаще чем раз в HOLDING_REPLY_GAP_MS.
+      if (!convo.takenBy && msg.text?.trim()) {
+        // Говорим это ровно один раз: если последним сказали то же самое, молчим —
+        // повторять одну строку на каждое сообщение так же плохо, как молчать.
+        const lastFromUs = [...convo.history].reverse().find((m) => m.role === 'assistant');
+        if (!lastFromUs?.content.startsWith(HOLDING_MARK)) {
+          const line = HOLDING_REPLY[convo.language ?? 'ru'];
+          store.appendMessage(convo.id, { role: 'assistant', content: `${HOLDING_MARK}${line}` });
+          return [{ text: line, delayMs: 0 }];
+        }
+      }
       return null;
     }
 
@@ -413,23 +462,41 @@ export class Engine {
       // history is fed back to the model, so an un-stripped smiley would teach it to keep
       // using them regardless of the prompt.
       reply = enforceOfficialTone(result.reply);
-      // Детерминированная защита от повтора: промпт это запрещает, но запрет вероятностный,
-      // а гость уже получал одну и ту же фразу трижды подряд.
-      const previousReplies = history
-        .filter((m) => m.role === 'assistant' && !m.content.startsWith(ACTION_TRACE_PREFIX))
-        .slice(-3)
-        .map((m) => m.content);
-      const deduped = dropRepeatedSentences(reply, previousReplies);
-      if (deduped !== reply) {
-        track(store, 'repeat_trimmed', {
-          conversationId: convo.id,
-          property: convo.property,
-          channel: convo.channel,
-          payload: { before: reply.length, after: deduped.length },
-        });
+
+      // Проверено A/B-прогоном: «Парковка бесплатная?» → «Да, бесплатная»; но стоит
+      // добавить второй, неизвестный вопрос («Сколько мест?») — и известная половина
+      // ИСЧЕЗАЕТ, остаётся «Передал вопрос коллегам». Четыре попытки починить это
+      // правилами промпта провалились: модель сочиняет ответ вокруг вызванного
+      // инструмента. Поэтому — второй проход, уже без инструментов.
+      if (needsSubstance(reply, result.toolsUsed ?? [])) {
+        // Тот же вопрос, но БЕЗ инструментов: проверено — так модель отвечает фактом
+        // («Прачечная в отеле есть. Цены и сроки уточню…»), а не одной отпиской.
+        // Черновик ей не показываем: увидев его, она продолжает мысль с середины.
+        const retry = await generateReply([...history, { role: 'user', content: text }], {
+          client: this.deps.client,
+          model: this.deps.model,
+          systemPrompt:
+            this.systemPrompts[convo.property] +
+            languageHint +
+            this.liveContentFor(convo.property) +
+            kbSection +
+            '\n\nВАЖНО ДЛЯ ЭТОГО ОТВЕТА: заявка коллегам уже записана, оформлять её повторно не нужно ' +
+            'и сообщать об этом отдельной фразой тоже. Ответь гостю сам: сначала прямо назови то, что ' +
+            'точно знаешь по его вопросу, затем одной короткой фразой — что именно уточняешь у коллег.',
+          tools: {},
+        }).catch(() => null);
+        const better = retry?.reply ? enforceOfficialTone(retry.reply) : '';
+        if (better.trim().length > reply.trim().length) {
+          track(store, 'answer_rewritten', {
+            conversationId: convo.id,
+            property: convo.property,
+            channel: convo.channel,
+            payload: { before: reply.length, after: better.length },
+          });
+          reply = better;
+        }
       }
-      // Осталась пустота — значит нового сказать нечего: короткая вежливость лучше повтора.
-      reply = deduped.trim() || ACK_ONLY[convo.language ?? 'ru'];
+
       handedOff = result.handedOff;
       usedTools = result.toolsUsed ?? [];
 
@@ -468,6 +535,32 @@ export class Engine {
         payload: { message: err instanceof Error ? err.message : String(err) },
       });
       return [{ text: ERROR_FALLBACK[convo.language ?? 'ru'], delayMs: 0 }];
+    }
+
+    // Обещание «вернусь с ответом» без записанной заявки — это обещание, которого
+    // никто не получил. Дважды за прогон бот так и сделал.
+    if (reply && PROMISE_RE.test(reply) && !usedTools.some((t) => PROMISE_TOOLS.includes(t))) {
+      try {
+        store.saveLead({
+          conversationId: convo.id,
+          kind: 'generic',
+          specialRequests: `Бот обещал вернуться с ответом. Вопрос гостя: ${text.slice(0, 300)}`,
+          createdAt: new Date().toISOString(),
+        });
+        await this.deps.staffNotifier.notify(
+          maskPII(
+            `Гостю обещан ответ — ${properties[convo.property]?.name ?? convo.property} (${convo.id})\nВопрос: ${text.slice(0, 300)}`,
+          ),
+          convo.property,
+        );
+        track(store, 'promise_backstop', {
+          conversationId: convo.id,
+          property: convo.property,
+          channel: convo.channel,
+        });
+      } catch {
+        // Страховка не должна ронять ответ гостю.
+      }
     }
 
     if (reply) store.appendMessage(convo.id, { role: 'assistant', content: reply });
