@@ -39,6 +39,9 @@ async function makeApp(): Promise<Harness> {
           store,
           metricsSummary,
           sendToConversation,
+          // Настоящий разбор файла: тест проверяет всю цепочку, а не заглушку.
+          extractFile: async (buf: Buffer, filename: string) =>
+            (await import('../src/knowledge/documents')).extractText(buf, filename),
           refreshSource: async (entry) => {
             // Подменяем сеть: важно, что панель зовёт вычитку и показывает её результат.
             if (entry.url?.includes('bad')) return { ok: false, error: 'Страница не найдена (404)' };
@@ -619,6 +622,41 @@ describe('profile password change', () => {
       expect(res.statusCode).toBe(400);
     }
     expect(verifyPassword('mice-pass', store.findStaffByLogin('aigul')!.passHash)).toBe(true);
+    await app.close();
+  });
+});
+
+describe('duplicate uploads', () => {
+  it('warns when the uploaded file repeats a fact already in the base', async () => {
+    const { app, store } = await makeApp();
+    const priceList = [
+      'Разовое посещение взрослый 7 500 тенге',
+      'Детский абонемент до 12 лет 4 500 тенге',
+      'Семейный на двоих 13 000 тенге',
+      'Часы работы с 07:00 до 22:00 ежедневно',
+    ].join('\n');
+    store.addKbEntry({
+      property: 'almaty',
+      kind: 'fact',
+      title: 'Прайс AquaFit',
+      body: priceList,
+      url: null,
+      active: true,
+    });
+    const { cookie, token } = await login(app, 'admin', 'admin-pass');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/console/kb/upload',
+      headers: { cookie, 'content-type': 'multipart/form-data; boundary=X' },
+      payload:
+        `--X\r\nContent-Disposition: form-data; name="_csrf"\r\n\r\n${csrfTokenFor(token!)}\r\n` +
+        `--X\r\nContent-Disposition: form-data; name="property"\r\n\r\nalmaty\r\n` +
+        `--X\r\nContent-Disposition: form-data; name="file"; filename="price.txt"\r\n` +
+        `Content-Type: text/plain\r\n\r\n${priceList}\r\n--X--\r\n`,
+    });
+    // Второй раз тот же прайс удвоил бы его в промпте — бот выбирал бы между копиями.
+    expect(res.body).toContain('уже есть в базе');
+    expect(res.body).toContain('Прайс AquaFit');
     await app.close();
   });
 });

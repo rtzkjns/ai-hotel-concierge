@@ -842,6 +842,24 @@ export async function registerConsoleRoutes(
     // Текст достаётся один раз, при загрузке, и дальше живёт как обычный факт: держать
     // файл в промпте на каждом сообщении гостя было бы медленно и дорого.
 
+    /** Грубое, но честное сравнение: половина строк совпала — это тот же документ. */
+    const overlaps = (a: string, b: string): boolean => {
+      const lines = (t: string) =>
+        new Set(
+          t
+            .toLowerCase()
+            .split(/\n+/)
+            .map((l) => l.replace(/[^\p{L}\p{N}]+/gu, ' ').trim())
+            .filter((l) => l.length > 12),
+        );
+      const A = lines(a);
+      const B = lines(b);
+      if (A.size < 3 || B.size < 3) return false;
+      let same = 0;
+      for (const l of B) if (A.has(l)) same += 1;
+      return same / Math.min(A.size, B.size) >= 0.5;
+    };
+
     const TOO_BIG =
       'Файл больше 32 МБ. Сожмите PDF или пришлите меню по частям — например, отдельно кухню и отдельно бар.';
 
@@ -964,9 +982,25 @@ export async function registerConsoleRoutes(
         );
       }
       const title = file.filename.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim();
+      // Тот же прайс, загруженный второй раз, удвоил бы его в промпте и заставил бы бота
+      // выбирать между двумя копиями. Предупреждаем до сохранения, а не после.
+      const dup = (store.listKbEntries?.(prop || undefined, 'fact') ?? []).find((e: KbEntry) =>
+        overlaps(e.body, res.text ?? ''),
+      );
       return sendHtml(
         reply,
-        uploadPage(req, prop, undefined, { title: title || 'Из файла', text: res.text, property: prop }),
+        uploadPage(
+          req,
+          prop,
+          dup
+            ? {
+                kind: 'err',
+                text: `Похоже, это уже есть в базе — запись «${dup.title || 'без названия'}». ` +
+                  'Сохраните, только если это обновлённая версия: тогда старую запись стоит убрать в архив.',
+              }
+            : undefined,
+          { title: title || 'Из файла', text: res.text, property: prop },
+        ),
       );
     });
 
