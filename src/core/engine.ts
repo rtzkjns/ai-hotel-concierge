@@ -88,8 +88,17 @@ export function needsSubstance(reply: string, toolsUsed: string[]): boolean {
   if (!passedOn) return false;
   // Достаточно длинный ответ уже содержит факты — переписывать нечего.
   if (text.length > 160) return false;
+  // Ограничение — это и есть ответ. Переписав «Seven брони не принимает», второй проход
+  // однажды предложил гостю выбрать даты в отеле, который ещё не открылся.
+  if (LIMITATION_RE.test(text)) return false;
+  // Как и названная цифра: значит факт уже прозвучал.
+  if (/\d/.test(text)) return false;
   return /(уточн|передал|передаю|перед[аа]|коллег|вернусь)/i.test(text);
 }
+
+/** Отказ, ограничение или «пока нельзя» — содержательный ответ, а не отписка. */
+const LIMITATION_RE =
+  /(не принима|не открыл|пока не|ещё не|еще не|не работа|не предостав|нет возможн|недоступ|закрыт)/i;
 
 /** Когда весь ответ оказался повтором: лучше короткая вежливость, чем то же самое снова. */
 const ACK_ONLY: Record<string, string> = {
@@ -245,7 +254,7 @@ export class Engine {
       propertyList.map((p) => [
         p.key,
         buildSystemPrompt(
-          { key: p.key, name: p.name, knowledge: this.knowledgeOf(p) },
+          { key: p.key, name: p.name, knowledge: this.knowledgeOf(p), bookable: p.bookable },
           {
             sisterHotels: propertyList
               .filter((s) => s.key !== p.key && s.bookable !== false)
@@ -472,7 +481,7 @@ export class Engine {
         // Тот же вопрос, но БЕЗ инструментов: проверено — так модель отвечает фактом
         // («Прачечная в отеле есть. Цены и сроки уточню…»), а не одной отпиской.
         // Черновик ей не показываем: увидев его, она продолжает мысль с середины.
-        const retry = await generateReply([...history, { role: 'user', content: text }], {
+        const retry = await generateReply(history, {
           client: this.deps.client,
           model: this.deps.model,
           systemPrompt:
@@ -604,8 +613,23 @@ export class Engine {
     const propertyOf = (input: { property?: string } | undefined): string =>
       input?.property && properties[input.property] ? input.property : convo.property;
 
+    // Отель ещё не открылся: инструменты бронирования для него не работают в принципе.
+    // Одного правила в промпте мало — бот спрашивал у гостя даты заезда в Seven и
+    // обещал проверить наличие в отеле, которого пока нет.
+    const bookable = properties[convo.property]?.bookable !== false;
+
     return {
       check_availability: async (raw) => {
+        if (!bookable) {
+          return {
+            unavailable: true,
+            reason: 'hotel_not_open',
+            message:
+              `${hotelName} ещё не открылся и бронирования не принимает. Не спрашивай у гостя даты ` +
+              'для этого отеля и не проверяй наличие. Скажи об этом прямо, предложи те же даты в ' +
+              'открытых отелях сети и, если гость захочет, запиши контакт на день открытия.',
+          };
+        }
         const input = raw as CheckAvailabilityInput;
         const property = propertyOf(input);
         const result = await availabilityProvider.checkAvailability({
@@ -661,6 +685,13 @@ export class Engine {
       },
 
       create_booking: async (raw) => {
+        if (!bookable) {
+          return {
+            ok: false,
+            reason: 'hotel_not_open',
+            message: `${hotelName} ещё не открылся — бронь оформить нельзя. Предложи открытые отели сети.`,
+          };
+        }
         const input = raw as CreateBookingInput;
         return bookingService.createBooking({
           conversationId: convo.id,

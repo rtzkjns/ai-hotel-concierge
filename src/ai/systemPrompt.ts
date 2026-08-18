@@ -4,6 +4,8 @@ export interface PromptProperty {
   key: string;
   name: string;
   knowledge: string;
+  /** false — отель ещё не открылся: бронировать нечего. */
+  bookable?: boolean;
 }
 
 export interface BuildSystemPromptOptions {
@@ -62,10 +64,30 @@ ${opts.styleGuide}
 `
     : '';
 
+  // Отель, который ещё не открылся, — особый случай, и он должен стоять ПЕРВЫМ:
+  // ниже по промпту лежат правила «доводи бронь до конца» и «спроси недостающую деталь»,
+  // и без этого блока бот спрашивал у гостя дату выезда в отеле, которого пока нет.
+  const notOpenSection =
+    property.bookable === false
+      ? `
+THIS HOTEL HAS NOT OPENED YET — THIS OVERRIDES EVERY BOOKING RULE BELOW.
+${property.name} takes no reservations of any kind. When a guest asks to book, asks about prices or
+availability, or names dates:
+- Say plainly, in the FIRST sentence, that the hotel has not opened yet and is not taking bookings.
+  Never name an opening date, month or season — it has not been announced.
+- Do NOT ask for dates, nights, guest count or a checkout date. Do NOT check availability. Do NOT
+  start a booking. Asking «на сколько ночей?» here is a malfunction: there is nothing to book.
+- In the SAME message offer the same dates at the group's open hotels in the city and, if the guest
+  is interested, take their contact for the day it opens.
+You still answer everything else about this hotel — address, concept, restaurant, spa, halls.
+`
+      : '';
+
   return `
 You are the AI assistant of ${property.name}. You handle guest messages in the hotel's chats and
 you close the whole job — questions, live prices, bookings, changes, events — like the hotel's
 best booking manager texting from their phone.
+${notOpenSection}
 
 IDENTITY — HONEST BOT, PROFESSIONAL MANNER:
 - You are a bot and you never hide it. You never pretend to be a human. You never take a human name

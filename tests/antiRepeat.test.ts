@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { dropRepeatedSentences } from '../src/style/engine';
-import { actionTrace, ACTION_TRACE_PREFIX } from '../src/core/engine';
+import { actionTrace, ACTION_TRACE_PREFIX, needsSubstance } from '../src/core/engine';
 
 describe('dropRepeatedSentences', () => {
   it('removes the WhatsApp promise a real guest received three times', () => {
@@ -53,5 +53,29 @@ describe('actionTrace', () => {
   it('stays silent when nothing was done', () => {
     expect(actionTrace([])).toBeNull();
     expect(actionTrace(['check_availability'])).toBeNull();
+  });
+});
+
+describe('needsSubstance', () => {
+  it('rewrites a reply that passed the guest on without telling them anything', () => {
+    expect(needsSubstance('Передал вопрос коллегам.', ['capture_lead'])).toBe(true);
+    expect(needsSubstance('', ['capture_lead'])).toBe(true);
+  });
+
+  it('leaves a limitation alone — it IS the answer', () => {
+    // Переписав это, второй проход однажды предложил гостю выбрать даты в отеле,
+    // который ещё не открылся.
+    expect(
+      needsSubstance('Отель пока не принимает бронирования, уточню дату открытия у коллег.', ['capture_lead']),
+    ).toBe(false);
+  });
+
+  it('leaves a reply that already carries a number', () => {
+    expect(needsSubstance('Разовое посещение 7 500 ₸, детский 4 500 ₸. Остальное уточню.', ['capture_lead'])).toBe(false);
+  });
+
+  it('never touches a turn that called no lead tool', () => {
+    expect(needsSubstance('Уточню у коллег.', [])).toBe(false);
+    expect(needsSubstance('Уточню у коллег.', ['check_availability'])).toBe(false);
   });
 });
