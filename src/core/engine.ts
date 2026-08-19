@@ -256,9 +256,17 @@ export class Engine {
         buildSystemPrompt(
           { key: p.key, name: p.name, knowledge: this.knowledgeOf(p), bookable: p.bookable },
           {
+            // Неоткрывшийся отель ОСТАЁТСЯ в списке: фильтр «нельзя бронировать» раньше
+            // означал ещё и «нельзя рассказывать», и бот отвечал гостю, что Kazzhol Seven
+            // к сети не относится — при живом баннере «Скоро открытие» на сайте.
             sisterHotels: propertyList
-              .filter((s) => s.key !== p.key && s.bookable !== false)
-              .map((s) => ({ key: s.key, name: s.name, knowledge: this.knowledgeOf(s) })),
+              .filter((s) => s.key !== p.key)
+              .map((s) => ({
+                key: s.key,
+                name: s.name,
+                knowledge: this.knowledgeOf(s),
+                bookable: s.bookable,
+              })),
             styleGuide: this.deps.styleGuide,
           },
         ),
@@ -666,6 +674,29 @@ export class Engine {
               'and do NOT state whether rooms are available. Tell the guest their dates are ' +
               'noted and the team will confirm the exact availability and price shortly; you ' +
               'may also offer the hotel website for immediate self-booking. A lead is captured.',
+          };
+        }
+
+        // Живой ответ без предложений — это «мест нет», и здесь начинается функция,
+        // ради которой сеть и держит четыре отеля. Без явной инструкции модель
+        // импровизировала: в четырёх прогонах из четырёх она предлагала «другие даты»
+        // и ни разу — соседний отель в том же городе, где номера были свободны.
+        const offers = (result as { offers?: unknown[] }).offers;
+        if (Array.isArray(offers) && offers.length === 0) {
+          const sameCity = propertyList
+            .filter((h) => h.key !== property && h.bookable !== false && h.city === properties[property]?.city)
+            .map((h) => `${h.name} (property key: ${h.key})`);
+          return {
+            ...(result as object),
+            soldOut: true,
+            instruction:
+              'Свободных номеров на эти даты в этом отеле нет. Скажи об этом прямо одной фразой' +
+              (sameCity.length
+                ? ` и СРАЗУ, в этом же ходу, вызови check_availability на те же даты по отелю ` +
+                  `в том же городе: ${sameCity.join(', ')}. Покажи, что там есть, с ценами, и назови ` +
+                  'отель по имени и адресу. Не спрашивай разрешения посмотреть — смотри и приноси результат.'
+                : ' и предложи соседние даты.') +
+              ' Отель другого города как замену не предлагай.',
           };
         }
         return result;

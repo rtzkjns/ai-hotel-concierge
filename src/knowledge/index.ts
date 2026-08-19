@@ -1,6 +1,8 @@
 export interface Property {
   key: string;
   name: string;
+  /** Город: замену гостю предлагаем только в его же городе. */
+  city?: 'almaty' | 'astana';
   /** Exely Connect property id, when this hotel is wired to the live API. */
   exelyPropertyId?: string;
   /** Guest-facing WhatsApp number. */
@@ -20,6 +22,7 @@ export interface Property {
 
 const astana: Property = {
   key: 'astana',
+  city: 'astana',
   name: 'Hotel Kazzhol Astana',
   whatsapp: '+7 776 412 6353',
   knowledge: `
@@ -176,6 +179,7 @@ Instagram фитнес-центра @_relaxfitness_ подтверждает: #�
 
 const almaty: Property = {
   key: 'almaty',
+  city: 'almaty',
   name: 'Hotel Kazzhol Almaty',
   exelyPropertyId: '801',
   whatsapp: '+7 708 709 3000',
@@ -302,6 +306,7 @@ reservations team confirms special cases by message or phone.
 
 const parkAlmaty: Property = {
   key: 'park_almaty',
+  city: 'almaty',
   name: 'Hotel Kazzhol Park Almaty',
   whatsapp: '+7 708 906 0661',
   knowledge: `
@@ -435,6 +440,7 @@ WI-FI: бесплатный, по всему отелю. [E-RP] Best Available R
 // inventing details or borrowing the sister hotels' amenities.
 const seven: Property = {
   key: 'seven',
+  city: 'almaty',
   name: 'Kazzhol Seven Almaty',
   bookable: false,
   knowledge: `
