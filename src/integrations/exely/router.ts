@@ -5,7 +5,8 @@ import type { ExelyCabinet } from '../../config';
 import { ExelyHttp } from './http';
 import { LiveAvailabilityProvider } from './live';
 import type { AvailabilityProvider } from './provider';
-import { ExelyReservation } from './reservation';
+import { IbeReservation } from './ibeBooking';
+import { ExelyReservation, type ReservationClient } from './reservation';
 import { StubAvailabilityProvider } from './stub';
 import { ExelyTokenManager } from './token';
 import type { AvailabilityQuery, AvailabilityResult } from './types';
@@ -13,7 +14,7 @@ import type { AvailabilityQuery, AvailabilityResult } from './types';
 export interface CabinetProviders {
   /** Availability provider that routes checkAvailability(query) by query.property. */
   availability: AvailabilityProvider;
-  reservationFor: (property: string) => ExelyReservation | undefined;
+  reservationFor: (property: string) => ReservationClient | undefined;
   bookingEnabledFor: (property: string) => boolean;
   propertyIdResolver: (property: string) => string | undefined;
   /** Pull the hotel's static catalog (Content API) — used to keep the bot's knowledge fresh.
@@ -23,7 +24,7 @@ export interface CabinetProviders {
 
 interface Cabinet {
   provider: LiveAvailabilityProvider;
-  reservation: ExelyReservation;
+  reservation: ReservationClient;
   bookingEnabled: boolean;
   propertyId: string;
   http: ExelyHttp;
@@ -53,8 +54,11 @@ export function createCabinetProviders(
       key === propertyKey ? cab.propertyId : undefined;
     byProperty[propertyKey] = {
       provider: new LiveAvailabilityProvider(http, resolver),
-      reservation: new ExelyReservation(http),
-      bookingEnabled: cab.bookingEnabled,
+      reservation: cab.bookingEngine
+        ? new IbeReservation(cab.propertyId, { fetchImpl: fetchFn })
+        : new ExelyReservation(http),
+      // The engine needs no write scope, so switching it on is itself the permission to book.
+      bookingEnabled: cab.bookingEnabled || cab.bookingEngine,
       propertyId: cab.propertyId,
       http,
     };

@@ -317,6 +317,18 @@ export class Store {
         staff_id   INTEGER NOT NULL,
         expires_at TEXT NOT NULL
       );
+      -- Заявка, которую гость подтверждает одной кнопкой. Живёт до заезда, потом
+      -- бесполезна; booking_number заполняется в момент нажатия и служит защитой
+      -- от повторного оформления, если гость обновит страницу.
+      CREATE TABLE IF NOT EXISTS confirmations (
+        token          TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        property       TEXT NOT NULL,
+        data           TEXT NOT NULL,
+        booking_number TEXT,
+        expires_at     TEXT NOT NULL,
+        created_at     TEXT NOT NULL
+      );
     `);
   }
 
@@ -695,6 +707,58 @@ export class Store {
       upsellAccepted: (r.upsell_accepted as number) === 1,
       createdAt: r.created_at as string,
     }));
+  }
+
+  // --- Подтверждение брони гостем ------------------------------------------
+
+  /** Кладёт заявку под случайный токен и возвращает его — он и есть ссылка. */
+  saveConfirmation(rec: {
+    token: string;
+    conversationId: string;
+    property: string;
+    data: unknown;
+    expiresAt: string;
+  }): void {
+    this.db
+      .prepare(
+        `INSERT OR REPLACE INTO confirmations
+         (token, conversation_id, property, data, booking_number, expires_at, created_at)
+         VALUES (?, ?, ?, ?, NULL, ?, ?)`,
+      )
+      .run(
+        rec.token,
+        rec.conversationId,
+        rec.property,
+        JSON.stringify(rec.data),
+        rec.expiresAt,
+        new Date().toISOString(),
+      );
+  }
+
+  findConfirmation(
+    token: string,
+  ): { data: unknown; expiresAt: string; bookingNumber: string | null } | null {
+    const row = this.db
+      .prepare('SELECT data, expires_at, booking_number FROM confirmations WHERE token = ?')
+      .get(token) as Record<string, unknown> | undefined;
+    if (!row) return null;
+    return {
+      data: JSON.parse(row.data as string),
+      expiresAt: row.expires_at as string,
+      bookingNumber: (row.booking_number as string | null) ?? null,
+    };
+  }
+
+  /**
+   * Записывает номер брони — только если его там ещё нет. Двойное нажатие или
+   * обновление страницы не должно оформлять вторую бронь, поэтому проверка и
+   * запись идут одним запросом, а вызывающий смотрит, сколько строк изменилось.
+   */
+  claimConfirmation(token: string, bookingNumber: string): boolean {
+    const res = this.db
+      .prepare('UPDATE confirmations SET booking_number = ? WHERE token = ? AND booking_number IS NULL')
+      .run(bookingNumber, token);
+    return res.changes > 0;
   }
 
   // --- MICE ----------------------------------------------------------------

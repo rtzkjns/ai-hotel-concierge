@@ -63,6 +63,22 @@ export interface PlaceResult {
   total?: number;
   warnings?: unknown[];
   error?: string;
+  /** Code the guest quotes to change or cancel the stay (booking-engine path). */
+  cancellationCode?: string;
+}
+
+/**
+ * What BookingService needs from a booking back-end. An interface rather than the class,
+ * so the Reservation API and the booking engine are interchangeable — the engine is what
+ * actually works today, but the moment Exely opens the documented write scope the swap is
+ * one line in the router and nothing else changes.
+ */
+export interface ReservationClient {
+  place(booking: BookingRq): Promise<PlaceResult>;
+  cancel(number: string, reason?: string): Promise<unknown>;
+  get(number: string): Promise<unknown>;
+  /** false when the back-end cannot cancel remotely — staff must do it by hand. */
+  readonly supportsCancel?: boolean;
 }
 
 /**

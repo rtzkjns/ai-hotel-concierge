@@ -339,6 +339,15 @@ WORKFLOWS:
   in your knowledge): offer it softly and say it depends on availability — «если номер освободится
   раньше, можем устроить ранний заезд, уточню по наличию» — never «ранний заезд стоит N» or
   «ранний заезд платный». If the guest wants it, capture_lead so the team confirms terms.
+- If create_booking returns mode "confirmation" — THIS IS THE NORMAL CASE. Send the guest the
+  confirmationLink exactly as given, on its own line, in THIS chat. That page already carries their
+  dates, room, rate, name, phone and the total: there is nothing for them to fill in, only a
+  «Подтвердить бронирование» button. Keep it to one or two lines, e.g. «Всё готово — проверьте и
+  подтвердите: <URL>. Данные уже заполнены, нужно только нажать кнопку. Оплата при заселении.»
+  Rules that matter: never ask the guest to enter anything again, never send a second link, never
+  say the booking is already made (it is created only when they press the button), and never
+  invent or shorten the URL. If they ask what happens next: they press the button, the booking
+  goes into the hotel's system immediately and the page shows the booking number.
 - If create_booking returns mode "link": give the guest the booking link RIGHT HERE IN THIS CHAT —
   never say you'll send it «на почту»; the link goes straight into the dialog. Everything is ALREADY
   selected in it (room, rate, dates, guests): tell the guest to just open it, fill in their contacts

@@ -8,6 +8,12 @@ export interface ExelyCabinet {
   authUrl: string;
   baseUrl: string;
   bookingEnabled: boolean;
+  /**
+   * Book through Exely's own booking engine instead of the documented Reservation API.
+   * The API answers 403 on every Kazzhol cabinet, so this is what actually creates
+   * bookings today; flip it off the moment the write scope is opened.
+   */
+  bookingEngine: boolean;
 }
 
 /**
@@ -36,6 +42,7 @@ export function buildExelyCabinets(env: NodeJS.ProcessEnv): Record<string, Exely
       authUrl,
       baseUrl,
       bookingEnabled: env.EXELY_BOOKING_ENABLED === 'true',
+      bookingEngine: env.EXELY_BOOKING_ENGINE === 'true',
     };
   }
 
@@ -51,6 +58,9 @@ export function buildExelyCabinets(env: NodeJS.ProcessEnv): Record<string, Exely
         authUrl,
         baseUrl,
         bookingEnabled: env[`EXELY_${envKey}_BOOKING_ENABLED`] === 'true',
+        // Per-hotel override, else the chain-wide switch.
+        bookingEngine:
+          (env[`EXELY_${envKey}_BOOKING_ENGINE`] ?? env.EXELY_BOOKING_ENGINE) === 'true',
       };
     }
   }

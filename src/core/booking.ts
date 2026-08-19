@@ -7,7 +7,7 @@ import type { PropertyIdResolver } from '../integrations/exely/live';
 import {
   buildBooking,
   COMMENT_MAX_CHARS,
-  type ExelyReservation,
+  type ReservationClient,
 } from '../integrations/exely/reservation';
 import type { CancellationPolicy, RoomOffer } from '../integrations/exely/types';
 import type { Booking, BookingLead, Language } from '../types';
@@ -38,14 +38,14 @@ export interface BookingServiceDeps {
    * Single-cabinet (legacy) reservation client + flag. Used when the per-property
    * resolvers below are not supplied.
    */
-  reservation?: ExelyReservation;
+  reservation?: ReservationClient;
   bookingEnabled?: boolean;
   /**
    * Multi-cabinet: resolve the reservation client / booking flag per hotel, so
    * each property books against its own Exely account. When present, these win
    * over the single-cabinet fields above.
    */
-  reservationFor?: (property: string) => ExelyReservation | undefined;
+  reservationFor?: (property: string) => ReservationClient | undefined;
   bookingEnabledFor?: (property: string) => boolean;
 }
 
@@ -85,6 +85,8 @@ export type CreateBookingResult =
       ratePlanName: string | null;
       guests: number;
       cancellation: CancellationPolicy | null;
+      /** Code the guest quotes to change or cancel; null when the back-end issues none. */
+      cancellationCode?: string | null;
     }
   | { mode: 'link'; bookingFormLink: string | null; reason: string };
 
@@ -104,7 +106,7 @@ export class BookingService {
   constructor(private readonly deps: BookingServiceDeps) {}
 
   /** The reservation client for a hotel — per-cabinet resolver wins over the legacy single one. */
-  private reservationFor(property: string): ExelyReservation | undefined {
+  private reservationFor(property: string): ReservationClient | undefined {
     return this.deps.reservationFor ? this.deps.reservationFor(property) : this.deps.reservation;
   }
 
@@ -117,6 +119,54 @@ export class BookingService {
   /** Resolve which hotel a stored booking belongs to (for cancel/status routing). */
   private propertyOfBooking(exelyNumber: string): string | undefined {
     return this.deps.store.listBookings().find((b) => b.exelyNumber === exelyNumber)?.property;
+  }
+
+  /**
+   * Собирает заявку для страницы подтверждения, ничего не оформляя.
+   *
+   * Цену и название номера берём живым поиском, а не из памяти диалога: гость увидит на
+   * странице ровно то, что стоит в системе отеля сейчас. Оформление произойдёт позже, по
+   * нажатию кнопки, и тогда поиск повторится ещё раз — между показом и нажатием номер
+   * может уйти, и признать это честнее, чем подтвердить бронь, которой нет.
+   */
+  async prepareConfirmation(args: {
+    property: string;
+    checkIn: string;
+    checkOut: string;
+    guests: number;
+    roomTypeId: string;
+    ratePlanId: string;
+    childAges?: number[];
+    language?: Language | null;
+  }): Promise<
+    | { ok: true; offer: RoomOffer; bookingFormLink: string | null }
+    | { ok: false; reason: string }
+  > {
+    try {
+      const availability = await this.deps.provider.checkAvailability({
+        property: args.property,
+        checkIn: args.checkIn,
+        checkOut: args.checkOut,
+        guests: args.guests,
+        childAges: args.childAges,
+      });
+      const offer =
+        availability.offers.find(
+          (o) => o.roomTypeId === args.roomTypeId && o.ratePlanId === args.ratePlanId,
+        ) ?? availability.offers.find((o) => o.roomTypeId === args.roomTypeId);
+      if (!offer) return { ok: false, reason: 'offer_not_found' };
+      return {
+        ok: true,
+        offer,
+        bookingFormLink: localizeBookingLink(
+          offer.bookingFormLink,
+          args.language,
+          offer.roomTypeId ?? args.roomTypeId,
+        ),
+      };
+    } catch {
+      return { ok: false, reason: 'availability_unavailable' };
+    }
   }
 
   async createBooking(args: CreateBookingArgs): Promise<CreateBookingResult> {
@@ -289,6 +339,7 @@ export class BookingService {
           ratePlanName: offer.ratePlanName,
           guests: args.guests,
           cancellation: offer.cancellationPolicy ?? null,
+          cancellationCode: placed.cancellationCode ?? null,
         };
       }
       reason = placed.error ?? 'reservation_failed';
@@ -332,7 +383,10 @@ export class BookingService {
     const bookingEnabled = property
       ? this.bookingEnabledFor(property)
       : (this.deps.bookingEnabled ?? false);
-    const remote = bookingEnabled && !!reservation;
+    // A back-end that cannot cancel remotely (the booking engine) must not be asked to try:
+    // the call would fail and the guest would be told the cancellation failed, when in fact
+    // it simply needs a person. Route it to staff instead.
+    const remote = bookingEnabled && !!reservation && reservation.supportsCancel !== false;
     if (remote && reservation) {
       try {
         await reservation.cancel(exelyNumber, reason);

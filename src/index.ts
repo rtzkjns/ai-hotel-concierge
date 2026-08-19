@@ -24,6 +24,12 @@ import { SourceSync } from './knowledge/sourceSync';
 import { StubPaymentGateway } from './integrations/payments';
 import { createTranscriber } from './integrations/transcribe';
 import { buildServer } from './server';
+import {
+  CONFIRMATION_TTL_MS,
+  newConfirmationToken,
+  registerConfirmRoutes,
+  type ConfirmationData,
+} from './server/confirm';
 import { registerChatfuelBridge } from './server/chatfuel';
 import { Store } from './store';
 
@@ -127,6 +133,32 @@ async function main(): Promise<void> {
 
   const staffNotifier = createStaffNotifier(store);
 
+  // Кладёт заявку под случайный токен и отдаёт ссылку на страницу подтверждения.
+  // Токен, а не номер по порядку: ссылку гость пересылает, и подобрать чужую заявку
+  // перебором быть не должно.
+  // Без внешнего адреса ссылку собрать не из чего — тогда страницы просто нет, и бот
+  // оформляет бронь по «подтверждаю» прямо в чате. Молча деградировать нельзя: это
+  // заметное изменение поведения, и в логе загрузки оно должно быть видно.
+  const publicBase = config.server.publicBaseUrl?.replace(/\/+$/, '');
+  if (!publicBase) {
+    console.warn(
+      'PUBLIC_BASE_URL не задан — страница подтверждения отключена, бронь оформляется прямо в чате.',
+    );
+  }
+  const confirmationLink = publicBase
+    ? (data: ConfirmationData): string => {
+        const token = newConfirmationToken();
+        store.saveConfirmation({
+          token,
+          conversationId: data.conversationId,
+          property: data.property,
+          data,
+          expiresAt: new Date(Date.now() + CONFIRMATION_TTL_MS).toISOString(),
+        });
+        return `${publicBase}/b/${token}`;
+      }
+    : undefined;
+
   const engine = new Engine({
     store,
     client: anthropic,
@@ -141,6 +173,7 @@ async function main(): Promise<void> {
     phoneNumberIdToProperty,
     styleGuide: loadStyleGuide(),
     knowledgeFor: (property) => contentSync.knowledgeFor(property),
+    confirmationLink,
   });
 
   // Initial pull so the bot boots on the freshest catalog. Bounded + non-fatal: if Exely Content
@@ -220,6 +253,14 @@ async function main(): Promise<void> {
     config,
     extraRoutes: [
       (a) => widget.register(a),
+      (a) =>
+        registerConfirmRoutes(a, {
+          store,
+          createBooking: (args) => bookingService.createBooking(args),
+          notifyStaff: async (text, property) => {
+            await staffNotifier.notify(text, property);
+          },
+        }),
       (a) =>
         registerConsoleRoutes(a, {
           store,

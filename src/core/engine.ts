@@ -37,6 +37,8 @@ import type {
   CreateBookingArgs,
   CreateBookingResult,
 } from './booking';
+import type { ConfirmationData } from '../server/confirm';
+import type { RoomOffer } from '../integrations/exely/types';
 import { track, type EventData } from './events';
 import { detectLanguage } from './language';
 import { maskPII } from './pii';
@@ -202,6 +204,19 @@ export interface BookingServiceLike {
   createBooking(args: CreateBookingArgs): Promise<CreateBookingResult>;
   cancelBooking(exelyNumber: string, reason?: string): Promise<CancelBookingResult>;
   bookingStatus(exelyNumber: string): Promise<BookingStatusResult>;
+  /** Живая цена и название номера для страницы подтверждения. Ничего не оформляет. */
+  prepareConfirmation?(args: {
+    property: string;
+    checkIn: string;
+    checkOut: string;
+    guests: number;
+    roomTypeId: string;
+    ratePlanId: string;
+    childAges?: number[];
+    language?: Language | null;
+  }): Promise<
+    { ok: true; offer: RoomOffer; bookingFormLink: string | null } | { ok: false; reason: string }
+  >;
 }
 
 export interface RateLimiterLike {
@@ -226,6 +241,11 @@ export interface EngineDeps {
   /** Latest per-hotel knowledge synced live from Exely; falls back to the static string when
    *  undefined. Call rebuildPrompts() after a sync so the change reaches the next message. */
   knowledgeFor?: (property: string) => string | undefined;
+  /**
+   * Кладёт заявку и возвращает ссылку на страницу подтверждения. Не задан — бот
+   * оформляет бронь сразу по «подтверждаю» в чате, как и раньше.
+   */
+  confirmationLink?: (data: ConfirmationData) => string;
 }
 
 export class Engine {
@@ -644,6 +664,79 @@ export class Engine {
     return this.deps.phoneNumberIdToProperty?.[hint];
   }
 
+  /**
+   * Готовит страницу подтверждения и возвращает ссылку на неё, либо null — тогда
+   * оформление идёт прежним путём.
+   *
+   * Возвращаем null молча и во всех сомнительных случаях: без имени, телефона, дат или
+   * кодов номера страница показала бы гостю пустые поля, а это ровно та форма-переспрос,
+   * от которой мы уходим. Лучше обычный путь, чем полупустая заявка.
+   */
+  private async buildConfirmation(
+    convo: Conversation,
+    input: CreateBookingInput,
+    ctx: {
+      property: string;
+      hotelName: string;
+      checkIn?: string;
+      checkOut?: string;
+      guests?: number;
+      roomTypeId?: number | string;
+      ratePlanId?: number | string;
+    },
+  ): Promise<string | null> {
+    const make = this.deps.confirmationLink;
+    const prepare = this.deps.bookingService.prepareConfirmation;
+    if (!make || !prepare) return null;
+    const { checkIn, checkOut, roomTypeId, ratePlanId } = ctx;
+    if (!checkIn || !checkOut || roomTypeId === undefined || ratePlanId === undefined) return null;
+    if (!input.guestFirstName || !input.guestPhone) return null;
+
+    const guests = ctx.guests ?? 2;
+    const prepared = await prepare.call(this.deps.bookingService, {
+      property: ctx.property,
+      checkIn,
+      checkOut,
+      guests,
+      roomTypeId: String(roomTypeId),
+      ratePlanId: String(ratePlanId),
+      childAges: input.childAges,
+      language: convo.language,
+    });
+    if (!prepared.ok) return null;
+
+    const nights = Math.max(1, Math.round((Date.parse(checkOut) - Date.parse(checkIn)) / 86400000));
+    const offer = prepared.offer;
+    try {
+      return make({
+        property: ctx.property,
+        hotelName: ctx.hotelName,
+        checkIn,
+        checkOut,
+        nights,
+        guests,
+        roomType: offer.roomType,
+        roomTypeId: offer.roomTypeId ?? String(roomTypeId),
+        ratePlanId: offer.ratePlanId ?? String(ratePlanId),
+        ratePlanName: offer.ratePlanName,
+        totalPrice: offer.totalPrice,
+        currency: offer.currency,
+        guestFirstName: input.guestFirstName,
+        guestLastName: input.guestLastName ?? '',
+        guestPhone: input.guestPhone,
+        guestEmail: input.guestEmail ?? null,
+        comment: input.comment ?? null,
+        language: convo.language,
+        conversationId: convo.id,
+        bookingFormLink: prepared.bookingFormLink,
+        freeCancellationUntil: offer.cancellationPolicy?.freeCancellationDeadline ?? null,
+      });
+    } catch {
+      // Не смогли записать заявку — это не повод срывать бронирование.
+      return null;
+    }
+  }
+
   /** Binds every tool to this conversation: ids, property defaults, notifications. */
   private buildTools(convo: Conversation, history: ChatMessage[]): ToolHandlers {
     const { store, availabilityProvider, bookingService, paymentGateway, crm, staffNotifier } =
@@ -786,6 +879,33 @@ export class Engine {
           remembered &&
           remembered.property === propertyOf(input) &&
           (!input.checkIn || remembered.checkIn === input.checkIn);
+
+        // Гость уже назвал даты, номер, имя и телефон. Вместо того чтобы оформить бронь
+        // молча, отдаём ему страницу, где всё это уже подставлено и есть одна кнопка:
+        // он видит, что именно подтверждает, и подтверждает осознанно. Бронь создаётся
+        // по нажатию — до него в системе отеля ничего не появляется.
+        const confirmUrl = await this.buildConfirmation(convo, input, {
+          property: propertyOf(input),
+          checkIn: input.checkIn ?? (sameStay ? remembered.checkIn : undefined),
+          checkOut: input.checkOut ?? (sameStay ? remembered.checkOut : undefined),
+          guests: input.guests ?? (sameStay ? remembered.guests : undefined),
+          roomTypeId: input.roomTypeId ?? (sameStay ? remembered.roomTypeId : undefined),
+          ratePlanId: input.ratePlanId ?? (sameStay ? remembered.ratePlanId : undefined),
+          hotelName,
+        });
+        if (confirmUrl) {
+          this.pendingLink.set(convo.id, confirmUrl);
+          return {
+            mode: 'confirmation',
+            confirmationLink: confirmUrl,
+            instruction:
+              'Отправь гостю ИМЕННО эту ссылку (confirmationLink) одной строкой. На ней уже ' +
+              'стоят его даты, номер, имя, телефон и цена — заполнять ничего не нужно, только ' +
+              'нажать «Подтвердить бронирование». Не проси вводить данные ещё раз, не давай ' +
+              'других ссылок и не говори, что бронь уже оформлена: она оформится по нажатию.',
+          };
+        }
+
         const booked = await bookingService.createBooking({
           conversationId: convo.id,
           property: propertyOf(input),
@@ -804,8 +924,9 @@ export class Engine {
           // The booking form must open in the guest's language, not Russian.
           language: convo.language,
         });
-        // Ссылка — единственный способ оформить бронь в проде. Запоминаем её, чтобы
-        // гарантировать отправку: гость уже получал «передаю коллегам» при готовой ссылке.
+        // Бронь оформляется на месте, поэтому ссылка нужна только когда движок не справился:
+        // сеть, распроданный номер, изменившаяся цена. Тогда гость дозаполняет форму сам —
+        // это хуже, но всегда работает.
         if (booked.mode === 'link' && booked.bookingFormLink) {
           this.pendingLink.set(convo.id, booked.bookingFormLink);
         }
