@@ -870,3 +870,82 @@ describe('login brute-force protection', () => {
     await app.close();
   });
 });
+
+describe('forgot password', () => {
+  it('sends a one-time link to Telegram and lets the manager set a new password', async () => {
+    const sent: string[] = [];
+    const store = new Store(':memory:');
+    store.createStaff('aigul', hashPassword('old-pass'), 'mice_manager', 'astana');
+    const app = await buildServer({
+      engine: { handle: vi.fn(async () => null) },
+      adapters: {},
+      store,
+      config: { whatsapp: { phoneNumberIds: {} } },
+      extraRoutes: [
+        (a) =>
+          registerConsoleRoutes(a, {
+            store,
+            metricsSummary,
+            sendToConversation: async () => ({ ok: true }),
+            notifyStaff: async (text) => { sent.push(text); },
+            publicBaseUrl: 'https://panel.example',
+          }),
+      ],
+    });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/console/forgot',
+      payload: 'login=aigul',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(sent).toHaveLength(1);
+    const link = /https:\/\/panel\.example(\/console\/reset\/[\w-]+)/.exec(sent[0])![1];
+
+    expect((await app.inject({ method: 'GET', url: link })).statusCode).toBe(200);
+    const done = await app.inject({
+      method: 'POST',
+      url: link,
+      payload: 'next=freshpass1&repeat=freshpass1',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    });
+    expect(done.statusCode).toBe(200);
+    expect(verifyPassword('freshpass1', store.findStaffByLogin('aigul')!.passHash)).toBe(true);
+
+    // Ссылка одноразовая: оставшись живой, она была бы вечным ключом в чате.
+    expect((await app.inject({ method: 'GET', url: link })).statusCode).toBe(410);
+    await app.close();
+  });
+
+  it('answers identically for an unknown login and sends nothing', async () => {
+    const sent: string[] = [];
+    const store = new Store(':memory:');
+    store.createStaff('admin', hashPassword('p'), 'admin');
+    const app = await buildServer({
+      engine: { handle: vi.fn(async () => null) },
+      adapters: {},
+      store,
+      config: { whatsapp: { phoneNumberIds: {} } },
+      extraRoutes: [
+        (a) =>
+          registerConsoleRoutes(a, {
+            store,
+            metricsSummary,
+            sendToConversation: async () => ({ ok: true }),
+            notifyStaff: async (t) => { sent.push(t); },
+          }),
+      ],
+    });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/console/forgot',
+      payload: 'login=no-such-person',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    });
+    // Разный ответ превратил бы форму в способ узнать, какие учётки существуют.
+    expect(res.body).toContain('Если такой логин есть');
+    expect(sent).toHaveLength(0);
+    await app.close();
+  });
+});

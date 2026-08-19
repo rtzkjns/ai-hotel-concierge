@@ -232,6 +232,8 @@ async function main(): Promise<void> {
           },
           refreshSource: (entry) => sourceSync.refreshOne(entry),
           botUsername: config.telegram.botUsername,
+          notifyStaff: async (text, property) => { await staffNotifier.notify(text, property); },
+          publicBaseUrl: config.server.publicBaseUrl,
           // Служебный вопрос из панели: тот же движок и та же база знаний, но
           // отдельный разговор с префиксом console-test — он не попадает во «Входящие».
           askBot: async (property, question) => {

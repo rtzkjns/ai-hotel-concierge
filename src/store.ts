@@ -802,6 +802,35 @@ export class Store {
     return Number(result.lastInsertRowid);
   }
 
+  /**
+   * Одноразовая ссылка на смену пароля.
+   *
+   * Почтового сервера у бота нет, зато есть Telegram, где уже сидят владелец и менеджеры.
+   * Туда и уходит ссылка: канал закрытый, посторонний в него не попадёт. Токен живёт 30
+   * минут и сгорает при первом использовании — иначе он остался бы вечным ключом в чате.
+   */
+  createResetToken(staffId: number, token: string, expiresAtIso: string): void {
+    this.db.prepare("DELETE FROM kb_entries WHERE kind='reset' AND property=?").run(String(staffId));
+    this.db
+      .prepare(
+        `INSERT INTO kb_entries (property, kind, title, body, url, active, updated_at)
+         VALUES (?, 'reset', ?, ?, NULL, 1, ?)`,
+      )
+      .run(String(staffId), expiresAtIso, token, new Date().toISOString());
+  }
+
+  findResetToken(token: string): { staffId: number; expiresAt: string } | null {
+    const r = this.db
+      .prepare("SELECT property, title FROM kb_entries WHERE kind='reset' AND body=? AND active=1")
+      .get(token) as { property: string; title: string } | undefined;
+    if (!r) return null;
+    return { staffId: Number(r.property), expiresAt: r.title };
+  }
+
+  consumeResetToken(token: string): void {
+    this.db.prepare("DELETE FROM kb_entries WHERE kind='reset' AND body=?").run(token);
+  }
+
   /** Смена пароля сотрудником — без неё панель нельзя отдать отелю. */
   setStaffPassword(id: number, passHash: string): void {
     this.db.prepare('UPDATE staff SET pass_hash = ? WHERE id = ?').run(passHash, id);

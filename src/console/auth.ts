@@ -86,6 +86,8 @@ export function requireAuth(store: SessionStore) {
     // Стили тоже открыты: иначе браузер запрашивает их без сессии, получает редирект
     // на логин и рисует самый первый экран владельца голым HTML без единого стиля.
     if (/^\/console\/app\.[\w.-]+\.css$/.test(path)) return;
+    // Восстановление пароля тоже без сессии: у забывшего пароль её и нет.
+    if (path === '/console/forgot' || path.startsWith('/console/reset/')) return;
     const token = req.cookies?.[SESSION_COOKIE];
     const session = token ? store.findSession(token) : null;
     if (!token || !session) {

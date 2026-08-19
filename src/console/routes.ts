@@ -1,6 +1,7 @@
 // Staff console: server-rendered HTML pages (zero external resources, zero
 // client frameworks), role-gated, CSRF-protected POSTs. All PII shown to
 // non-admin roles passes maskPII; all dynamic values pass escapeHtml.
+import { randomUUID } from 'node:crypto';
 import cookie from '@fastify/cookie';
 import formbody from '@fastify/formbody';
 import multipart from '@fastify/multipart';
@@ -82,6 +83,9 @@ export interface ConsoleStore extends SessionStore {
   findStaffByLogin(login: string): StaffMember | null;
   /** Код привязки Telegram-групп и список уже привязанных отелей — для профиля владельца. */
   bindCode?(): string;
+  createResetToken?(staffId: number, token: string, expiresAtIso: string): void;
+  findResetToken?(token: string): { staffId: number; expiresAt: string } | null;
+  consumeResetToken?(token: string): void;
   staffChatFor?(property: string): string | undefined;
   listStaffChats?(): Array<{ id: number; property: string; chatId: string; title: string }>;
   removeStaffChat?(id: number): void;
@@ -147,6 +151,10 @@ export interface ConsoleDeps {
   botUsername?: string;
   /** Служебный вопрос боту из панели: тот же движок, но разговор не уходит гостям. */
   askBot?: (property: string, question: string) => Promise<string>;
+  /** Отправка в Telegram — по нему уходит ссылка на смену пароля. */
+  notifyStaff?: (text: string, property?: string) => Promise<void>;
+  /** Внешний адрес панели, чтобы ссылка в Telegram была кликабельной. */
+  publicBaseUrl?: string;
 }
 
 // --- HTML helpers ------------------------------------------------------------------
@@ -218,6 +226,8 @@ export async function registerConsoleRoutes(
       if (req.method !== 'POST') return;
       const path = req.url.split('?')[0];
       if (path === '/console/login') return;
+      // Восстановление пароля идёт без сессии — иначе забывший пароль в него не попадёт.
+      if (path === '/console/forgot' || path.startsWith('/console/reset/')) return;
       // Загрузка файла приходит multipart-ом: тело здесь ещё не разобрано, поэтому
       // токен проверяется внутри самого обработчика, полем формы.
       if (path === '/console/kb/upload') return;
@@ -248,7 +258,9 @@ export async function registerConsoleRoutes(
           field('login', 'Логин', { attrs: 'autocomplete="username"', required: true }) +
           field('password', 'Пароль', { type: 'password', attrs: 'autocomplete="current-password"', required: true }) +
           btn('Войти', { variant: 'primary' }) +
-          `</form></div>`,
+          `</form>` +
+          `<p class="note" style="margin-top:16px;text-align:center">` +
+          `<a href="/console/forgot">Забыли пароль?</a></p></div>`,
         { bare: true },
       );
 
@@ -291,6 +303,131 @@ export async function registerConsoleRoutes(
         maxAge: Math.floor(SESSION_TTL_MS / 1000),
       });
       return reply.redirect('/console');
+    });
+
+    // --- Забыли пароль --------------------------------------------------------------
+    // Почтового сервера у бота нет, зато есть Telegram, где уже сидят владелец и менеджеры.
+    // Ссылка уходит туда: канал закрытый, посторонний в него не попадёт. Токен живёт
+    // 30 минут и сгорает при первом использовании.
+
+    const forgotPage = (msg?: { kind: 'ok' | 'err'; text: string }): string =>
+      shell(
+        'Восстановление пароля',
+        `<div class="login"><div class="logo">Kazzhol</div>` +
+          `<p class="sub">Восстановление пароля</p>` +
+          (msg ? banner(msg.kind, escapeHtml(msg.text)) : '') +
+          `<form method="post" action="/console/forgot">` +
+          field('login', 'Ваш логин', { required: true, attrs: 'autocomplete="username"' }) +
+          `<p class="hint" style="margin-bottom:16px">Ссылку на смену пароля бот пришлёт в Telegram — ` +
+          `в чат, куда приходят заявки вашего отеля. Если чат ещё не подключён, ссылка уйдёт владельцу.</p>` +
+          btn('Прислать ссылку', { variant: 'primary' }) +
+          `</form>` +
+          `<p class="note" style="margin-top:16px;text-align:center"><a href="/console/login">Вернуться ко входу</a></p></div>`,
+        { bare: true },
+      );
+
+    scope.get('/console/forgot', async (_req, reply) => sendHtml(reply, forgotPage()));
+
+    scope.post('/console/forgot', async (req, reply) => {
+      const b = (req.body ?? {}) as Record<string, string>;
+      const login = (b.login ?? '').trim();
+      const staff = login ? store.findStaffByLogin(login) : null;
+
+      // Ответ ОДИНАКОВЫЙ для существующего и несуществующего логина: иначе эта форма
+      // превращается в способ узнать, какие учётки в панели есть.
+      const sameAnswer = forgotPage({
+        kind: 'ok',
+        text: 'Если такой логин есть, ссылка на смену пароля отправлена в Telegram. Она действует 30 минут.',
+      });
+      if (!staff || !deps.notifyStaff) return sendHtml(reply, sameAnswer);
+
+      const token = randomUUID();
+      const expires = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+      store.createResetToken?.(staff.id, token, expires);
+      const base = deps.publicBaseUrl ?? '';
+      await deps.notifyStaff(
+        `Смена пароля для «${staff.login}».\n` +
+          `Откройте ссылку в течение 30 минут и задайте новый пароль:\n` +
+          `${base}/console/reset/${token}\n\n` +
+          'Если вы этого не запрашивали — просто не открывайте ссылку, она сгорит сама.',
+        staff.property || undefined,
+      );
+      return sendHtml(reply, sameAnswer);
+    });
+
+    const resetPage = (token: string, msg?: { kind: 'ok' | 'err'; text: string }): string =>
+      shell(
+        'Новый пароль',
+        `<div class="login"><div class="logo">Kazzhol</div>` +
+          `<p class="sub">Новый пароль</p>` +
+          (msg ? banner(msg.kind, escapeHtml(msg.text)) : '') +
+          `<form method="post" action="/console/reset/${escapeHtml(token)}">` +
+          field('next', 'Новый пароль', {
+            type: 'password',
+            required: true,
+            attrs: 'autocomplete="new-password" minlength="8"',
+            hint: 'Не короче 8 знаков. Запишите его — восстановить можно только через Telegram.',
+          }) +
+          field('repeat', 'Ещё раз', { type: 'password', required: true, attrs: 'autocomplete="new-password"' }) +
+          btn('Сохранить пароль', { variant: 'primary' }) +
+          `</form></div>`,
+        { bare: true },
+      );
+
+    const checkToken = (token: string): { id: number } | null => {
+      const found = store.findResetToken?.(token);
+      if (!found) return null;
+      if (Date.parse(found.expiresAt) < Date.now()) {
+        store.consumeResetToken?.(token);
+        return null;
+      }
+      return { id: found.staffId };
+    };
+
+    scope.get('/console/reset/:token', async (req, reply) => {
+      const { token } = req.params as { token: string };
+      if (!checkToken(token)) {
+        return sendHtml(
+          reply,
+          shell(
+            'Ссылка устарела',
+            `<div class="login"><div class="logo">Kazzhol</div>` +
+              banner('err', 'Ссылка уже использована или устарела. Запросите новую.') +
+              btn('Запросить заново', { variant: 'primary', href: '/console/forgot' }) +
+              `</div>`,
+            { bare: true },
+          ),
+          410,
+        );
+      }
+      return sendHtml(reply, resetPage(token));
+    });
+
+    scope.post('/console/reset/:token', async (req, reply) => {
+      const { token } = req.params as { token: string };
+      const found = checkToken(token);
+      if (!found) return reply.redirect('/console/forgot');
+      const b = (req.body ?? {}) as Record<string, string>;
+      if ((b.next ?? '').length < 8) {
+        return sendHtml(reply, resetPage(token, { kind: 'err', text: 'Пароль должен быть не короче 8 знаков.' }), 400);
+      }
+      if (b.next !== b.repeat) {
+        return sendHtml(reply, resetPage(token, { kind: 'err', text: 'Пароли не совпали.' }), 400);
+      }
+      store.setStaffPassword?.(found.id, hashPassword(b.next));
+      store.consumeResetToken?.(token);
+      store.recordEvent('password_reset', { payload: { staffId: found.id } });
+      return sendHtml(
+        reply,
+        shell(
+          'Пароль изменён',
+          `<div class="login"><div class="logo">Kazzhol</div>` +
+            banner('ok', 'Пароль изменён. Войдите с новым паролем.') +
+            btn('Войти', { variant: 'primary', href: '/console/login' }) +
+            `</div>`,
+          { bare: true },
+        ),
+      );
     });
 
     scope.post('/console/logout', async (req, reply) => {
