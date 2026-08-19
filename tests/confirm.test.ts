@@ -111,7 +111,7 @@ describe('страница заявки', () => {
     expect(html).toContain('Асель');
     // Русская локаль разделяет разряды неразрывным пробелом — сверяем так же.
     expect(html).toContain(`${(59500).toLocaleString('ru-RU')} ₸`);
-    expect(html).toContain('Отправить заявку');
+    expect(html).toContain('Подтвердить и забронировать');
     // И ни одного поля для ввода.
     expect(html).not.toContain('<input');
   });
@@ -154,15 +154,16 @@ describe('нажатие кнопки', () => {
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
       payload: '',
     });
-    expect(res.statusCode).toBe(200);
-    expect(res.body).toContain('Заявка принята');
+    // Успех = гость уехал на форму отеля, где бронь и оформляется.
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe(DATA.bookingFormLink);
   });
 
   it('кладёт заявку в панель со всем, что нужно менеджеру', async () => {
     const { app, token, saveRequest } = build();
     const res = await app.inject({ method: 'POST', url: `/b/${token}/confirm` });
 
-    expect(res.statusCode).toBe(200);
+    expect(res.statusCode).toBe(303);
     expect(saveRequest).toHaveBeenCalledOnce();
     const lead = saveRequest.mock.calls[0][0];
     expect(lead).toMatchObject({
@@ -180,53 +181,62 @@ describe('нажатие кнопки', () => {
     expect(lead.specialRequests).toContain('Best Available Rate');
   });
 
-  it('уведомляет отель и даёт гостю код заявки', async () => {
+  it('уведомляет отель, чтобы бросившего форму гостя не потеряли', async () => {
     const { app, token, notifyStaff } = build();
-    const res = await app.inject({ method: 'POST', url: `/b/${token}/confirm` });
+    await app.inject({ method: 'POST', url: `/b/${token}/confirm` });
+    await new Promise((r) => setTimeout(r, 0));
 
-    const code = /KZ-[A-Z0-9]{6}/.exec(res.body)?.[0];
-    expect(code, 'на странице должен быть код заявки').toBeTruthy();
     expect(notifyStaff).toHaveBeenCalledOnce();
+    const code = /KZ-[A-Z0-9]{6}/.exec(notifyStaff.mock.calls[0][0])?.[0];
+    expect(code, 'в уведомлении должен быть код заявки').toBeTruthy();
     const text = notifyStaff.mock.calls[0][0];
-    expect(text).toContain(code!);
     expect(text).toContain('Асель Нурланова');
     expect(text).toContain('+77015554433');
     expect(notifyStaff.mock.calls[0][1]).toBe('almaty');
   });
 
-  it('страница результата не выдаёт заявку за оформленную бронь', async () => {
+  it('ведёт гостя в форму отеля — только там бронь попадает в Edelweiss', async () => {
     const { app, token } = build();
-    const html = (await app.inject({ method: 'POST', url: `/b/${token}/confirm` })).body;
-    expect(html).toContain('отель свяжется');
-    expect(html).not.toMatch(/бронирование подтвержд|бронь оформлен|номер брони/i);
+    const res = await app.inject({ method: 'POST', url: `/b/${token}/confirm` });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe(DATA.bookingFormLink);
+  });
+
+  it('без ссылки на форму не бросает гостя — обещает звонок и не врёт про бронь', async () => {
+    const { app, token } = build({ ...DATA, bookingFormLink: null });
+    const res = await app.inject({ method: 'POST', url: `/b/${token}/confirm` });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain('свяжется');
+    expect(res.body).not.toMatch(/бронирование подтвержд|бронь оформлен|номер брони/i);
   });
 
   it('второе нажатие НЕ создаёт вторую заявку', async () => {
     // Гость обновляет страницу или жмёт дважды — отель не должен получить дубль.
     const { app, token, saveRequest, notifyStaff } = build();
-    const first = await app.inject({ method: 'POST', url: `/b/${token}/confirm` });
+    await app.inject({ method: 'POST', url: `/b/${token}/confirm` });
     const again = await app.inject({ method: 'POST', url: `/b/${token}/confirm` });
+    await new Promise((r) => setTimeout(r, 0));
 
     expect(saveRequest).toHaveBeenCalledOnce();
     expect(notifyStaff).toHaveBeenCalledOnce();
-    const code = /KZ-[A-Z0-9]{6}/.exec(first.body)![0];
-    expect(again.body).toContain(code);
+    // Повтор просто снова уводит на форму, а не плодит заявки отелю.
+    expect(again.statusCode).toBe(303);
   });
 
-  it('после отправки ссылка показывает код заявки, а не кнопку', async () => {
-    const { app, token } = build();
-    const posted = await app.inject({ method: 'POST', url: `/b/${token}/confirm` });
-    const code = /KZ-[A-Z0-9]{6}/.exec(posted.body)![0];
+  it('вернувшийся гость видит код заявки и путь обратно в форму', async () => {
+    const { app, store, token } = build();
+    await app.inject({ method: 'POST', url: `/b/${token}/confirm` });
+    const code = store.rows.get(token)!.bookingNumber!;
     const page = await app.inject({ method: 'GET', url: `/b/${token}` });
     expect(page.body).toContain(code);
-    expect(page.body).not.toContain('Отправить заявку');
+    expect(page.body).toContain('Перейти к бронированию');
   });
 
-  it('отправленную заявку показывает даже когда срок ссылки вышел', async () => {
+  it('заявку показывает даже когда срок ссылки вышел', async () => {
     // Гость возвращается за номером заявки через неделю — он должен его увидеть.
     const { app, store, token } = build();
-    const posted = await app.inject({ method: 'POST', url: `/b/${token}/confirm` });
-    const code = /KZ-[A-Z0-9]{6}/.exec(posted.body)![0];
+    await app.inject({ method: 'POST', url: `/b/${token}/confirm` });
+    const code = store.rows.get(token)!.bookingNumber!;
     store.rows.get(token)!.expiresAt = new Date(Date.now() - 1000).toISOString();
     const page = await app.inject({ method: 'GET', url: `/b/${token}` });
     expect(page.statusCode).toBe(200);

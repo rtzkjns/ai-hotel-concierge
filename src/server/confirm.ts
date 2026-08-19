@@ -1,16 +1,20 @@
 /**
  * Подтверждение брони в одно нажатие.
  *
- * Гость уже назвал в переписке даты, номер, имя и телефон. Заставлять его вводить всё это
- * второй раз — верный способ потерять бронь на полпути. Здесь он открывает ссылку, видит
- * собранную заявку и нажимает одну кнопку; заявка тут же уходит менеджерам отеля со всеми
- * данными, и они заносят её в систему.
+ * Гость уже назвал в переписке даты, номер, имя и телефон. Здесь он открывает ссылку, видит
+ * собранную бронь целиком — отель, номер, тариф, даты, себя, цену — и подтверждает одной
+ * кнопкой, ничего не перевыбирая.
  *
- * Оформить бронь программно НЕЛЬЗЯ: Exely отказал открывать Reservation API, а внутренний
- * движок бронирования возвращает номера, за которыми в отеле ничего не появляется — проверено
- * и ресепшеном, и отсутствием письма гостю. Поэтому страница НИКОГДА не пишет «бронь
- * подтверждена»: она обещает ровно то, что произойдёт, — что с гостем свяжется отель. Один раз
- * здесь уже стояло ложное подтверждение, и это худшая ошибка из возможных.
+ * Кнопка ведёт в форму бронирования отеля — это ЕДИНСТВЕННЫЙ путь, по которому бронь
+ * реально попадает в Edelweiss: Exely создаёт её сам и сам шлёт гостю подтверждение, ваучер и
+ * документы. Оформить бронь в обход этой формы нельзя — Reservation API закрыт (403), а
+ * внутренний движок движка возвращает номера, за которыми в отеле НИЧЕГО не появляется
+ * (проверено ресепшеном и отсутствием письма гостю). Поэтому здесь не изобретается свой
+ * способ записи брони: страница лишь снимает с гостя всю работу, кроме контактов, и
+ * передаёт его туда, где бронь оформляется по-настоящему.
+ *
+ * Заодно нажатие кладёт заявку менеджерам: если гость до конца формы не дошёл, отель об
+ * этом узнает и сам ему перезвонит, вместо того чтобы потерять бронь молча.
  *
  * Страница намеренно открыта без входа: гость приходит из WhatsApp или Instagram, сессии у
  * него нет и не будет. Защита — случайный токен, срок жизни и замаскированный телефон.
@@ -155,9 +159,9 @@ h1{font-size:20px;line-height:1.3;margin:0 0 18px}
 .total{margin-top:14px;padding-top:16px;border-top:2px solid #E3E8EF;
   display:flex;justify-content:space-between;align-items:baseline}
 .total .v{font-size:23px;font-weight:600}
-button.btn{display:block;width:100%;margin-top:24px;padding:17px;border:0;border-radius:10px;
+a.btn,button.btn{display:block;width:100%;margin-top:24px;padding:17px;border:0;border-radius:10px;
   background:#14385F;color:#fff;font:600 17px/1 inherit;cursor:pointer}
-button.btn:hover{background:#0E2947}
+a.btn:hover,button.btn:hover{background:#0E2947}
 button.btn[disabled]{background:#8A99AB;cursor:progress}
 .note{color:#66768A;font-size:14px;margin-top:16px}
 .ok{background:#E6F4EC;border:1px solid #107D32;color:#0c5f26;border-radius:10px;
@@ -210,21 +214,24 @@ const GONE = page(
  * Гость уходит с кодом заявки и понятным следующим шагом, а не с ложной уверенностью.
  */
 function requestedPage(d: ConfirmationData, code: string): string {
+  // Гость сюда возвращается уже ПОСЛЕ того, как его отправили на форму отеля: либо он её
+  // прошёл, либо бросил. Поэтому здесь и ссылка обратно в форму, и обещание, что о нём
+  // не забудут, — но по-прежнему ни слова о том, что бронь оформлена: этого мы не знаем.
   return page(
-    'Заявка принята',
-    `<div class="ok">Заявка принята — отель свяжется с вами</div>` +
+    'Заявка передана',
+    `<div class="ok">Заявка передана в отдел бронирования</div>` +
       `<p class="sub">Номер заявки</p><p class="num">${esc(code)}</p>` +
       rows(d) +
       (d.totalPrice
         ? `<div class="total"><span class="k">Стоимость</span>` +
           `<span class="v">${esc(money(d.totalPrice, d.currency))}</span></div>`
         : '') +
-      `<p class="note">Мы передали заявку в отдел бронирования — с вами свяжутся, ` +
-      `подтвердят наличие номера и оформят бронь. Обычно это занимает несколько минут ` +
-      `в рабочее время.</p>` +
       (d.bookingFormLink
-        ? `<a class="alt" href="${esc(d.bookingFormLink)}">Хотите забронировать сами прямо сейчас</a>`
-        : ''),
+        ? `<a class="btn" style="text-decoration:none;text-align:center" ` +
+          `href="${esc(d.bookingFormLink)}">Перейти к бронированию</a>` +
+          `<p class="note">Если бронь ещё не оформлена — откройте форму, номер и даты в ней ` +
+          `уже выбраны, останется указать контакты. Не получится — отель свяжется с вами сам.</p>`
+        : `<p class="note">Отдел бронирования свяжется с вами и оформит бронь.</p>`),
   );
 }
 
@@ -267,8 +274,8 @@ function registerRoutes(app: FastifyInstance, deps: ConfirmDeps): void {
     const d = hit.d;
     return reply.type('text/html; charset=utf-8').send(
       page(
-        'Заявка на бронирование',
-        `<p class="sub">Заявка на бронирование</p><h1>Проверьте и отправьте</h1>` +
+        'Бронирование',
+        `<p class="sub">Ваша бронь</p><h1>Проверьте и подтвердите</h1>` +
           rows(d) +
           (d.totalPrice
             ? `<div class="total"><span class="k">Стоимость</span>` +
@@ -276,13 +283,17 @@ function registerRoutes(app: FastifyInstance, deps: ConfirmDeps): void {
             : '') +
           `<form method="post" action="/b/${esc(token)}/confirm" ` +
           `onsubmit="this.querySelector('button').disabled=true;` +
-          `this.querySelector('button').textContent='Отправляем…'">` +
-          `<button class="btn" type="submit">Отправить заявку</button></form>` +
+          `this.querySelector('button').textContent='Открываем…'">` +
+          `<button class="btn" type="submit">Подтвердить и забронировать</button></form>` +
           (d.freeCancellationUntil
             ? `<p class="note">Бесплатная отмена до ${esc(humanDate(d.freeCancellationUntil))}.</p>`
             : '') +
-          `<p class="note">Данные уже заполнены — вводить ничего не нужно. ` +
-          `Отдел бронирования подтвердит наличие номера и оформит бронь.</p>`,
+          // Честно предупреждаем про контакты: гость, ожидавший «одну кнопку», не должен
+          // упереться в неожиданную форму — обманутое ожидание бросают чаще, чем работу.
+          (d.bookingFormLink
+            ? `<p class="note">Номер, тариф и даты уже выбраны — на странице отеля останется ` +
+              `указать контакты и подтвердить. Бронь и подтверждение придут вам на почту.</p>`
+            : `<p class="note">Данные уже заполнены — вводить ничего не нужно.</p>`),
       ),
     );
   });
@@ -293,8 +304,10 @@ function registerRoutes(app: FastifyInstance, deps: ConfirmDeps): void {
     if (!hit) return reply.code(410).type('text/html; charset=utf-8').send(GONE);
     const d = hit.d;
 
-    // Повторное нажатие или обновление страницы не должно плодить заявки.
+    // Повторное нажатие не должно плодить заявки отелю, но и мешать гостю не должно:
+    // он жмёт второй раз именно потому, что хочет обратно в форму.
     if (hit.code) {
+      if (d.bookingFormLink) return reply.redirect(d.bookingFormLink, 303);
       return reply.type('text/html; charset=utf-8').send(requestedPage(d, hit.code));
     }
 
@@ -338,7 +351,7 @@ function registerRoutes(app: FastifyInstance, deps: ConfirmDeps): void {
       payload: { code, room: d.roomType, checkIn: d.checkIn, total: d.totalPrice ?? null },
     });
 
-    await deps
+    void deps
       .notifyStaff(
         `ЗАЯВКА НА БРОНЬ ${code} — ${d.hotelName}\n` +
           `${d.roomType}${d.ratePlanName ? ` · ${d.ratePlanName}` : ''}\n` +
@@ -348,11 +361,15 @@ function registerRoutes(app: FastifyInstance, deps: ConfirmDeps): void {
           `Гость: ${guestName || '—'}, ${d.guestPhone}` +
           (d.guestEmail ? `, ${d.guestEmail}` : '') +
           (d.comment ? `\nПожелания: ${d.comment}` : '') +
-          `\nГость подтвердил — заведите бронь и свяжитесь с ним.\nДиалог: ${d.conversationId}`,
+          `\nГость нажал «Забронировать» и ушёл на форму отеля. Если брони через 15 минут ` +
+          `не видно — свяжитесь с ним, данные все есть.\nДиалог: ${d.conversationId}`,
         d.property,
       )
       .catch(() => undefined);
 
+    // Отправляем гостя туда, где бронь ДЕЙСТВИТЕЛЬНО оформляется и попадает в Edelweiss.
+    // Ждать доставки уведомления менеджерам он не должен — оно уходит фоном.
+    if (d.bookingFormLink) return reply.redirect(d.bookingFormLink, 303);
     return reply.type('text/html; charset=utf-8').send(requestedPage(d, code));
   });
 }
