@@ -1,5 +1,6 @@
 // Live availability from Exely Connect Search.
 // Port of kazzhol-portal src/Integrations/Exely/AvailabilityProvider.php::availability().
+import { localizeBookingLink } from './bookingLink';
 import type { ExelyHttp } from './http';
 import type { AvailabilityProvider } from './provider';
 import type {
@@ -108,6 +109,15 @@ export class LiveAvailabilityProvider implements AvailabilityProvider {
     let offers = (data.roomStays ?? []).map((rs) =>
       normalizeRoomStay(rs, nights, roomTypeNames, ratePlanNames),
     );
+    // Чиним ссылку ЗДЕСЬ, а не только при оформлении: для «вариантных» категорий Exely
+    // кладёт в ссылку чужой room-type (предложение 130693 — ссылка 6154), и гость
+    // открывал бронь не того номера. Раньше это правилось лишь в createBooking, а бот
+    // нередко отдаёт ссылку прямо из списка вариантов.
+    offers = offers.map((o) => ({
+      ...o,
+      // Язык ссылки ставится при оформлении, здесь важна только правильная категория.
+      bookingFormLink: localizeBookingLink(o.bookingFormLink, undefined, o.roomTypeId),
+    }));
     if (query.roomType) {
       const needle = query.roomType.toLowerCase();
       offers = offers.filter((o) => o.roomType.toLowerCase().includes(needle));

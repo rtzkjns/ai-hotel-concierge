@@ -44,6 +44,15 @@ export function localizeBookingLink(
     if (roomTypeId && url.searchParams.has('room-type')) {
       url.searchParams.set('room-type', roomTypeId);
     }
+    // Гость видит эту ссылку целиком в мессенджере, поэтому в ней не должно быть
+    // ничего, что на бронь не влияет: метка источника и пустые параметры только
+    // удлиняют её и делают похожей на рекламную.
+    for (const junk of ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term']) {
+      url.searchParams.delete(junk);
+    }
+    for (const [key, value] of [...url.searchParams.entries()]) {
+      if (value === '') url.searchParams.delete(key);
+    }
     return url.toString();
   } catch {
     // A link we cannot parse is still better than no link at all.
