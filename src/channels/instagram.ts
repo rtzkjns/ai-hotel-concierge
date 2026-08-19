@@ -2,6 +2,7 @@
 // host graph.instagram.com, Graph v26.0 (v23/v24 are sunset). One adapter serves
 // all hotel IG accounts: senderId = `${igAccountId}|${igsid}`, so replies go back
 // from the same account the guest wrote to (mirrors the WhatsApp multi-number design).
+import { safeCut } from '../style/engine';
 import type { ChannelAdapter, InboundMessage, OutboundPart } from './types';
 
 // Instagram Login path (owner just needs a Professional IG account — no Facebook Page).
@@ -222,7 +223,8 @@ function chunkTextByBytes(text: string, maxBytes: number): string[] {
     }
     const window = rest.slice(0, fit);
     const sp = window.lastIndexOf(' ');
-    const cut = sp > fit * 0.6 ? sp : fit;
+    // Ссылку рвать нельзя: половина адреса в одном сообщении — это потерянная бронь.
+    const cut = safeCut(rest, sp > fit * 0.6 ? sp : fit);
     chunks.push(rest.slice(0, cut).trim());
     rest = rest.slice(cut).trim();
   }

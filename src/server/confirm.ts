@@ -5,16 +5,14 @@
  * собранную бронь целиком — отель, номер, тариф, даты, себя, цену — и подтверждает одной
  * кнопкой, ничего не перевыбирая.
  *
- * Кнопка ведёт в форму бронирования отеля — это ЕДИНСТВЕННЫЙ путь, по которому бронь
- * реально попадает в Edelweiss: Exely создаёт её сам и сам шлёт гостю подтверждение, ваучер и
- * документы. Оформить бронь в обход этой формы нельзя — Reservation API закрыт (403), а
- * внутренний движок движка возвращает номера, за которыми в отеле НИЧЕГО не появляется
- * (проверено ресепшеном и отсутствием письма гостю). Поэтому здесь не изобретается свой
- * способ записи брони: страница лишь снимает с гостя всю работу, кроме контактов, и
- * передаёт его туда, где бронь оформляется по-настоящему.
+ * Нажатие оформляет бронь в системе отеля и показывает её номер. «Оформлена» здесь значит,
+ * что бронь прочитана обратно из системы и лежит там в статусе confirmed, — на слово ответу
+ * о создании мы больше не верим: однажды он вернул номер брони, которой не существовало, и
+ * гость получил ложное подтверждение.
  *
- * Заодно нажатие кладёт заявку менеджерам: если гость до конца формы не дошёл, отель об
- * этом узнает и сам ему перезвонит, вместо того чтобы потерять бронь молча.
+ * Если оформить не удалось — номер разобрали, движок молчит, — гостю говорится об этом
+ * прямо, заявка со всеми данными уходит менеджерам, а форма отеля остаётся как способ
+ * забронировать самому.
  *
  * Страница намеренно открыта без входа: гость приходит из WhatsApp или Instagram, сессии у
  * него нет и не будет. Защита — случайный токен, срок жизни и замаскированный телефон.
@@ -23,6 +21,7 @@
 import { randomBytes } from 'node:crypto';
 import formbody from '@fastify/formbody';
 import type { FastifyInstance } from 'fastify';
+import type { CreateBookingResult } from '../core/booking';
 import type { BookingLead, Language } from '../types';
 
 /** Заявка живёт сутки: дольше — и цена, которую видит гость, перестаёт быть правдой. */
@@ -74,7 +73,23 @@ export interface ConfirmStore {
 
 export interface ConfirmDeps {
   store: ConfirmStore;
-  /** Кладёт заявку в панель — именно по ней отель заносит бронь. */
+  /** Оформляет бронь — тот же путь, которым пользуется бот. */
+  createBooking: (args: {
+    conversationId: string;
+    property: string;
+    checkIn: string;
+    checkOut: string;
+    guests: number;
+    roomTypeId: string;
+    ratePlanId: string;
+    guestFirstName: string;
+    guestLastName: string;
+    guestPhone: string;
+    guestEmail?: string;
+    comment?: string;
+    language?: Language | null;
+  }) => Promise<CreateBookingResult>;
+  /** Заявка менеджерам — на случай, когда бронь оформить не удалось. */
   saveRequest: (lead: BookingLead) => void;
   notifyStaff: (text: string, property?: string) => Promise<void>;
 }
@@ -208,30 +223,38 @@ const GONE = page(
 );
 
 /**
- * Страница «заявка принята» — её же видит гость, обновивший страницу.
+ * Страница оформленной брони — её же видит гость, обновивший страницу.
  *
- * Слово «подтверждено» здесь не звучит и звучать не должно: подтверждает отель, а не мы.
- * Гость уходит с кодом заявки и понятным следующим шагом, а не с ложной уверенностью.
+ * Слово «оформлено» здесь появляется ТОЛЬКО после того, как бронь прочитана обратно из
+ * системы отеля. Иначе — соседняя страница, с честным отказом.
  */
-function requestedPage(d: ConfirmationData, code: string): string {
-  // Гость сюда возвращается уже ПОСЛЕ того, как его отправили на форму отеля: либо он её
-  // прошёл, либо бросил. Поэтому здесь и ссылка обратно в форму, и обещание, что о нём
-  // не забудут, — но по-прежнему ни слова о том, что бронь оформлена: этого мы не знаем.
+function bookedPage(d: ConfirmationData, number: string, total?: number | null): string {
   return page(
-    'Заявка передана',
-    `<div class="ok">Заявка передана в отдел бронирования</div>` +
+    'Бронирование оформлено',
+    `<div class="ok">Бронирование оформлено</div>` +
+      `<p class="sub">Номер брони</p><p class="num">${esc(number)}</p>` +
+      rows(d) +
+      ((total ?? d.totalPrice)
+        ? `<div class="total"><span class="k">К оплате при заселении</span>` +
+          `<span class="v">${esc(money(total ?? d.totalPrice, d.currency))}</span></div>`
+        : '') +
+      `<p class="note">Номер за вами, оплата — при заселении. Подтверждение отель отправил ` +
+      `вам на почту. Если планы изменятся, напишите нам в чат и назовите номер брони.</p>`,
+  );
+}
+
+/** Оформить не удалось. Гостю — правда, отелю — заявка со всеми данными. */
+function failedPage(d: ConfirmationData, code: string): string {
+  return page(
+    'Нужна минута',
+    `<div class="warn">Не получилось оформить бронь автоматически.</div>` +
       `<p class="sub">Номер заявки</p><p class="num">${esc(code)}</p>` +
       rows(d) +
-      (d.totalPrice
-        ? `<div class="total"><span class="k">Стоимость</span>` +
-          `<span class="v">${esc(money(d.totalPrice, d.currency))}</span></div>`
-        : '') +
+      `<p class="note">Заявка уже у отдела бронирования — с вами свяжутся и оформят бронь. ` +
+      `Она не потеряна.</p>` +
       (d.bookingFormLink
-        ? `<a class="btn" style="text-decoration:none;text-align:center" ` +
-          `href="${esc(d.bookingFormLink)}">Перейти к бронированию</a>` +
-          `<p class="note">Если бронь ещё не оформлена — откройте форму, номер и даты в ней ` +
-          `уже выбраны, останется указать контакты. Не получится — отель свяжется с вами сам.</p>`
-        : `<p class="note">Отдел бронирования свяжется с вами и оформит бронь.</p>`),
+        ? `<a class="alt" href="${esc(d.bookingFormLink)}">Или оформить самому на сайте отеля</a>`
+        : ''),
   );
 }
 
@@ -262,38 +285,39 @@ function registerRoutes(app: FastifyInstance, deps: ConfirmDeps): void {
     return { d: found.data as ConfirmationData, code: found.bookingNumber };
   };
 
+  /** Код заявки начинается с KZ- — так отличаем несостоявшуюся бронь от настоящей. */
+  const isRequestCode = (v: string): boolean => v.startsWith('KZ-');
+
+  const resultPage = (d: ConfirmationData, mark: string): string =>
+    isRequestCode(mark) ? failedPage(d, mark) : bookedPage(d, mark);
+
   app.get('/b/:token', async (req, reply) => {
     const { token } = req.params as { token: string };
     const hit = load(token);
     if (!hit) return reply.code(410).type('text/html; charset=utf-8').send(GONE);
 
     if (hit.code) {
-      return reply.type('text/html; charset=utf-8').send(requestedPage(hit.d, hit.code));
+      return reply.type('text/html; charset=utf-8').send(resultPage(hit.d, hit.code));
     }
 
     const d = hit.d;
     return reply.type('text/html; charset=utf-8').send(
       page(
-        'Бронирование',
-        `<p class="sub">Ваша бронь</p><h1>Проверьте и подтвердите</h1>` +
+        'Подтверждение бронирования',
+        `<p class="sub">Подтверждение бронирования</p><h1>Проверьте и подтвердите</h1>` +
           rows(d) +
           (d.totalPrice
-            ? `<div class="total"><span class="k">Стоимость</span>` +
+            ? `<div class="total"><span class="k">Итого</span>` +
               `<span class="v">${esc(money(d.totalPrice, d.currency))}</span></div>`
             : '') +
           `<form method="post" action="/b/${esc(token)}/confirm" ` +
           `onsubmit="this.querySelector('button').disabled=true;` +
-          `this.querySelector('button').textContent='Открываем…'">` +
-          `<button class="btn" type="submit">Подтвердить и забронировать</button></form>` +
+          `this.querySelector('button').textContent='Оформляем…'">` +
+          `<button class="btn" type="submit">Подтвердить бронирование</button></form>` +
           (d.freeCancellationUntil
             ? `<p class="note">Бесплатная отмена до ${esc(humanDate(d.freeCancellationUntil))}.</p>`
             : '') +
-          // Честно предупреждаем про контакты: гость, ожидавший «одну кнопку», не должен
-          // упереться в неожиданную форму — обманутое ожидание бросают чаще, чем работу.
-          (d.bookingFormLink
-            ? `<p class="note">Номер, тариф и даты уже выбраны — на странице отеля останется ` +
-              `указать контакты и подтвердить. Бронь и подтверждение придут вам на почту.</p>`
-            : `<p class="note">Данные уже заполнены — вводить ничего не нужно.</p>`),
+          `<p class="note">Данные уже заполнены — вводить ничего не нужно. Оплата при заселении.</p>`,
       ),
     );
   });
@@ -304,72 +328,103 @@ function registerRoutes(app: FastifyInstance, deps: ConfirmDeps): void {
     if (!hit) return reply.code(410).type('text/html; charset=utf-8').send(GONE);
     const d = hit.d;
 
-    // Повторное нажатие не должно плодить заявки отелю, но и мешать гостю не должно:
-    // он жмёт второй раз именно потому, что хочет обратно в форму.
+    // Повторное нажатие или обновление страницы не должно оформлять вторую бронь.
     if (hit.code) {
-      if (d.bookingFormLink) return reply.redirect(d.bookingFormLink, 303);
-      return reply.type('text/html; charset=utf-8').send(requestedPage(d, hit.code));
+      return reply.type('text/html; charset=utf-8').send(resultPage(d, hit.code));
     }
 
-    // Код присваиваем ДО записи и проверяем, что застолбили именно мы: две вкладки,
-    // нажавшие одновременно, не должны создать отелю две одинаковые заявки.
-    const code = requestCode();
-    if (!store.claimConfirmation(token, code)) {
-      const again = load(token);
-      return reply
-        .type('text/html; charset=utf-8')
-        .send(again?.code ? requestedPage(d, again.code) : GONE);
-    }
-
-    const guestName = [d.guestFirstName, d.guestLastName].filter((s) => s && s !== '—').join(' ');
-    // Заявка ложится в панель. Пишем ВСЁ, что нужно менеджеру для заведения брони в
-    // Edelweiss, — он не должен ничего доспрашивать у гостя.
-    deps.saveRequest({
+    const booked = await deps.createBooking({
       conversationId: d.conversationId,
-      kind: 'booking',
+      property: d.property,
       checkIn: d.checkIn,
       checkOut: d.checkOut,
       guests: d.guests,
-      roomType: d.roomType,
-      contactName: guestName,
-      contactPhone: d.guestPhone,
-      specialRequests: [
-        `ЗАЯВКА ${code} — гость подтвердил, занести в Edelweiss`,
-        `тариф: ${d.ratePlanName ?? '—'}`,
-        d.totalPrice ? `сумма: ${money(d.totalPrice, d.currency)}` : null,
-        d.guestEmail ? `почта: ${d.guestEmail}` : 'почта: не указана',
-        d.comment ? `пожелания: ${d.comment}` : null,
-      ]
-        .filter((s): s is string => s !== null)
-        .join('; '),
-      createdAt: new Date().toISOString(),
+      roomTypeId: d.roomTypeId,
+      ratePlanId: d.ratePlanId,
+      guestFirstName: d.guestFirstName,
+      guestLastName: d.guestLastName,
+      guestPhone: d.guestPhone,
+      guestEmail: d.guestEmail ?? undefined,
+      comment: d.comment ?? undefined,
+      language: d.language,
     });
 
-    store.recordEvent('booking_requested', {
+    const guestName = [d.guestFirstName, d.guestLastName].filter((x) => x && x !== '—').join(' ');
+
+    if (booked.mode !== 'confirmed') {
+      // Номер мог уйти, пока гость думал, или движок недоступен. Врать нельзя: говорим как
+      // есть, отдаём заявку людям и оставляем форму отеля как рабочий путь.
+      const code = requestCode();
+      if (!store.claimConfirmation(token, code)) {
+        const again = load(token);
+        return reply
+          .type('text/html; charset=utf-8')
+          .send(again?.code ? resultPage(d, again.code) : GONE);
+      }
+      deps.saveRequest({
+        conversationId: d.conversationId,
+        kind: 'booking',
+        checkIn: d.checkIn,
+        checkOut: d.checkOut,
+        guests: d.guests,
+        roomType: d.roomType,
+        contactName: guestName,
+        contactPhone: d.guestPhone,
+        specialRequests: [
+          `ЗАЯВКА ${code} — гость подтвердил, бронь НЕ оформилась (${booked.reason})`,
+          `тариф: ${d.ratePlanName ?? '—'}`,
+          d.totalPrice ? `сумма: ${money(d.totalPrice, d.currency)}` : null,
+          d.guestEmail ? `почта: ${d.guestEmail}` : 'почта: не указана',
+          d.comment ? `пожелания: ${d.comment}` : null,
+        ]
+          .filter((x): x is string => x !== null)
+          .join('; '),
+        createdAt: new Date().toISOString(),
+      });
+      store.recordEvent('confirmation_failed', {
+        conversationId: d.conversationId,
+        property: d.property,
+        payload: { code, reason: booked.reason },
+      });
+      await deps
+        .notifyStaff(
+          `ЗАЯВКА ${code} — бронь НЕ оформилась (${booked.reason}) — ${d.hotelName}\n` +
+            `${d.roomType}, ${humanDate(d.checkIn)} — ${humanDate(d.checkOut)}, ` +
+            `${d.guests} ${guestsWord(d.guests)}\n` +
+            `Гость: ${guestName || '—'}, ${d.guestPhone}` +
+            (d.guestEmail ? `, ${d.guestEmail}` : '') +
+            `\nСвяжитесь с гостем и оформите вручную. Диалог: ${d.conversationId}`,
+          d.property,
+        )
+        .catch(() => undefined);
+      return reply.type('text/html; charset=utf-8').send(failedPage(d, code));
+    }
+
+    // Бронь создана и прочитана обратно из системы отеля. Записываем номер: гонка двух
+    // вкладок не должна привести ко второй брони.
+    store.claimConfirmation(token, booked.number);
+    store.recordEvent('booking_confirmed', {
       conversationId: d.conversationId,
       property: d.property,
-      payload: { code, room: d.roomType, checkIn: d.checkIn, total: d.totalPrice ?? null },
+      payload: { number: booked.number, room: d.roomType, checkIn: d.checkIn },
     });
-
-    void deps
+    await deps
       .notifyStaff(
-        `ЗАЯВКА НА БРОНЬ ${code} — ${d.hotelName}\n` +
-          `${d.roomType}${d.ratePlanName ? ` · ${d.ratePlanName}` : ''}\n` +
-          `${humanDate(d.checkIn)} — ${humanDate(d.checkOut)}, ` +
-          `${d.nights} ${nightsWord(d.nights)}, ${d.guests} ${guestsWord(d.guests)}\n` +
-          (d.totalPrice ? `Сумма: ${money(d.totalPrice, d.currency)}\n` : '') +
+        `БРОНЬ ОФОРМЛЕНА ${booked.number} — ${d.hotelName}\n` +
+          `${booked.roomType}${booked.ratePlanName ? ` · ${booked.ratePlanName}` : ''}\n` +
+          `${humanDate(booked.checkIn)} — ${humanDate(booked.checkOut)}, ` +
+          `${d.nights} ${nightsWord(d.nights)}, ${booked.guests} ${guestsWord(booked.guests)}\n` +
+          (booked.total ? `Сумма: ${money(booked.total, booked.currency)}\n` : '') +
           `Гость: ${guestName || '—'}, ${d.guestPhone}` +
           (d.guestEmail ? `, ${d.guestEmail}` : '') +
-          (d.comment ? `\nПожелания: ${d.comment}` : '') +
-          `\nГость нажал «Забронировать» и ушёл на форму отеля. Если брони через 15 минут ` +
-          `не видно — свяжитесь с ним, данные все есть.\nДиалог: ${d.conversationId}`,
+          (booked.cancellationCode ? `\nКод отмены: ${booked.cancellationCode}` : '') +
+          `\nДиалог: ${d.conversationId}`,
         d.property,
       )
       .catch(() => undefined);
 
-    // Отправляем гостя туда, где бронь ДЕЙСТВИТЕЛЬНО оформляется и попадает в Edelweiss.
-    // Ждать доставки уведомления менеджерам он не должен — оно уходит фоном.
-    if (d.bookingFormLink) return reply.redirect(d.bookingFormLink, 303);
-    return reply.type('text/html; charset=utf-8').send(requestedPage(d, code));
+    return reply
+      .type('text/html; charset=utf-8')
+      .send(bookedPage(d, booked.number, booked.total));
   });
 }

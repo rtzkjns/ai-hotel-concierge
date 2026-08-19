@@ -256,6 +256,7 @@ async function main(): Promise<void> {
       (a) =>
         registerConfirmRoutes(a, {
           store,
+          createBooking: (args) => bookingService.createBooking(args),
           saveRequest: (lead) => store.saveLead(lead),
           notifyStaff: async (text, property) => {
             await staffNotifier.notify(text, property);

@@ -133,3 +133,22 @@ describe('transcriber', () => {
     await expect(t.transcribe(Buffer.from('x'), 'audio/ogg')).resolves.toBeNull();
   });
 });
+
+describe('ссылки в длинных ответах', () => {
+  it('не разрезает ссылку пополам — битый адрес это потерянная бронь', () => {
+    const url = 'https://kazzhol.128-140-86-176.sslip.io/b/9RyMZSb_uA_pRJiaBQMJnw';
+    // Длинный ответ, где ссылка попадает ровно на границу разреза.
+    const long = `${'Отель предлагает удобное расположение и завтрак. '.repeat(19)}${url}`;
+    const parts = styleSplit(long);
+    // Ссылка обязана целиком лежать ровно в одной части.
+    expect(parts.filter((p) => p.includes(url))).toHaveLength(1);
+    for (const p of parts) {
+      if (!p.includes(url)) expect(p).not.toContain('https://');
+    }
+  });
+
+  it('короткий ответ со ссылкой не трогает вовсе', () => {
+    const text = 'Всё готово: https://example.com/b/abc — нажмите кнопку.';
+    expect(styleSplit(text)).toEqual([text]);
+  });
+});

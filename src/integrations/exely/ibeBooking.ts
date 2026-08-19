@@ -1,0 +1,384 @@
+/**
+ * Booking through Exely's own booking engine — the path the hotel's website uses.
+ *
+ * The documented Reservation API answers HTTP 403 on every Kazzhol cabinet and Exely has
+ * refused to open it, so this is the only way a booking made in chat can reach the hotel.
+ * These endpoints are the ones kazzhol.com's embedded form calls; they are internal to
+ * TravelLine and undocumented, so everything here was recovered by driving that form and
+ * comparing requests.
+ *
+ * FOUR STEPS, ALL REQUIRED — a booking that skips any of them is not a booking:
+ *   1. hotel_availability   — the engine's own numeric placement code for the room.
+ *   2. verify_reservation   — validates, and lists which payment methods the rate allows.
+ *   3. hotel_reservation_2  — creates the reservation and returns a payment_url.
+ *   4. GET payment_url      — flips it from «unconfirmed» to «confirmed».
+ * Then read_reservation_2 reads it back, and ONLY a readback saying «confirmed» is treated
+ * as success.
+ *
+ * That last rule is the point of this file. An earlier version sent the guarantee under
+ * `guarantee_info` — which is the RESPONSE field name; the request field is `guarantee`.
+ * The engine silently discarded the unknown key and happily returned a reservation number
+ * for a booking with no payment guarantee, which never reached the hotel and never mailed
+ * the guest. We shipped it, because a number in a 200 response looked like proof. It is
+ * not. Both mistakes are now impossible to repeat quietly: step 4 is verified by step 5,
+ * and place() cannot return ok:true without it.
+ */
+
+import type { BookingRq, PlaceResult, ReservationClient } from './reservation';
+
+/** Region host for Kazakhstan properties — RegionMap/host answers this for code 801. */
+export const IBE_BASE_URL = 'https://kz-ibe.hopenapi.com/ApiWebDistribution/BookingForm';
+
+/** Refuse to hang the whole reply on a slow engine — the booking link is always ready. */
+const TIMEOUT_MS = 20_000;
+
+/**
+ * Sales channel this booking is attributed to. The hotel's site sends its integration key
+ * here; an empty point_of_sale is accepted but leaves the booking unattributed.
+ */
+export const DEFAULT_INTEGRATION_KEY = 'BE-INT-kazzhol-mediacorporation-kz_2024-11-06';
+
+/** Where the engine sends the guest after a card payment. Unused for pay-at-hotel, required anyway. */
+const RETURN_URL = 'https://kazzhol.com/ru/booking';
+
+export interface IbeDeps {
+  fetchImpl?: typeof fetch;
+  baseUrl?: string;
+  /** IBE locale, e.g. 'ru-ru'. Drives the language of the confirmation e-mail it sends. */
+  language?: string;
+  /** Integration key without the property suffix. */
+  integrationKey?: string;
+}
+
+interface GuaranteeOption {
+  code?: string;
+  payment_system_code?: string;
+  require_prepayment?: boolean;
+  name?: string;
+}
+
+interface IbeReservationBody {
+  status?: string;
+  number?: string;
+  cancellation_code?: string;
+  guarantee_options?: GuaranteeOption[];
+  guarantee_info?: {
+    status?: string;
+    guarantees?: Array<{ code?: string; payment_system_code?: string; payment_url?: string }>;
+  };
+  total?: { price_after_tax?: number; price_before_tax?: number; currency?: string };
+}
+
+interface IbeRoomStay {
+  room_types?: Array<{ code?: string; placements?: Array<{ code?: string | number }> }>;
+  rate_plans?: Array<{ code?: string }>;
+}
+
+interface IbeResponse {
+  hotel_reservations?: IbeReservationBody[];
+  room_stays?: IbeRoomStay[];
+  errors?: unknown;
+}
+
+/** «2026-09-15T15:00:00» → «2026-09-15 15:00:00»: the engine rejects the ISO «T». */
+export function ibeDateTime(iso: string): string {
+  return iso.replace('T', ' ').slice(0, 19);
+}
+
+/** Собирает жалобы движка в одну строку — иначе любой отказ выглядит одинаково. */
+export function describeErrors(res: IbeResponse): string {
+  const list = Array.isArray(res.errors) ? res.errors : [];
+  const parts = list
+    .map((e) => {
+      const o = e as { message?: string; location?: string };
+      return o.message ? `${o.message}${o.location ? ` (${o.location})` : ''}` : null;
+    })
+    .filter((s): s is string => s !== null);
+  return parts.length ? parts.join('; ') : 'движок не назвал причину';
+}
+
+/**
+ * Pick how the guest pays. Default is «при заселении»: it needs no card and no redirect to a
+ * bank, so nothing is left half-finished if the guest closes the chat. Prepaid options exist
+ * but would strand a booking mid-payment with no human watching.
+ */
+export function pickGuarantee(options: GuaranteeOption[] | undefined): GuaranteeOption | undefined {
+  if (!options?.length) return undefined;
+  return (
+    options.find((o) => o.payment_system_code === 'AT_ARRIVAL') ??
+    options.find((o) => o.require_prepayment === false) ??
+    options[0]
+  );
+}
+
+/**
+ * Translate the Reservation-API request shape into the engine's.
+ *
+ * The placement mapping is the subtle part. A double room is normally ONE placement of
+ * capacity two, and the engine then wants a single guest_count of two adults pinned to it —
+ * splitting that into two counts is rejected. Only when the room really exposes a placement
+ * per adult do we hand out one each.
+ */
+export function buildIbeBooking(
+  propertyId: string,
+  b: BookingRq,
+  language: string,
+  opts: { guarantee?: GuaranteeOption; integrationKey?: string } = {},
+): Record<string, unknown> {
+  const roomStays = b.roomStays.map((rs) => {
+    const placements = rs.roomType.placements.map((p, i) => ({
+      code: String(p.code),
+      index: i + 1,
+      kind: 'adult',
+    }));
+    const adults = Math.max(1, rs.guestCount.adultCount);
+
+    const guestCounts =
+      placements.length >= adults
+        ? placements.slice(0, adults).map((p, i) => ({
+            age_qualifying_code: 'adult',
+            count: 1,
+            index: i + 1,
+            placement_index: p.index,
+          }))
+        : [
+            {
+              age_qualifying_code: 'adult',
+              count: adults,
+              index: 1,
+              placement_index: placements[0]?.index ?? 1,
+            },
+          ];
+
+    return {
+      advanced_services: [],
+      guest_count_info: { guest_counts: guestCounts },
+      rate_plans: [{ code: rs.ratePlan.id }],
+      room_types: [{ code: rs.roomType.id, placements, preferences: [] }],
+      services: [],
+      stay_dates: {
+        start_date: ibeDateTime(rs.stayDates.arrivalDateTime),
+        end_date: ibeDateTime(rs.stayDates.departureDateTime),
+      },
+      // Достаточно ведущего гостя: остальных отель записывает при заселении.
+      guests: rs.guests.map((g, i) => ({
+        first_name: g.firstName,
+        last_name: g.lastName,
+        middle_name: '',
+        placement: { index: placements[Math.min(i, placements.length - 1)]?.index ?? 1 },
+      })),
+    };
+  });
+
+  const reservation: Record<string, unknown> = {
+    hotel_ref: { code: propertyId },
+    room_stays: roomStays,
+    services: [],
+    transfers: [],
+    customer: {
+      first_name: b.customer.firstName,
+      last_name: b.customer.lastName,
+      middle_name: '',
+      comment: b.customer.comment ?? '',
+      confirm_sms: false,
+      subscribe_email: false,
+      contact_info: {
+        emails: b.customer.contacts.emails
+          .filter((e) => e.emailAddress)
+          .map((e) => ({ email_address: e.emailAddress })),
+        phones: b.customer.contacts.phones
+          .filter((p) => p.phoneNumber)
+          .map((p) => ({ phone_number: p.phoneNumber, tech_type: '' })),
+      },
+    },
+  };
+
+  // ЭТО поле называется `guarantee`, а не `guarantee_info`. Ошибка в имени не вызывает
+  // отказа: движок молча выбрасывает неизвестный ключ и создаёт бронь без гарантии оплаты,
+  // которая до отеля не доходит. Именно так мы однажды и отгрузили пустышки.
+  if (opts.guarantee?.code) {
+    reservation.guarantee = {
+      code: opts.guarantee.code,
+      success_url: RETURN_URL,
+      decline_url: RETURN_URL,
+    };
+  }
+
+  const key = opts.integrationKey;
+  return {
+    currency: 'KZT',
+    language,
+    include_extra_stay_options: false,
+    point_of_sale: key
+      ? { source_url: RETURN_URL, integration_key: `${key}.${propertyId}` }
+      : {},
+    hotel_reservations: [reservation],
+  };
+}
+
+export class IbeReservation implements ReservationClient {
+  /** Отмену движок не отдаёт — бронь снимает сотрудник в Edelweiss. */
+  readonly supportsCancel = false;
+
+  constructor(
+    private readonly propertyId: string,
+    private readonly deps: IbeDeps = {},
+  ) {}
+
+  private get language(): string {
+    return this.deps.language ?? 'ru-ru';
+  }
+
+  private async call(path: string, body: unknown): Promise<IbeResponse> {
+    const doFetch = this.deps.fetchImpl ?? fetch;
+    const base = this.deps.baseUrl ?? IBE_BASE_URL;
+    const res = await doFetch(`${base}/${path}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json;charset=UTF-8',
+        accept: 'application/json, text/plain, */*',
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+    if (!res.ok) throw new Error(`ibe ${path}: HTTP ${res.status}`);
+    return (await res.json()) as IbeResponse;
+  }
+
+  /**
+   * Спрашивает у движка коды мест размещения для выбранного номера.
+   *
+   * Поиск Exely отдаёт места символьно («AdultBed-2»), а движок ждёт свой числовой код и на
+   * чужой отвечает «code is invalid». Коды номера и тарифа у них общие, поэтому ищем по ним.
+   * Побочная польза: это живая проверка, что номер не разобрали, пока гость думал.
+   */
+  async placementsFor(
+    propertyId: string,
+    stay: BookingRq['roomStays'][number],
+  ): Promise<string[] | null> {
+    const res = await this.call('hotel_availability', {
+      language: this.language,
+      currency: 'KZT',
+      criterions: [
+        {
+          hotels: [{ code: propertyId }],
+          guests: [
+            { age_qualifying_code: 'adult', count: Math.max(1, stay.guestCount.adultCount) },
+          ],
+          start_date: ibeDateTime(stay.stayDates.arrivalDateTime),
+          end_date: ibeDateTime(stay.stayDates.departureDateTime),
+        },
+      ],
+    });
+    const stays = res.room_stays ?? [];
+    const sameRoom = (s: IbeRoomStay): boolean => s.room_types?.[0]?.code === stay.roomType.id;
+    // Тариф уточняет выбор, но если именно его уже нет — берём тот же номер по другому
+    // тарифу, а не отказываем гостю совсем.
+    const match =
+      stays.find((s) => sameRoom(s) && s.rate_plans?.[0]?.code === stay.ratePlan.id) ??
+      stays.find(sameRoom);
+    const codes = match?.room_types?.[0]?.placements
+      ?.map((p) => String(p.code ?? ''))
+      .filter((c) => c !== '');
+    return codes?.length ? codes : null;
+  }
+
+  /** Читает бронь обратно. Единственный независимый способ узнать, существует ли она. */
+  async read(number: string, cancellationCode: string): Promise<IbeReservationBody | null> {
+    const res = await this.call('read_reservation_2', {
+      language: this.language,
+      hotel_reservation_refs: [
+        { number, verification: { cancellation_code: cancellationCode } },
+      ],
+    });
+    return res.hotel_reservations?.[0] ?? null;
+  }
+
+  /**
+   * Проходит по ссылке оплаты. Для оплаты при заселении платить нечего, но БЕЗ этого шага
+   * бронь навсегда остаётся «unconfirmed» — проверено контрольным опытом: та же бронь без
+   * него через двадцать секунд всё ещё unconfirmed, с ним — confirmed.
+   */
+  private async settle(paymentUrl: string): Promise<void> {
+    const doFetch = this.deps.fetchImpl ?? fetch;
+    await doFetch(paymentUrl, {
+      redirect: 'follow',
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    }).catch(() => undefined);
+  }
+
+  /** Creates a REAL booking and confirms it. Returns ok only when a readback says so. */
+  async place(b: BookingRq): Promise<PlaceResult> {
+    try {
+      const propertyId = b.propertyId || this.propertyId;
+
+      // Места движка вместо символьных из поиска Exely — иначе «code is invalid».
+      const roomStays = [];
+      for (const stay of b.roomStays) {
+        const placements = await this.placementsFor(propertyId, stay);
+        if (!placements) return { ok: false, error: 'ibe: номер недоступен на эти даты' };
+        roomStays.push({
+          ...stay,
+          roomType: { ...stay.roomType, placements: placements.map((code) => ({ code })) },
+        });
+      }
+      const resolved: BookingRq = { ...b, roomStays };
+      const integrationKey = this.deps.integrationKey ?? DEFAULT_INTEGRATION_KEY;
+
+      // Какие способы оплаты допускает этот тариф — коды разные у каждого отеля,
+      // поэтому спрашиваем, а не зашиваем.
+      const verified = await this.call('verify_reservation', {
+        ...buildIbeBooking(propertyId, resolved, this.language, { integrationKey }),
+        include_guarantee_options: true,
+      });
+      const guarantee = pickGuarantee(verified.hotel_reservations?.[0]?.guarantee_options);
+      if (!guarantee?.code) {
+        return { ok: false, error: `ibe: нет доступного способа оплаты — ${describeErrors(verified)}` };
+      }
+
+      const res = await this.call(
+        'hotel_reservation_2',
+        buildIbeBooking(propertyId, resolved, this.language, { guarantee, integrationKey }),
+      );
+      const created = res.hotel_reservations?.[0];
+      if (!created?.number || !created.cancellation_code) {
+        return { ok: false, error: `ibe: бронь не создана — ${describeErrors(res)}` };
+      }
+
+      const paymentUrl = created.guarantee_info?.guarantees?.[0]?.payment_url;
+      if (paymentUrl) await this.settle(paymentUrl);
+
+      // Итог решает ЧТЕНИЕ, а не ответ на создание. Номер в ответе однажды уже оказался
+      // номером несуществующей брони, и гостю было сказано, что всё готово.
+      const back = await this.read(created.number, created.cancellation_code);
+      if (back?.status !== 'confirmed') {
+        return {
+          ok: false,
+          error: `ibe: бронь ${created.number} осталась в статусе «${back?.status ?? 'неизвестно'}»`,
+          number: created.number,
+        };
+      }
+
+      const total = back.total?.price_after_tax ?? back.total?.price_before_tax;
+      return {
+        ok: true,
+        number: created.number,
+        status: back.status,
+        total: typeof total === 'number' && total > 0 ? total : undefined,
+        cancellationCode: created.cancellation_code,
+        warnings: [],
+      };
+    } catch (err) {
+      // Never throw: BookingService turns ok:false into the booking link, which always works.
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  async cancel(): Promise<unknown> {
+    throw new Error('ibe: отмена через движок недоступна — снимает бронь сотрудник');
+  }
+
+  async get(number: string): Promise<unknown> {
+    throw new Error(`ibe: чтение брони ${number} требует кода отмены`);
+  }
+}

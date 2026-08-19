@@ -147,12 +147,32 @@ function splitLongPart(part: string): string[] {
   let rest = part;
   while (rest.length > MAX_PART_CHARS) {
     const window = rest.slice(0, MAX_PART_CHARS);
-    const cut = lastSentenceEnd(window) ?? MAX_PART_CHARS;
+    const cut = safeCut(rest, lastSentenceEnd(window) ?? MAX_PART_CHARS);
     out.push(rest.slice(0, cut).trim());
     rest = rest.slice(cut).trim();
   }
   if (rest.length > 0) out.push(rest);
   return out;
+}
+
+/**
+ * Сдвигает точку разреза назад, если она попала внутрь ссылки.
+ *
+ * Разрезанная ссылка — это несостоявшаяся бронь: половина адреса в одном сообщении,
+ * половина в другом, и гость не может нажать ни на что. Ссылка — единственное место в
+ * ответе, которое обязано дойти целиком, поэтому лучше сообщение короче, чем битый адрес.
+ */
+export function safeCut(text: string, cut: number): number {
+  if (cut <= 0 || cut >= text.length) return cut;
+  const before = text.slice(0, cut);
+  const start = Math.max(before.lastIndexOf('http://'), before.lastIndexOf('https://'));
+  if (start === -1) return cut;
+  // Ссылка кончается на первом пробеле; если он раньше разреза — разрез вне ссылки.
+  const ws = text.slice(start).search(/\s/);
+  const end = ws === -1 ? text.length : start + ws;
+  if (end <= cut) return cut;
+  // Режем перед ссылкой, но только если до неё вообще что-то осталось.
+  return start > 0 ? start : cut;
 }
 
 /** Index just past the last sentence-ending punctuation followed by whitespace, or null. */

@@ -343,14 +343,11 @@ WORKFLOWS:
 - If create_booking returns mode "confirmation" — THIS IS THE NORMAL CASE. Send the guest the
   confirmationLink exactly as given, on its own line, in THIS chat. That page shows their whole
   booking — hotel, room, rate, dates, guests, total — and one «Подтвердить и забронировать»
-  button, which opens the hotel's booking page with the room, rate and dates ALREADY selected.
-  Keep it to one or two lines, e.g. «Всё готово — проверьте и подтвердите: <URL>. Номер, тариф и
-  даты уже выбраны, останется указать контакты — и бронь оформлена.»
-  Be straight about that last step: the guest enters their contacts on the hotel's page, and the
-  hotel's system creates the booking and e-mails the confirmation and voucher. Do NOT promise that
-  no typing is needed at all, and do NOT say the booking already exists — it exists once they
-  finish there. Never send a second link, never invent or shorten the URL, and never ask them to
-  repeat the dates, room or name they already gave you.
+  button. Keep it to one or two lines, e.g. «Всё готово — проверьте и подтвердите: <URL>. Данные
+  уже заполнены, нужно только нажать кнопку. Оплата при заселении.»
+  Pressing it creates the booking in the hotel's system and shows the booking number — so do NOT
+  say the booking already exists before they press, and never ask them to enter anything again,
+  send a second link, or invent or shorten the URL.
 - If create_booking returns mode "link": give the guest the booking link RIGHT HERE IN THIS CHAT —
   never say you'll send it «на почту»; the link goes straight into the dialog. Everything is ALREADY
   selected in it (room, rate, dates, guests): tell the guest to just open it, fill in their contacts

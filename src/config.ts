@@ -8,6 +8,11 @@ export interface ExelyCabinet {
   authUrl: string;
   baseUrl: string;
   bookingEnabled: boolean;
+  /**
+   * Оформлять брони через собственный движок Exely — тот же, которым бронирует сайт отеля.
+   * Reservation API нам закрыт (403), так что сегодня это единственный рабочий путь.
+   */
+  bookingEngine: boolean;
 }
 
 /**
@@ -36,6 +41,7 @@ export function buildExelyCabinets(env: NodeJS.ProcessEnv): Record<string, Exely
       authUrl,
       baseUrl,
       bookingEnabled: env.EXELY_BOOKING_ENABLED === 'true',
+      bookingEngine: env.EXELY_BOOKING_ENGINE === 'true',
     };
   }
 
@@ -51,6 +57,8 @@ export function buildExelyCabinets(env: NodeJS.ProcessEnv): Record<string, Exely
         authUrl,
         baseUrl,
         bookingEnabled: env[`EXELY_${envKey}_BOOKING_ENABLED`] === 'true',
+        bookingEngine:
+          (env[`EXELY_${envKey}_BOOKING_ENGINE`] ?? env.EXELY_BOOKING_ENGINE) === 'true',
       };
     }
   }
