@@ -13,6 +13,13 @@ import type { Language } from '../../types';
  *    back to English — the valid code is `kk`), and the paths `/kk/` and `/zh/` do not exist
  *    (404 → redirect to /ru/); the real prefixes are `/kz/` and `/cn/`.
  *
+ * 3) ГДЕ ФОРМА. Ссылка Exely ведёт на kazzhol.com/ru/booking — а эта страница отеля показывает
+ *    выбор отеля и плавающую корзину, но самой формы бронирования на ней нет: гость видит
+ *    пустую страницу («че за фигня», дословно). Настоящий движок живёт на kz-ibe.hopenapi.com,
+ *    и сайт грузит его во фрейм именно оттуда, перекладывая tl-параметры в свои. Мы собираем
+ *    этот адрес сами, поэтому гость сразу попадает на выбор номера с уже подставленными
+ *    датами, гостями и категорией.
+ *
  * 2) ROOM TYPE. For "variant" room types Exely puts a DIFFERENT `room-type` in the link than the
  *    offer it just returned (observed: offer roomTypeId 5052704, link room-type 6154). The widget
  *    then shows «номер недоступен» / «САТЫЛЫП КЕТТІ» although the API reported availability — the
@@ -21,6 +28,36 @@ import type { Language } from '../../types';
 
 const PATH_SEGMENT: Record<Language, string> = { ru: 'ru', kk: 'kz', en: 'en', zh: 'cn' };
 const TL_LNG: Record<Language, string> = { ru: 'ru', kk: 'kk', en: 'en', zh: 'zh-CN' };
+/** Язык самого движка брони (параметр `language` во фрейме). */
+const IBE_LNG: Record<Language, string> = { ru: 'ru', kk: 'kk', en: 'en', zh: 'zh-CN' };
+const IBE_BASE = 'https://kz-ibe.hopenapi.com/booking2/hotel/index.gge.html';
+
+/**
+ * Прямой адрес формы бронирования.
+ *
+ * Собирается из тех же данных, что сайт перекладывает во фрейм: отель, категория, тариф,
+ * дата заезда, число ночей и гостей. Возвращает null, если в исходной ссылке не хватает
+ * главного — тогда остаётся прежний адрес, он хотя бы не ведёт в никуда.
+ */
+function directBookingForm(url: URL, lang: Language, roomTypeId?: string | null): string | null {
+  const hotel = url.searchParams.get('hotel_id');
+  const date = url.searchParams.get('tl-date');
+  if (!hotel || !date) return null;
+  const out = new URL(IBE_BASE);
+  out.searchParams.set('providerId', hotel);
+  out.searchParams.set('date', date);
+  out.searchParams.set('nights', url.searchParams.get('tl-nights') ?? '1');
+  out.searchParams.set('adults', url.searchParams.get('tl-adults') ?? '2');
+  out.searchParams.set('currency', url.searchParams.get('tl-cur') ?? 'KZT');
+  out.searchParams.set('language', IBE_LNG[lang]);
+  const room = roomTypeId ?? url.searchParams.get('tl-room') ?? url.searchParams.get('room-type');
+  if (room) out.searchParams.set('roomTypes', room);
+  const rate = url.searchParams.get('tl-offer');
+  if (rate) out.searchParams.set('ratePlans', rate);
+  const children = url.searchParams.get('tl-children-age');
+  if (children) out.searchParams.set('childAges', children);
+  return out.toString();
+}
 
 export function localizeBookingLink(
   link: string | null | undefined,
@@ -53,7 +90,8 @@ export function localizeBookingLink(
     for (const [key, value] of [...url.searchParams.entries()]) {
       if (value === '') url.searchParams.delete(key);
     }
-    return url.toString();
+    // Прямая форма, если её удаётся собрать: страница отеля формы не содержит.
+    return directBookingForm(url, lang, roomTypeId) ?? url.toString();
   } catch {
     // A link we cannot parse is still better than no link at all.
     return link;

@@ -6,53 +6,54 @@ const REAL =
   'https://kazzhol.com/ru/booking?room-type=6154&hotel_id=801&tl-lng=ru&tl-cur=KZT&tl-adults=2&tl-children-age=&tl-room=5052704&tl-offer=349868&tl-nights=2&tl-date=2026-09-13&utm_source=connectivity-hub';
 
 describe('localizeBookingLink', () => {
-  it('казахский: путь /kz/ и tl-lng=kk (НЕ kz — на kz движок падает в английский)', () => {
-    const u = new URL(localizeBookingLink(REAL, 'kk')!);
-    expect(u.pathname).toBe('/kz/booking');
-    expect(u.searchParams.get('tl-lng')).toBe('kk');
+  it('ведёт на саму форму брони, а не на страницу отеля без формы', () => {
+    // kazzhol.com/ru/booking показывает выбор отеля и плавающую корзину — формы там нет,
+    // и гость упирался в пустую страницу. Движок живёт на отдельном адресе.
+    const u = new URL(localizeBookingLink(REAL, 'ru')!);
+    expect(u.hostname).toBe('kz-ibe.hopenapi.com');
+    expect(u.pathname).toContain('/booking2/hotel/');
   });
 
-  it('китайский: путь /cn/ и tl-lng=zh-CN', () => {
-    const u = new URL(localizeBookingLink(REAL, 'zh')!);
-    expect(u.pathname).toBe('/cn/booking');
-    expect(u.searchParams.get('tl-lng')).toBe('zh-CN');
+  it('казахский: движок открывается на казахском (kk, НЕ kz — на kz он падает в английский)', () => {
+    expect(new URL(localizeBookingLink(REAL, 'kk')!).searchParams.get('language')).toBe('kk');
   });
 
-  it('английский: путь /en/ и tl-lng=en', () => {
-    const u = new URL(localizeBookingLink(REAL, 'en')!);
-    expect(u.pathname).toBe('/en/booking');
-    expect(u.searchParams.get('tl-lng')).toBe('en');
+  it('китайский', () => {
+    expect(new URL(localizeBookingLink(REAL, 'zh')!).searchParams.get('language')).toBe('zh-CN');
+  });
+
+  it('английский', () => {
+    expect(new URL(localizeBookingLink(REAL, 'en')!).searchParams.get('language')).toBe('en');
   });
 
   it('русский остаётся русским', () => {
-    const u = new URL(localizeBookingLink(REAL, 'ru')!);
-    expect(u.pathname).toBe('/ru/booking');
-    expect(u.searchParams.get('tl-lng')).toBe('ru');
+    expect(new URL(localizeBookingLink(REAL, 'ru')!).searchParams.get('language')).toBe('ru');
   });
 
   it('язык не задан — считаем русским, ссылка не ломается', () => {
-    expect(localizeBookingLink(REAL, null)).toContain('/ru/booking');
+    expect(localizeBookingLink(REAL, null)).toContain('language=ru');
   });
 
   it('параметры предложения сохраняются полностью', () => {
     const u = new URL(localizeBookingLink(REAL, 'kk')!);
-    expect(u.searchParams.get('hotel_id')).toBe('801');
-    expect(u.searchParams.get('tl-offer')).toBe('349868');
-    expect(u.searchParams.get('tl-date')).toBe('2026-09-13');
-    expect(u.searchParams.get('tl-nights')).toBe('2');
-    expect(u.searchParams.get('tl-adults')).toBe('2');
-    expect(u.searchParams.get('tl-cur')).toBe('KZT');
+    expect(u.searchParams.get('providerId')).toBe('801');
+    expect(u.searchParams.get('ratePlans')).toBe('349868');
+    expect(u.searchParams.get('date')).toBe('2026-09-13');
+    expect(u.searchParams.get('nights')).toBe('2');
+    expect(u.searchParams.get('adults')).toBe('2');
+    expect(u.searchParams.get('currency')).toBe('KZT');
   });
 
-  it('room-type подменяется на реально оплаченный тип номера', () => {
+
+  it('открывается та категория, которую назвали гостю', () => {
     // Баг Exely: в ссылке room-type=6154, а предложение — 5052704 → форма пишет «недоступен».
     const u = new URL(localizeBookingLink(REAL, 'ru', '5052704')!);
-    expect(u.searchParams.get('room-type')).toBe('5052704');
+    expect(u.searchParams.get('roomTypes')).toBe('5052704');
   });
 
-  it('без roomTypeId ссылка не трогается в этой части', () => {
+  it('без явной категории берётся та, что стоит в самом предложении', () => {
     const u = new URL(localizeBookingLink(REAL, 'ru')!);
-    expect(u.searchParams.get('room-type')).toBe('6154');
+    expect(u.searchParams.get('roomTypes')).toBe('5052704');
   });
 
   it('пустая ссылка остаётся пустой', () => {
