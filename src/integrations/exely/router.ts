@@ -5,7 +5,6 @@ import type { ExelyCabinet } from '../../config';
 import { ExelyHttp } from './http';
 import { LiveAvailabilityProvider } from './live';
 import type { AvailabilityProvider } from './provider';
-import { IbeReservation } from './ibeBooking';
 import { ExelyReservation, type ReservationClient } from './reservation';
 import { StubAvailabilityProvider } from './stub';
 import { ExelyTokenManager } from './token';
@@ -54,11 +53,8 @@ export function createCabinetProviders(
       key === propertyKey ? cab.propertyId : undefined;
     byProperty[propertyKey] = {
       provider: new LiveAvailabilityProvider(http, resolver),
-      reservation: cab.bookingEngine
-        ? new IbeReservation(cab.propertyId, { fetchImpl: fetchFn })
-        : new ExelyReservation(http),
-      // The engine needs no write scope, so switching it on is itself the permission to book.
-      bookingEnabled: cab.bookingEnabled || cab.bookingEngine,
+      reservation: new ExelyReservation(http),
+      bookingEnabled: cab.bookingEnabled,
       propertyId: cab.propertyId,
       http,
     };

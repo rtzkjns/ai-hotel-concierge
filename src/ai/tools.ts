@@ -163,8 +163,8 @@ export const toolDefinitions: Anthropic.Tool[] = [
         guestEmail: {
           type: 'string',
           description:
-            'Guest e-mail. Required — the hotel system rejects a booking without one and sends ' +
-            'the confirmation there. Ask the guest for it before calling this tool.',
+            'Guest e-mail. The hotel needs it and sends the confirmation there — ask for it ' +
+            'together with the name and phone.',
         },
         comment: { type: 'string', description: 'Special requests / notes for the hotel' },
         upsellAccepted: {

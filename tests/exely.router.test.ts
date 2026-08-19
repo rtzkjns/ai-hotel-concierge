@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { createCabinetProviders } from '../src/integrations/exely/router';
 import type { ExelyCabinet } from '../src/config';
 
-function cabinet(propertyId: string, bookingEnabled = false, bookingEngine = false): ExelyCabinet {
+function cabinet(propertyId: string, bookingEnabled = false): ExelyCabinet {
   return {
     clientId: `id-${propertyId}`,
     clientSecret: `sec-${propertyId}`,
@@ -10,7 +10,6 @@ function cabinet(propertyId: string, bookingEnabled = false, bookingEngine = fal
     authUrl: 'https://auth.test/token',
     baseUrl: 'https://exely.test',
     bookingEnabled,
-    bookingEngine,
   };
 }
 
