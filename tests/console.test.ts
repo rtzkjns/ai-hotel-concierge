@@ -4,6 +4,7 @@ import { buildServer } from '../src/server';
 import { Store } from '../src/store';
 import { hashPassword, verifyPassword, csrfTokenFor, resetLoginAttempts } from '../src/console/auth';
 import { registerConsoleRoutes, type SendToConversation } from '../src/console/routes';
+import { CSS_HASH } from '../src/console/ui';
 import { metricsSummary } from '../src/core/events';
 
 // --- Harness -------------------------------------------------------------------
@@ -987,5 +988,30 @@ describe('back navigation', () => {
     const res = await app.inject({ method: 'GET', url: '/console', headers: { cookie } });
     expect(res.body).not.toContain('class="backlink"');
     await app.close();
+  });
+});
+
+describe('stylesheet cache busting', () => {
+  it('changes the stylesheet URL whenever the CSS changes', async () => {
+    const { app } = await makeApp();
+    const { cookie } = await login(app, 'admin', 'admin-pass');
+    const page = await app.inject({ method: 'GET', url: '/console', headers: { cookie } });
+    const href = /href="(\/console\/app\.[^"]+\.css)"/.exec(page.body)![1];
+
+    // Имя файла обязано зависеть от содержимого: ответ отдаётся с immutable на год,
+    // и при фиксированном имени у всех остаются старые стили и новая разметка.
+    expect(href).toContain(CSS_HASH);
+    expect(href).not.toContain('v1');
+
+    const css = await app.inject({ method: 'GET', url: href });
+    expect(css.statusCode).toBe(200);
+    expect(css.body).toContain('.backlink');
+  });
+
+  it('still answers on an older stylesheet name so open tabs do not break mid-session', async () => {
+    const { app } = await makeApp();
+    const res = await app.inject({ method: 'GET', url: '/console/app.v1.css' });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toContain('text/css');
   });
 });

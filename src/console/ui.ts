@@ -13,6 +13,8 @@
  *    smooths edges (textarea autogrow, double-submit guard, preview, polling).
  */
 
+import { createHash } from 'node:crypto';
+
 export function escapeHtml(value: unknown): string {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -22,8 +24,16 @@ export function escapeHtml(value: unknown): string {
     .replace(/'/g, '&#39;');
 }
 
-/** Bumped whenever CSS changes — the URL is immutable so browsers cache it forever. */
-export const CSS_VERSION = 'v1';
+/**
+ * Версия файла стилей = хэш их содержимого.
+ *
+ * Раньше здесь стояла строка, которую надо было менять руками. Её забыли поменять — а
+ * ответ отдаётся с `immutable` на год, поэтому у всех, кто открывал панель раньше,
+ * остались старые стили и новая разметка: вместо кнопки «назад» — огромная стрелка,
+ * вёрстка развалилась. Теперь имя файла меняется само, как только меняется хоть один
+ * символ CSS, и забыть об этом невозможно.
+ */
+export const CSS_VERSION = 'legacy';
 
 export const CSS = `
 :root{
@@ -308,6 +318,9 @@ tbody tr:last-child td{border-bottom:0;}
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;}}
 `.trim();
 
+/** Хэш содержимого: см. комментарий к CSS_VERSION. */
+export const CSS_HASH = createHash('sha256').update(CSS).digest('hex').slice(0, 10);
+
 /* ------------------------------------------------------------------ helpers */
 
 /**
@@ -515,7 +528,7 @@ export function shell(title: string, body: string, opts: ShellOpts = {}): string
     `<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">` +
     `<meta name="color-scheme" content="light">` +
     `<title>${escapeHtml(title)}</title>` +
-    `<link rel="stylesheet" href="/console/app.${CSS_VERSION}.css">` +
+    `<link rel="stylesheet" href="/console/app.${CSS_HASH}.css">` +
     `</head><body>`;
   if (bare || !staff) return `${head}<main>${body}</main></body></html>`;
 

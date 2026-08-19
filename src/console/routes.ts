@@ -30,7 +30,6 @@ import {
   btn,
   channelLabel,
   CSS,
-  CSS_VERSION,
   emptyState,
   escapeHtml,
   escalationReason,
@@ -241,7 +240,9 @@ export async function registerConsoleRoutes(
 
     // CSS отдельным маршрутом с версией в имени: страница-опрос больше не тащит
     // килобайты стилей на каждом обновлении списка.
-    scope.get(`/console/app.${CSS_VERSION}.css`, async (_req, reply) =>
+    // Имя файла содержит хэш содержимого, поэтому принимаем любое: старая вкладка
+    // с прежним именем получит прежний ответ и не сломается на полпути.
+    scope.get('/console/app.:hash.css', async (_req, reply) =>
       reply
         .type('text/css; charset=utf-8')
         .header('Cache-Control', 'public, max-age=31536000, immutable')
