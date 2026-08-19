@@ -26,6 +26,7 @@
     flex: 1; overflow-y: auto; padding: 14px 12px;
     display: flex; flex-direction: column; gap: 8px;
   }
+  .bubble a { color: #1a56db; text-decoration: underline; word-break: break-all; }
   .bubble {
     max-width: 82%; padding: 9px 13px; border-radius: 16px;
     white-space: pre-wrap; word-break: break-word;
@@ -93,10 +94,31 @@
   var senderId = null;
   try { senderId = localStorage.getItem('kazzhol_widget_sender'); } catch (e) {}
 
+  // Ссылка на бронирование должна быть кликабельной, иначе гостю приходится
+  // выделять и копировать её вручную — на телефоне это почти гарантированный отказ.
+  // Собираем узлы вручную, а не через innerHTML: текст приходит из переписки.
+  function withLinks(el, text) {
+    var re = /https?:\/\/[^\s<>"']+/g;
+    var last = 0;
+    var m;
+    while ((m = re.exec(text)) !== null) {
+      if (m.index > last) el.appendChild(document.createTextNode(text.slice(last, m.index)));
+      var href = m[0].replace(/[.,;:!?)\]]+$/, '');
+      var a = document.createElement('a');
+      a.href = href;
+      a.textContent = href;
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      el.appendChild(a);
+      last = m.index + href.length;
+    }
+    el.appendChild(document.createTextNode(text.slice(last)));
+  }
+
   function bubble(cls, text) {
     var el = document.createElement('div');
     el.className = 'bubble ' + cls;
-    el.textContent = text;
+    withLinks(el, text);
     log.appendChild(el);
     log.scrollTop = log.scrollHeight;
   }

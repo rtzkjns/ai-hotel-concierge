@@ -90,8 +90,10 @@ export function localizeBookingLink(
     for (const [key, value] of [...url.searchParams.entries()]) {
       if (value === '') url.searchParams.delete(key);
     }
-    // Прямая форма, если её удаётся собрать: страница отеля формы не содержит.
-    return directBookingForm(url, lang, roomTypeId) ?? url.toString();
+    // Оставляем страницу отеля: она открывает ту же форму, но в фирменном оформлении
+    // и по знакомому гостю адресу kazzhol.com. Прямой адрес движка выглядит чужим и
+    // открывается со служебной панелью разработчика — гостю такое показывать нельзя.
+    return url.toString();
   } catch {
     // A link we cannot parse is still better than no link at all.
     return link;
