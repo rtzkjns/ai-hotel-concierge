@@ -173,6 +173,18 @@ export function pickGuarantee(options: GuaranteeOption[] | undefined): string | 
   return free?.code ?? options[0]?.code;
 }
 
+/** Собирает жалобы движка в одну строку для журнала. */
+export function describeErrors(res: IbeResponse): string {
+  const list = Array.isArray(res.errors) ? res.errors : [];
+  const parts = list
+    .map((e) => {
+      const o = e as { message?: string; location?: string };
+      return o.message ? `${o.message}${o.location ? ` (${o.location})` : ''}` : null;
+    })
+    .filter((s): s is string => s !== null);
+  return parts.length ? parts.join('; ') : 'движок не назвал причину';
+}
+
 export class IbeReservation implements ReservationClient {
   /** The engine exposes no cancellation call — staff cancel in Edelweiss. */
   readonly supportsCancel = false;
@@ -273,7 +285,10 @@ export class IbeReservation implements ReservationClient {
       );
       const created = res.hotel_reservations?.[0];
       if (!created?.number) {
-        return { ok: false, error: 'ibe: движок не вернул номер брони' };
+        // Текст движка обязан дойти до журнала: без него отказ выглядит одинаково
+        // для «нет почты», «номер занят» и «сменилась цена», и причину приходится
+        // раскапывать вручную — так и вышло с первой живой бронью.
+        return { ok: false, error: `ibe: бронь не создана — ${describeErrors(res)}` };
       }
       const total = created.total?.price_after_tax ?? created.total?.price_before_tax;
       return {

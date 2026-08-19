@@ -11,6 +11,7 @@
  */
 
 import { randomBytes } from 'node:crypto';
+import formbody from '@fastify/formbody';
 import type { FastifyInstance } from 'fastify';
 import type { CreateBookingResult } from '../core/booking';
 import type { Language } from '../types';
@@ -220,6 +221,16 @@ export function newConfirmationToken(): string {
 }
 
 export function registerConfirmRoutes(app: FastifyInstance, deps: ConfirmDeps): void {
+  // Своя область видимости с разбором форм. Браузер отправляет кнопку как
+  // application/x-www-form-urlencoded, а Fastify без этого плагина отвечает 415 —
+  // и гость упирается в ошибку ровно в момент подтверждения брони.
+  void app.register(async (scope) => {
+    await scope.register(formbody);
+    registerRoutes(scope, deps);
+  });
+}
+
+function registerRoutes(app: FastifyInstance, deps: ConfirmDeps): void {
   const { store } = deps;
 
   const load = (token: string): { d: ConfirmationData; bookingNumber: string | null } | null => {

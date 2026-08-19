@@ -154,6 +154,20 @@ describe('страница подтверждения', () => {
 });
 
 describe('нажатие кнопки', () => {
+  it('принимает отправку формы так, как её шлёт браузер', async () => {
+    // Кнопка уходит как application/x-www-form-urlencoded. Без разбора этого типа
+    // Fastify отвечает 415, и гость видит ошибку вместо брони — так и случилось в бою.
+    const { app, token } = build();
+    const res = await app.inject({
+      method: 'POST',
+      url: `/b/${token}/confirm`,
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      payload: '',
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain('Бронирование подтверждено');
+  });
+
   it('оформляет настоящую бронь и показывает её номер', async () => {
     const { app, token, createBooking, notifyStaff } = build();
     const res = await app.inject({ method: 'POST', url: `/b/${token}/confirm` });

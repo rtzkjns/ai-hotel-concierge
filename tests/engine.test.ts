@@ -350,6 +350,32 @@ describe('Engine.handle', () => {
     expect(args.property).toBe('park_almaty');
   });
 
+  it('без почты гостя бронь даже не пытается оформиться — сначала вопрос', async () => {
+    // Система отеля отказывает в брони без e-mail. Спросить надо в чате: гость, дошедший
+    // до кнопки подтверждения и упёршийся в отказ, — это потерянная бронь.
+    const { engine, store, bookingService } = makeEngine({
+      client: fakeClient([
+        toolUse('create_booking', {
+          checkIn: '2026-08-10',
+          checkOut: '2026-08-12',
+          guests: 2,
+          roomTypeId: '42',
+          ratePlanId: '7',
+          guestFirstName: 'Aibek',
+          guestLastName: 'S',
+          guestPhone: '+77012345678',
+        }),
+        finalText('подскажите, пожалуйста, вашу почту'),
+      ]),
+      confirmationLink: () => 'https://example.test/b/xyz',
+    });
+    withProperty(store, 'telegram', '9', 'park_almaty');
+
+    await engine.handle(textMsg('да, бронируй', 'telegram', '9'));
+
+    expect(bookingService.createBooking).not.toHaveBeenCalled();
+  });
+
   it('check_availability on a stub-backed hotel hides prices and hands off (no fake rates)', async () => {
     // The default availabilityProvider mock returns source:'stub' — the guard must
     // strip prices/availability, capture a lead, and alert staff instead of quoting.
