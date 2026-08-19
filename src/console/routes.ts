@@ -613,6 +613,7 @@ export async function registerConsoleRoutes(
             staff: req.staff,
             csrf: csrfTokenFor(req.sessionToken!),
             active: '/console',
+            back: { href: '/console', label: 'Входящие' },
           }),
           404,
         );
@@ -989,6 +990,7 @@ export async function registerConsoleRoutes(
           staff,
           csrf: csrfTokenFor(req.sessionToken!),
           active: '/console/kb',
+          back: { href: '/console', label: 'Входящие' },
           waiting: waitingFor(store, staff).length,
         }),
       );
@@ -1793,6 +1795,7 @@ export async function registerConsoleRoutes(
           staff,
           csrf,
           active: '/console/requests',
+          back: { href: '/console', label: 'Входящие' },
           waiting: waitingFor(store, staff).length,
         }),
       );
@@ -1834,6 +1837,7 @@ export async function registerConsoleRoutes(
           staff,
           csrf: csrfTokenFor(req.sessionToken!),
           active: '/console/summary',
+          back: { href: '/console', label: 'Входящие' },
           waiting: waitingFor(store, staff).length,
         }),
       );
@@ -1857,7 +1861,12 @@ export async function registerConsoleRoutes(
             `<div class="narrow">${banner('err', 'Недопустимый статус заявки.')}` +
               btn('Назад к заявкам', { variant: 'secondary', href: '/console/requests?tab=mice' }) +
               `</div>`,
-            { staff: req.staff, csrf: csrfTokenFor(req.sessionToken!), active: '/console/requests' },
+            {
+              staff: req.staff,
+              csrf: csrfTokenFor(req.sessionToken!),
+              active: '/console/requests',
+              back: { href: '/console/requests?tab=mice', label: 'Заявки' },
+            },
           ),
           400,
         );
@@ -1924,7 +1933,13 @@ export async function registerConsoleRoutes(
           }) +
           btn('Сохранить пароль', { variant: 'primary' }) +
           `</form></div>`,
-        { staff, csrf, active: '/console', waiting: waitingFor(store, staff).length },
+        {
+          staff,
+          csrf,
+          active: '/console',
+          back: { href: '/console', label: 'Входящие' },
+          waiting: waitingFor(store, staff).length,
+        },
       );
     };
 
@@ -2126,7 +2141,13 @@ export async function registerConsoleRoutes(
           `Подтверждаю удаление по запросу гостя</label></div>` +
           btn('Удалить данные', { variant: 'danger' }) +
           `</form></div>`,
-        { staff, csrf, active: '/console', waiting: waitingFor(store, staff).length },
+        {
+          staff,
+          csrf,
+          active: '/console',
+          back: { href: '/console', label: 'Входящие' },
+          waiting: waitingFor(store, staff).length,
+        },
       );
 
     scope.get('/console/data-deletion', { preHandler: requireRole('admin') }, async (req, reply) =>

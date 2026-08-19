@@ -1,8 +1,8 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildServer } from '../src/server';
 import { Store } from '../src/store';
-import { hashPassword, verifyPassword, csrfTokenFor } from '../src/console/auth';
+import { hashPassword, verifyPassword, csrfTokenFor, resetLoginAttempts } from '../src/console/auth';
 import { registerConsoleRoutes, type SendToConversation } from '../src/console/routes';
 import { metricsSummary } from '../src/core/events';
 
@@ -946,6 +946,46 @@ describe('forgot password', () => {
     // Разный ответ превратил бы форму в способ узнать, какие учётки существуют.
     expect(res.body).toContain('Если такой логин есть');
     expect(sent).toHaveLength(0);
+    await app.close();
+  });
+});
+
+describe('back navigation', () => {
+  // Счётчик неудачных входов общий на процесс: тест блокировки выше запер бы «admin».
+  beforeEach(() => resetLoginAttempts());
+
+  it('gives every screen below the tabs a visible way back', async () => {
+    const { app, store } = await makeApp();
+    const id = store.addKbEntry({ property: '', kind: 'fact', title: 'Тест', body: 'текст', url: null, active: true });
+    const { cookie } = await login(app, 'admin', 'admin-pass');
+    const screens = [
+      '/console/kb',
+      '/console/kb/new',
+      `/console/kb/${id}`,
+      '/console/kb/archive',
+      '/console/kb/upload',
+      '/console/content',
+      '/console/requests',
+      '/console/summary',
+      '/console/managers',
+      '/console/ask',
+      '/console/profile',
+      '/console/data-deletion',
+    ];
+    for (const url of screens) {
+      const res = await app.inject({ method: 'GET', url, headers: { cookie } });
+      expect(res.statusCode, url).toBe(200);
+      // Без этого со второго экрана выбираются только через меню — лишний тап на каждом шаге.
+      expect(res.body, url).toContain('class="backlink"');
+    }
+    await app.close();
+  });
+
+  it('leaves the inbox without a back link — it is the top of the tree', async () => {
+    const { app } = await makeApp();
+    const { cookie } = await login(app, 'admin', 'admin-pass');
+    const res = await app.inject({ method: 'GET', url: '/console', headers: { cookie } });
+    expect(res.body).not.toContain('class="backlink"');
     await app.close();
   });
 });

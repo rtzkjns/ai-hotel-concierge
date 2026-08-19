@@ -63,6 +63,13 @@ a{color:var(--brand);}
 .tabbar a span{white-space:nowrap;}
 .topbar__right{margin-left:auto;position:relative;}
 main{max-width:1100px;margin:0 auto;padding:var(--sp-4);}
+/* Возврат должен быть виден всегда: без него со второго экрана выбираются только
+   через меню, а это лишний тап на каждом шаге. */
+.backlink{display:inline-flex;align-items:center;gap:6px;margin-bottom:var(--sp-3);
+  font:500 15px/1.4 var(--font);color:var(--text-2);text-decoration:none;
+  padding:8px 12px 8px 8px;margin-left:-8px;border-radius:var(--r-ctl);min-height:40px;}
+.backlink:hover{background:var(--hover);color:var(--text);}
+.backlink svg{width:18px;height:18px;stroke:currentColor;stroke-width:2;fill:none;flex:none;}
 @media(min-width:641px){main{padding:var(--sp-5);}}
 h1{font-size:20px;line-height:1.3;font-weight:600;letter-spacing:-.01em;margin:0 0 var(--sp-4);}
 .narrow{max-width:720px;margin:0 auto;}
@@ -75,7 +82,12 @@ h1{font-size:20px;line-height:1.3;font-weight:600;letter-spacing:-.01em;margin:0
   .mobar{display:flex;align-items:center;gap:var(--sp-3);height:48px;padding:0 var(--sp-3);
     position:sticky;top:0;z-index:20;background:var(--surface);border-bottom:1px solid var(--border);}
   .mobar__title{font-size:16px;font-weight:600;}
-  .mobar a.back{color:var(--text-2);text-decoration:none;font-size:20px;line-height:1;}
+  .mobar a.back{display:inline-flex;align-items:center;justify-content:center;
+    width:36px;height:36px;margin-left:-8px;color:var(--text-2);text-decoration:none;
+    border-radius:var(--r-ctl);}
+  .mobar a.back svg{width:22px;height:22px;stroke:currentColor;stroke-width:2;fill:none;}
+  /* На телефоне стрелка уже в шапке — дублировать её в контенте незачем. */
+  .backlink{display:none;}
   .tabbar{position:fixed;left:0;right:0;bottom:0;z-index:20;display:grid;grid-auto-flow:column;
     grid-auto-columns:1fr;background:var(--surface);border-top:1px solid var(--border);
     height:calc(56px + env(safe-area-inset-bottom));padding-bottom:env(safe-area-inset-bottom);}
@@ -528,7 +540,9 @@ export function shell(title: string, body: string, opts: ShellOpts = {}): string
 
   const mobar =
     `<div class="mobar">` +
-    (back ? `<a class="back" href="${back.href}" aria-label="${escapeHtml(back.label)}">‹</a>` : '') +
+    (back
+      ? `<a class="back" href="${back.href}" aria-label="Назад: ${escapeHtml(back.label)}">${BACK_ICON}</a>`
+      : '') +
     `<span class="mobar__title">${escapeHtml(heading ?? title)}</span>` +
     `<div style="margin-left:auto">${moreMenu(staff, csrf)}</div></div>`;
 
@@ -548,7 +562,7 @@ export function shell(title: string, body: string, opts: ShellOpts = {}): string
     head +
     topbar +
     mobar +
-    `<main>${body}</main>` +
+    `<main>${backLink(back)}${body}</main>` +
     tabbar +
     (refresh ? REFRESH_SCRIPT : '') +
     BASE_SCRIPT +
@@ -560,6 +574,14 @@ const ROLE_LABEL: Record<string, string> = {
   admin: 'владелец',
   mice_manager: 'ресепшен',
 };
+
+const BACK_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>';
+
+/** Возврат на родительский экран, подписанный именем — «‹ Знания», а не голая стрелка. */
+function backLink(back?: { href: string; label: string }): string {
+  if (!back) return '';
+  return `<a class="backlink" href="${back.href}">${BACK_ICON}${escapeHtml(back.label)}</a>`;
+}
 
 function moreMenu(staff: { login: string; role: string; property?: string }, csrf?: string): string {
   const admin = staff.role === 'admin';

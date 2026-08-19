@@ -149,6 +149,11 @@ export function noteLoginSuccess(key: string): void {
   attempts.delete(key);
 }
 
+/** Счётчик живёт в памяти процесса — тестам нужен чистый старт. */
+export function resetLoginAttempts(): void {
+  attempts.clear();
+}
+
 /** Route-level role gate: preHandler that 403s anyone who is not `role`. */
 export function requireRole(role: string) {
   return async (req: FastifyRequest, reply: FastifyReply): Promise<void> => {
