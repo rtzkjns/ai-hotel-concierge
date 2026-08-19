@@ -48,8 +48,14 @@ interface IbeReservationBody {
   total?: { price_after_tax?: number; price_before_tax?: number; currency?: string };
 }
 
+interface IbeRoomStay {
+  room_types?: Array<{ code?: string; placements?: Array<{ code?: string | number }> }>;
+  rate_plans?: Array<{ code?: string }>;
+}
+
 interface IbeResponse {
   hotel_reservations?: IbeReservationBody[];
+  room_stays?: IbeRoomStay[];
   error?: unknown;
   errors?: unknown;
 }
@@ -189,6 +195,46 @@ export class IbeReservation implements ReservationClient {
     return (await res.json()) as IbeResponse;
   }
 
+  /**
+   * Спрашивает у движка коды мест размещения для выбранного номера.
+   *
+   * Без этого шага бронь не оформить. Поиск Exely отдаёт места символьно («AdultBed-2»), а
+   * движок ждёт свой числовой код («10128397») и на чужой отвечает «code is invalid». Коды
+   * номера и тарифа при этом у них общие, так что ищем по ним.
+   *
+   * Побочная польза: это ещё и живая проверка, что номер не разобрали, пока гость думал.
+   */
+  async placementsFor(
+    propertyId: string,
+    stay: BookingRq['roomStays'][number],
+  ): Promise<string[] | null> {
+    const res = await this.call('hotel_availability', {
+      language: this.deps.language ?? 'ru-ru',
+      currency: 'KZT',
+      criterions: [
+        {
+          hotels: [{ code: propertyId }],
+          guests: [
+            { age_qualifying_code: 'adult', count: Math.max(1, stay.guestCount.adultCount) },
+          ],
+          start_date: ibeDateTime(stay.stayDates.arrivalDateTime),
+          end_date: ibeDateTime(stay.stayDates.departureDateTime),
+        },
+      ],
+    });
+    const stays = res.room_stays ?? [];
+    const sameRoom = (s: IbeRoomStay): boolean => s.room_types?.[0]?.code === stay.roomType.id;
+    // Тариф уточняет выбор, но если именно его уже нет — берём тот же номер по другому
+    // тарифу, а не отказываем гостю совсем.
+    const match =
+      stays.find((s) => sameRoom(s) && s.rate_plans?.[0]?.code === stay.ratePlan.id) ??
+      stays.find(sameRoom);
+    const codes = match?.room_types?.[0]?.placements
+      ?.map((p) => String(p.code ?? ''))
+      .filter((c) => c !== '');
+    return codes?.length ? codes : null;
+  }
+
   /** Validates and prices the stay. Creates nothing — safe to call freely. */
   async verify(propertyId: string, b: BookingRq): Promise<IbeReservationBody> {
     const res = await this.call(
@@ -205,12 +251,25 @@ export class IbeReservation implements ReservationClient {
       // room BEFORE anything is created, and it tells us which payment methods this rate
       // actually allows — the codes differ per hotel, so they must not be hard-coded.
       const propertyId = b.propertyId || this.propertyId;
-      const verified = await this.verify(propertyId, b);
+
+      // Подменяем места на те, что понимает движок. Делаем это до verify: без них
+      // проверка всё равно упадёт на «code is invalid».
+      const roomStays = [];
+      for (const stay of b.roomStays) {
+        const placements = await this.placementsFor(propertyId, stay);
+        if (!placements) {
+          return { ok: false, error: 'ibe: номер недоступен на эти даты' };
+        }
+        roomStays.push({ ...stay, roomType: { ...stay.roomType, placements: placements.map((code) => ({ code })) } });
+      }
+      const resolved: BookingRq = { ...b, roomStays };
+
+      const verified = await this.verify(propertyId, resolved);
       const guarantee = pickGuarantee(verified.guarantee_options);
 
       const res = await this.call(
         'hotel_reservation_2',
-        buildIbeBooking(propertyId, b, this.deps.language ?? 'ru-ru', guarantee),
+        buildIbeBooking(propertyId, resolved, this.deps.language ?? 'ru-ru', guarantee),
       );
       const created = res.hotel_reservations?.[0];
       if (!created?.number) {

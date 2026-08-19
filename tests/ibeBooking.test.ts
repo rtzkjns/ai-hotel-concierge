@@ -147,6 +147,16 @@ function fakeFetch(replies: Array<{ status?: number; body: unknown }>) {
   return { impl: impl as unknown as typeof fetch, calls };
 }
 
+/** Ответ поиска движка: коды мест у него свои, числовые. */
+const AVAILABLE = {
+  room_stays: [
+    {
+      room_types: [{ code: '6154', placements: [{ code: '10128397' }] }],
+      rate_plans: [{ code: '349868' }],
+    },
+  ],
+};
+
 const VERIFIED = {
   hotel_reservations: [
     {
@@ -161,6 +171,7 @@ const VERIFIED = {
 describe('оформление брони через движок', () => {
   it('сначала проверяет, потом создаёт — и возвращает номер брони', async () => {
     const { impl, calls } = fakeFetch([
+      { body: AVAILABLE },
       { body: VERIFIED },
       {
         body: {
@@ -177,10 +188,15 @@ describe('оформление брони через движок', () => {
     ]);
     const res = await new IbeReservation('801', { fetchImpl: impl }).place(rq());
 
-    expect(calls[0].url).toContain('verify_reservation');
-    expect(calls[1].url).toContain('hotel_reservation_2');
+    expect(calls[0].url).toContain('hotel_availability');
+    expect(calls[1].url).toContain('verify_reservation');
+    expect(calls[2].url).toContain('hotel_reservation_2');
+    // Место берётся из каталога движка, а не из поиска Exely — коды у них разные.
+    expect(calls[2].body.hotel_reservations[0].room_stays[0].room_types[0].placements).toEqual([
+      { code: '10128397', index: 1, kind: 'adult' },
+    ]);
     // Способ оплаты берётся из ответа verify, а не зашит в код: коды разные у каждого отеля.
-    expect(calls[1].body.hotel_reservations[0].guarantee_info).toEqual({ code: '3052' });
+    expect(calls[2].body.hotel_reservations[0].guarantee_info).toEqual({ code: '3052' });
     expect(res).toMatchObject({
       ok: true,
       number: '20260915-801-1261607589',
@@ -190,7 +206,11 @@ describe('оформление брони через движок', () => {
   });
 
   it('движок ответил без номера — это НЕ бронь, и мы так и говорим', async () => {
-    const { impl } = fakeFetch([{ body: VERIFIED }, { body: { hotel_reservations: [{}] } }]);
+    const { impl } = fakeFetch([
+      { body: AVAILABLE },
+      { body: VERIFIED },
+      { body: { hotel_reservations: [{}] } },
+    ]);
     const res = await new IbeReservation('801', { fetchImpl: impl }).place(rq());
     expect(res.ok).toBe(false);
     expect(res.number).toBeUndefined();
@@ -213,11 +233,21 @@ describe('оформление брони через движок', () => {
 
   it('нулевую сумму не выдаёт за цену — настоящая бронь не бывает бесплатной', async () => {
     const { impl } = fakeFetch([
+      { body: AVAILABLE },
       { body: VERIFIED },
       { body: { hotel_reservations: [{ number: 'X-1', total: { price_after_tax: 0 } }] } },
     ]);
     const res = await new IbeReservation('801', { fetchImpl: impl }).place(rq());
     expect(res.total).toBeUndefined();
+  });
+
+  it('номер разобрали, пока гость думал — не выдумываем бронь', async () => {
+    const { impl, calls } = fakeFetch([{ body: { room_stays: [] } }]);
+    const res = await new IbeReservation('801', { fetchImpl: impl }).place(rq());
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('недоступен');
+    // И, главное, до создания брони дело не дошло.
+    expect(calls).toHaveLength(1);
   });
 
   it('честно признаёт, что отменить бронь не умеет', async () => {
