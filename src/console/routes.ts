@@ -45,6 +45,9 @@ import {
 import {
   createSessionFor,
   csrfTokenFor,
+  loginLockedFor,
+  noteLoginFailure,
+  noteLoginSuccess,
   FORBIDDEN_HTML,
   hashPassword,
   requireAuth,
@@ -255,13 +258,29 @@ export async function registerConsoleRoutes(
       const body = (req.body ?? {}) as Record<string, unknown>;
       const login = typeof body.login === 'string' ? body.login.trim() : '';
       const password = typeof body.password === 'string' ? body.password : '';
+      // Считаем по логину, а НЕ по адресу: ресепшены сидят за одним NAT отеля, и
+      // блокировка по адресу заперла бы всю смену из-за одной опечатки.
+      const keys = [`l:${login.toLowerCase()}`];
+      const lockedFor = Math.max(...keys.map((k) => loginLockedFor(k)));
+      if (lockedFor > 0) {
+        const mins = Math.max(1, Math.ceil(lockedFor / 60));
+        return sendHtml(
+          reply,
+          loginPage(`Слишком много попыток. Попробуйте снова через ${mins} мин.`),
+          429,
+        );
+      }
+
       const staff = login ? store.findStaffByLogin(login) : null;
       // Unknown logins still pay the scrypt cost — no login-existence timing oracle.
       const hashToCheck = staff?.passHash ?? DUMMY_PASS_HASH;
       const passwordOk = verifyPassword(password, hashToCheck);
       if (!staff || !passwordOk) {
+        for (const k of keys) noteLoginFailure(k);
+        store.recordEvent('login_failed', { payload: { login: login.slice(0, 40) } });
         return sendHtml(reply, loginPage('Неверный логин или пароль'), 401);
       }
+      for (const k of keys) noteLoginSuccess(k);
       const token = createSessionFor(store, staff.id);
       reply.setCookie(SESSION_COOKIE, token, {
         httpOnly: true,

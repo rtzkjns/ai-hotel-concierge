@@ -829,3 +829,44 @@ describe('dashboard and output escaping', () => {
     await app.close();
   });
 });
+
+describe('login brute-force protection', () => {
+  it('locks the door after repeated wrong passwords and lets the right one back in', async () => {
+    const { app } = await makeApp();
+    // Простой постоянный пароль безопасен ровно настолько, насколько защищена дверь.
+    for (let i = 0; i < 8; i += 1) {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/console/login',
+        payload: 'login=admin&password=wrong',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      });
+      expect(res.statusCode).toBe(401);
+    }
+    const locked = await app.inject({
+      method: 'POST',
+      url: '/console/login',
+      payload: 'login=admin&password=admin-pass',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    });
+    // Даже верный пароль не проходит, пока идёт блокировка.
+    expect(locked.statusCode).toBe(429);
+    expect(locked.body).toContain('Слишком много попыток');
+    await app.close();
+  });
+
+  it('does not lock the whole shift when one login is being guessed', async () => {
+    const { app } = await makeApp();
+    for (let i = 0; i < 8; i += 1) {
+      await app.inject({
+        method: 'POST',
+        url: '/console/login',
+        payload: 'login=someone-else&password=wrong',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      });
+    }
+    const ok = await login(app, 'aigul', 'mice-pass');
+    expect(ok.token).toBeTruthy();
+    await app.close();
+  });
+});

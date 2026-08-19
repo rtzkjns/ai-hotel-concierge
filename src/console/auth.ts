@@ -102,6 +102,51 @@ export function requireAuth(store: SessionStore) {
   };
 }
 
+/**
+ * Защита входа от перебора.
+ *
+ * Пароли в отеле должны быть простыми и постоянными — их диктуют по телефону и вводят
+ * со смены на смену. Простой пароль безопасен ровно настолько, насколько защищена дверь:
+ * без ограничения попыток «almaty» подбирается за секунды, а за ним лежат телефоны и
+ * переписка гостей. Поэтому считаем неудачи и закрываем вход на время.
+ */
+const MAX_ATTEMPTS = 8;
+const WINDOW_MS = 15 * 60 * 1000;
+const LOCK_MS = 15 * 60 * 1000;
+
+interface Attempts {
+  count: number;
+  first: number;
+  lockedUntil: number;
+}
+const attempts = new Map<string, Attempts>();
+
+/** Сколько секунд ждать; 0 — вход открыт. */
+export function loginLockedFor(key: string, now = Date.now()): number {
+  const a = attempts.get(key);
+  if (!a) return 0;
+  if (a.lockedUntil > now) return Math.ceil((a.lockedUntil - now) / 1000);
+  return 0;
+}
+
+export function noteLoginFailure(key: string, now = Date.now()): void {
+  const a = attempts.get(key);
+  if (!a || now - a.first > WINDOW_MS) {
+    attempts.set(key, { count: 1, first: now, lockedUntil: 0 });
+    return;
+  }
+  a.count += 1;
+  if (a.count >= MAX_ATTEMPTS) {
+    a.lockedUntil = now + LOCK_MS;
+    a.count = 0;
+    a.first = now;
+  }
+}
+
+export function noteLoginSuccess(key: string): void {
+  attempts.delete(key);
+}
+
 /** Route-level role gate: preHandler that 403s anyone who is not `role`. */
 export function requireRole(role: string) {
   return async (req: FastifyRequest, reply: FastifyReply): Promise<void> => {
