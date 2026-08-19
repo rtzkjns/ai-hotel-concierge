@@ -79,20 +79,15 @@ describe('LiveAvailabilityProvider', () => {
     expect(comfort.bookingFormLink).toBe('https://book.example/comfort');
     expect(comfort.available).toBe(true);
 
-    // Request shape: bearer auth, correct endpoint and body.
+    // Спрашиваем наличие ПО КОНКРЕТНОМУ отелю: агрегирующий POST-поиск отдаёт одно
+    // «лучшее» предложение на отель, и гость не видел остальных свободных категорий.
     const [url, init] = (fetchFn.mock.calls as unknown as Array<[string, RequestInit]>)[0];
-    expect(url).toBe('https://connect.hopenapi.com/api/search/v1/properties/room-stays/search');
-    expect(init.method).toBe('POST');
+    expect(url).toContain('/api/search/v1/properties/801/room-stays?');
+    expect(url).toContain('arrivalDate=2026-08-10');
+    expect(url).toContain('departureDate=2026-08-13');
+    expect(url).toContain('adults=2');
+    expect(init.method).toBe('GET');
     expect((init.headers as Record<string, string>).Authorization).toBe(`Bearer ${TOKEN}`);
-    expect(JSON.parse(String(init.body))).toEqual({
-      propertyIds: ['801'],
-      adults: 2,
-      childAges: [],
-      arrivalDate: '2026-08-10',
-      departureDate: '2026-08-13',
-      // Без include Exely отдаёт только id, и гостю называют номер «2 взрослых на основных местах».
-      include: 'roomTypeShortContent|ratePlanShortContent',
-    });
   });
 
   it('treats empty roomStays as normal no-availability, not an error', async () => {
@@ -125,8 +120,8 @@ describe('LiveAvailabilityProvider', () => {
     const err = await provider.checkAvailability(query).catch((e: Error) => e);
     expect(err).toBeInstanceOf(Error);
     const message = (err as Error).message;
-    expect(message).toContain('POST');
-    expect(message).toContain('/api/search/v1/properties/room-stays/search');
+    expect(message).toContain('GET');
+    expect(message).toContain('/api/search/v1/properties/801/room-stays');
     expect(message).not.toContain(TOKEN);
     // Response body truncated to 300 chars.
     expect(message.length).toBeLessThan(500);

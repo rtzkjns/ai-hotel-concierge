@@ -50,7 +50,17 @@ export class ExelyHttp {
     return raw ? (JSON.parse(raw) as unknown) : {};
   }
 
-  /** Availability + prices search; returns roomStays with price and bookingFormLink. */
+  /**
+   * Наличие и цены по ОДНОМУ отелю — все свободные категории.
+   *
+   * Раньше здесь звался POST /room-stays/search. Это агрегирующий поиск «по многим
+   * отелям», и он по устройству отдаёт ОДНО лучшее предложение на отель: гость видел
+   * «Standard Twin», когда свободны были ещё Standard Double и Deluxe Apartments.
+   * Ни один параметр этого не менял — фильтр по категориям там просто игнорируется
+   * (проверено запросом с несуществующим id: ответ тот же).
+   * Детальный эндпоинт по конкретному отелю возвращает каждую доступную комбинацию
+   * «номер + тариф», что отелю и нужно.
+   */
   search(
     propertyId: string,
     arrival: string,
@@ -58,8 +68,29 @@ export class ExelyHttp {
     adults: number,
     childAges: number[] = [],
   ): Promise<unknown> {
+    const qs = new URLSearchParams({
+      arrivalDate: arrival,
+      departureDate: departure,
+      adults: String(adults),
+      include: 'roomTypeShortContent|ratePlanShortContent',
+    });
+    for (const age of childAges) qs.append('childAges', String(age));
+    return this.request(
+      'GET',
+      `/api/search/v1/properties/${encodeURIComponent(propertyId)}/room-stays?${qs.toString()}`,
+    );
+  }
+
+  /** Прежний агрегирующий поиск — оставлен на случай запроса сразу по нескольким отелям. */
+  searchAcrossProperties(
+    propertyIds: string[],
+    arrival: string,
+    departure: string,
+    adults: number,
+    childAges: number[] = [],
+  ): Promise<unknown> {
     return this.request('POST', '/api/search/v1/properties/room-stays/search', {
-      propertyIds: [propertyId],
+      propertyIds,
       adults,
       childAges,
       arrivalDate: arrival,

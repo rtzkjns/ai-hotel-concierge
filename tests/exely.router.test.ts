@@ -22,9 +22,10 @@ function fakeFetch() {
     if (u.endsWith('/token')) {
       return new Response(JSON.stringify({ access_token: 't', expires_in: 3600 }), { status: 200 });
     }
-    if (u.includes('/search')) {
-      const body = JSON.parse(String(init?.body)) as { propertyIds: string[] };
-      searched.push(body.propertyIds[0]);
+    // Наличие спрашивается GET-ом по конкретному отелю: id теперь в пути, а не в теле.
+    const perProperty = /\/properties\/([^/]+)\/room-stays/.exec(u);
+    if (perProperty) {
+      searched.push(decodeURIComponent(perProperty[1]));
       return new Response(JSON.stringify({ roomStays: [] }), { status: 200 });
     }
     return new Response('{}', { status: 200 });

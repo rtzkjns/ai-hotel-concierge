@@ -232,6 +232,24 @@ export class Engine {
   private systemPrompts: Record<string, string>;
   /** Per-conversation promise chain: messages from one sender never interleave. */
   private readonly queues = new Map<string, Promise<unknown>>();
+  /**
+   * Последнее предложение, которое бот назвал гостю в этом разговоре.
+   * Вызовы инструментов в историю не пишутся, поэтому через ход модель уже не помнит
+   * номер и тариф — и оформление срывалось на «оформите на сайте».
+   */
+  /** Ссылка на бронь, выданная в этом ходу: гость обязан её увидеть. */
+  private readonly pendingLink = new Map<string, string>();
+  private readonly lastOffer = new Map<
+    string,
+    {
+      property: string;
+      checkIn?: string;
+      checkOut?: string;
+      guests?: number;
+      roomTypeId?: number;
+      ratePlanId?: number;
+    }
+  >();
 
   constructor(private readonly deps: EngineDeps) {
     this.systemPrompts = this.buildPrompts();
@@ -554,6 +572,19 @@ export class Engine {
       return [{ text: ERROR_FALLBACK[convo.language ?? 'ru'], delayMs: 0 }];
     }
 
+    // Бронирование вернуло ссылку, а в ответе её нет — гость остался без единственного
+    // способа оформить бронь. Дописываем: обещание в промпте этого не гарантирует.
+    const link = this.pendingLink.get(convo.id);
+    this.pendingLink.delete(convo.id);
+    if (link && reply && !reply.includes(link)) {
+      reply = `${reply}\n\nСсылка на бронирование: ${link} — номер, тариф и даты уже выбраны. Заполните контакты и нажмите «Забронировать».`;
+      track(store, 'link_appended', {
+        conversationId: convo.id,
+        property: convo.property,
+        channel: convo.channel,
+      });
+    }
+
     // Обещание «вернусь с ответом» без записанной заявки — это обещание, которого
     // никто не получил. Дважды за прогон бот так и сделал.
     if (reply && PROMISE_RE.test(reply) && !usedTools.some((t) => PROMISE_TOOLS.includes(t))) {
@@ -681,7 +712,31 @@ export class Engine {
         // ради которой сеть и держит четыре отеля. Без явной инструкции модель
         // импровизировала: в четырёх прогонах из четырёх она предлагала «другие даты»
         // и ни разу — соседний отель в том же городе, где номера были свободны.
-        const offers = (result as { offers?: unknown[] }).offers;
+        const offers = (result as unknown as { offers?: Array<Record<string, unknown>> }).offers;
+        // Запоминаем названное предложение. Инструментальные вызовы в историю не
+        // попадают, поэтому через ход модель уже не помнит, какой номер и тариф она
+        // только что процитировала, и оформление срывалось на «передаю коллегам».
+        if (Array.isArray(offers) && offers.length > 0) {
+          this.lastOffer.set(convo.id, {
+            property,
+            checkIn: input.checkIn,
+            checkOut: input.checkOut,
+            guests: input.guests,
+            roomTypeId: offers[0].roomTypeId as number | undefined,
+            ratePlanId: offers[0].ratePlanId as number | undefined,
+          });
+        }
+        // Список исчерпывающий. Без этой пометки бот дописывал «есть и другие категории»,
+        // опираясь на каталог из базы знаний, — и это неправда: остальные заняты.
+        if (Array.isArray(offers) && offers.length > 0) {
+          return {
+            ...(result as object),
+            instruction:
+              `Это ВСЕ свободные категории на эти даты — ровно ${offers.length}. Других нет: ` +
+              'остальные категории отеля заняты. Перечисли гостю каждую с ценой и НЕ добавляй ' +
+              '«есть и другие варианты» — этой фразой ты обещаешь то, чего нет.',
+          };
+        }
         if (Array.isArray(offers) && offers.length === 0) {
           const sameCity = propertyList
             .filter((h) => h.key !== property && h.bookable !== false && h.city === properties[property]?.city)
@@ -724,14 +779,21 @@ export class Engine {
           };
         }
         const input = raw as CreateBookingInput;
-        return bookingService.createBooking({
+        // Если модель не назвала номер и тариф — берём те, что сама же цитировала гостю.
+        // Без этого ссылка не находилась и гость слышал «оформите на сайте».
+        const remembered = this.lastOffer.get(convo.id);
+        const sameStay =
+          remembered &&
+          remembered.property === propertyOf(input) &&
+          (!input.checkIn || remembered.checkIn === input.checkIn);
+        const booked = await bookingService.createBooking({
           conversationId: convo.id,
           property: propertyOf(input),
-          checkIn: input.checkIn,
-          checkOut: input.checkOut,
-          guests: input.guests,
-          roomTypeId: input.roomTypeId,
-          ratePlanId: input.ratePlanId,
+          checkIn: input.checkIn ?? (sameStay ? remembered.checkIn : undefined),
+          checkOut: input.checkOut ?? (sameStay ? remembered.checkOut : undefined),
+          guests: input.guests ?? (sameStay ? remembered.guests : undefined),
+          roomTypeId: input.roomTypeId ?? (sameStay ? remembered.roomTypeId : undefined),
+          ratePlanId: input.ratePlanId ?? (sameStay ? remembered.ratePlanId : undefined),
           guestFirstName: input.guestFirstName,
           guestLastName: input.guestLastName,
           guestPhone: input.guestPhone,
@@ -742,6 +804,12 @@ export class Engine {
           // The booking form must open in the guest's language, not Russian.
           language: convo.language,
         });
+        // Ссылка — единственный способ оформить бронь в проде. Запоминаем её, чтобы
+        // гарантировать отправку: гость уже получал «передаю коллегам» при готовой ссылке.
+        if (booked.mode === 'link' && booked.bookingFormLink) {
+          this.pendingLink.set(convo.id, booked.bookingFormLink);
+        }
+        return booked;
       },
 
       get_booking_status: async (raw) =>

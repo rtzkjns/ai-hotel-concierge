@@ -14,11 +14,52 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 export type PropertyIdResolver = (propertyKey: string) => string | undefined;
 
+/** Каталог меняется редко — держим его в памяти сутки, чтобы не ходить за ним на каждый поиск. */
+const CATALOG_TTL_MS = 24 * 60 * 60 * 1000;
+
 export class LiveAvailabilityProvider implements AvailabilityProvider {
+  private readonly catalog = new Map<
+    string,
+    { at: number; roomTypes: Record<string, string>; ratePlans: Record<string, string> }
+  >();
+
   constructor(
     private readonly http: ExelyHttp,
     private readonly propertyIdResolver: PropertyIdResolver,
   ) {}
+
+  /**
+   * Названия категорий и тарифов.
+   *
+   * Детальный поиск по отелю не принимает `include` и приходит без названий — гость
+   * видел «2 взрослых на основных местах» вместо «Standard Twin Room». Имена берём из
+   * каталога отеля и кэшируем: он меняется несопоставимо реже, чем цены.
+   */
+  private async names(propertyId: string): Promise<{
+    roomTypes: Record<string, string>;
+    ratePlans: Record<string, string>;
+  }> {
+    const cached = this.catalog.get(propertyId);
+    if (cached && Date.now() - cached.at < CATALOG_TTL_MS) return cached;
+    try {
+      const c = (await this.http.content(propertyId)) as {
+        roomTypes?: Array<{ id?: unknown; name?: unknown }>;
+        ratePlans?: Array<{ id?: unknown; name?: unknown }>;
+      };
+      const pick = (list?: Array<{ id?: unknown; name?: unknown }>): Record<string, string> =>
+        Object.fromEntries(
+          (list ?? [])
+            .filter((x) => x?.id !== undefined && typeof x?.name === 'string' && x.name !== '')
+            .map((x) => [String(x.id), x.name as string]),
+        );
+      const fresh = { at: Date.now(), roomTypes: pick(c.roomTypes), ratePlans: pick(c.ratePlans) };
+      this.catalog.set(propertyId, fresh);
+      return fresh;
+    } catch {
+      // Каталог недоступен — поиск важнее названий: отдаём то, что есть.
+      return cached ?? { roomTypes: {}, ratePlans: {} };
+    }
+  }
 
   async checkAvailability(query: AvailabilityQuery): Promise<AvailabilityResult> {
     const base = {
@@ -59,8 +100,10 @@ export class LiveAvailabilityProvider implements AvailabilityProvider {
           .filter((x) => x?.id !== undefined && typeof x?.name === 'string' && x.name !== '')
           .map((x) => [String(x.id), x.name as string]),
       );
-    const roomTypeNames = nameById(raw.content?.roomTypes);
-    const ratePlanNames = nameById(raw.content?.ratePlans);
+    // Детальный поиск приходит без блока content — добираем названия из каталога.
+    const fromCatalog = await this.names(propertyId);
+    const roomTypeNames = { ...fromCatalog.roomTypes, ...nameById(raw.content?.roomTypes) };
+    const ratePlanNames = { ...fromCatalog.ratePlans, ...nameById(raw.content?.ratePlans) };
 
     let offers = (data.roomStays ?? []).map((rs) =>
       normalizeRoomStay(rs, nights, roomTypeNames, ratePlanNames),
