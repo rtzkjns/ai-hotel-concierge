@@ -357,3 +357,88 @@ describe('диагностика отказов Instagram', () => {
     );
   });
 });
+
+describe('подпись вебхука', () => {
+  const SECRET = 'app-secret';
+  const sign = (body: string): string =>
+    `sha256=${createHmac('sha256', SECRET).update(body).digest('hex')}`;
+
+  async function build(enforce: boolean) {
+    const prev = process.env.WEBHOOK_OBSERVE_ONLY;
+    if (enforce) delete process.env.WEBHOOK_OBSERVE_ONLY;
+    else process.env.WEBHOOK_OBSERVE_ONLY = 'true';
+    const handle = vi.fn(async () => null);
+    const events: string[] = [];
+    const app = await buildServer({
+      engine: { handle },
+      adapters: {},
+      store: { recordEvent: (t: string) => events.push(t) },
+      config: {
+        whatsapp: { verifyToken: 'v', appSecret: SECRET, phoneNumberIds: {} },
+        instagram: { igIds: {}, tokens: {} },
+      },
+    } as never);
+    return {
+      app,
+      events,
+      restore: () => {
+        if (prev === undefined) delete process.env.WEBHOOK_OBSERVE_ONLY;
+        else process.env.WEBHOOK_OBSERVE_ONLY = prev;
+      },
+    };
+  }
+
+  const payload = JSON.stringify({ object: 'instagram', entry: [] });
+
+  it('верную подпись пропускает', async () => {
+    const { app, restore } = await build(true);
+    const res = await app.inject({
+      method: 'POST',
+      url: '/webhooks/instagram',
+      headers: { 'content-type': 'application/json', 'x-hub-signature-256': sign(payload) },
+      payload,
+    });
+    expect(res.statusCode).toBe(200);
+    restore();
+  });
+
+  it('по умолчанию (без флага) чужая подпись отвергается', async () => {
+    // Строгий отказ — норма. Режим наблюдения включают руками и ненадолго.
+    const { app, restore } = await build(true);
+    const res = await app.inject({
+      method: 'POST',
+      url: '/webhooks/instagram',
+      headers: { 'content-type': 'application/json', 'x-hub-signature-256': 'sha256=deadbeef' },
+      payload,
+    });
+    expect(res.statusCode).toBe(401);
+    restore();
+  });
+
+  it('в режиме наблюдения чужую подпись пропускает, но записывает', async () => {
+    // Секрет приложения может оказаться от ДРУГОГО приложения Meta. Если сразу запрещать,
+    // бот оглохнет на настоящих гостей и никому об этом не скажет.
+    const { app, events, restore } = await build(false);
+    const res = await app.inject({
+      method: 'POST',
+      url: '/webhooks/instagram',
+      headers: { 'content-type': 'application/json', 'x-hub-signature-256': 'sha256=deadbeef' },
+      payload,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(events).toContain('webhook_signature_mismatch');
+    restore();
+  });
+
+  it('когда запрет включён — чужую подпись отвергает', async () => {
+    const { app, restore } = await build(true);
+    const res = await app.inject({
+      method: 'POST',
+      url: '/webhooks/instagram',
+      headers: { 'content-type': 'application/json', 'x-hub-signature-256': 'sha256=deadbeef' },
+      payload,
+    });
+    expect(res.statusCode).toBe(401);
+    restore();
+  });
+});

@@ -8,6 +8,38 @@ import { track, type EventData } from '../core/events';
 import { maskPII } from '../core/pii';
 import { registerLegalRoutes } from './legal';
 
+
+/**
+ * Проверяет подпись Meta и решает, пускать ли запрос.
+ *
+ * По умолчанию несовпадение подписи — отказ, и так и должно быть.
+ *
+ * Но секрет приложения задаётся отдельно от токенов и вполне может оказаться от ДРУГОГО
+ * приложения Meta. Тогда строгая проверка отвергнет и настоящие сообщения гостей, а бот
+ * оглохнет, никому об этом не сказав. Поэтому на время ввода секрета есть
+ * WEBHOOK_OBSERVE_ONLY=true: несовпадение пишется в журнал и в события, запрос при этом
+ * обрабатывается. Убедились по журналу, что настоящие вебхуки Meta проходят, — флаг снимают.
+ *
+ * Возвращает true, если запрос надо отклонить.
+ */
+function rejectBadSignature(
+  deps: ServerDeps,
+  rawBody: string,
+  header: unknown,
+  source: string,
+): boolean {
+  const appSecret = deps.config.whatsapp.appSecret;
+  if (!appSecret) return false;
+  const ok = verifySignature(rawBody, typeof header === 'string' ? header : undefined, appSecret);
+  if (ok) return false;
+  const enforce = process.env.WEBHOOK_OBSERVE_ONLY !== 'true';
+  console.warn(
+    `${source}: подпись не совпала${enforce ? ' — запрос отклонён' : ' — пропускаем (режим наблюдения)'}`,
+  );
+  track(deps.store, 'webhook_signature_mismatch', { payload: { source, enforce } });
+  return enforce;
+}
+
 export interface EngineLike {
   handle(msg: InboundMessage): Promise<OutboundPart[] | null>;
 }
@@ -101,12 +133,8 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
           return reply.code(401).send('invalid webhook secret');
         }
       }
-      const appSecret = deps.config.whatsapp.appSecret;
-      if (appSecret) {
-        const header = req.headers['x-hub-signature-256'];
-        if (!verifySignature(rawBody, typeof header === 'string' ? header : undefined, appSecret)) {
-          return reply.code(401).send('invalid signature');
-        }
+      if (rejectBadSignature(deps, rawBody, req.headers['x-hub-signature-256'], 'whatsapp')) {
+        return reply.code(401).send('invalid signature');
       }
       // Acknowledge immediately (Meta retries slow webhooks), then process async.
       await reply.code(200).send('');
@@ -120,12 +148,8 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
     // the channel is configured (anonymous unsigned POSTs must not grow events).
     scope.post('/webhooks/instagram', async (req, reply) => {
       const rawBody = typeof req.body === 'string' ? req.body : '';
-      const appSecret = deps.config.whatsapp.appSecret;
-      if (appSecret) {
-        const header = req.headers['x-hub-signature-256'];
-        if (!verifySignature(rawBody, typeof header === 'string' ? header : undefined, appSecret)) {
-          return reply.code(401).send('invalid signature');
-        }
+      if (rejectBadSignature(deps, rawBody, req.headers['x-hub-signature-256'], 'instagram')) {
+        return reply.code(401).send('invalid signature');
       }
       await reply.code(200).send('');
       if (!deps.adapters.instagram) return;
