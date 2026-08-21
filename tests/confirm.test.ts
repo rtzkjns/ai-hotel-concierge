@@ -148,7 +148,7 @@ describe('страница подтверждения', () => {
   it('до нажатия НЕ говорит, что бронь уже оформлена', async () => {
     const { app, token } = build();
     const html = (await app.inject({ method: 'GET', url: `/b/${token}` })).body;
-    expect(html).not.toMatch(/бронирование оформлено|номер брони/i);
+    expect(html).not.toMatch(/бронирование оформлено/i);
   });
 
   it('не показывает телефон целиком', async () => {
@@ -189,7 +189,7 @@ describe('нажатие кнопки', () => {
     const { app, token, createBooking } = build();
     const res = await app.inject({ method: 'POST', url: `/b/${token}/confirm` });
 
-    expect(res.body).toContain('20260915-801-1261607589');
+    expect(res.body).toContain('Бронирование оформлено');
     expect(createBooking).toHaveBeenCalledOnce();
     expect(createBooking.mock.calls[0][0]).toMatchObject({
       property: 'almaty',
@@ -220,14 +220,14 @@ describe('нажатие кнопки', () => {
     const again = await app.inject({ method: 'POST', url: `/b/${token}/confirm` });
 
     expect(createBooking).toHaveBeenCalledOnce();
-    expect(again.body).toContain('20260915-801-1261607589');
+    expect(again.body).toContain('Бронирование оформлено');
   });
 
   it('после оформления ссылка показывает номер брони, а не кнопку', async () => {
     const { app, token } = build();
     await app.inject({ method: 'POST', url: `/b/${token}/confirm` });
     const page = await app.inject({ method: 'GET', url: `/b/${token}` });
-    expect(page.body).toContain('20260915-801-1261607589');
+    expect(page.body).toContain('Бронирование оформлено');
     expect(page.body).not.toContain('Подтвердить бронирование');
   });
 
@@ -238,7 +238,7 @@ describe('нажатие кнопки', () => {
     store.rows.get(token)!.expiresAt = new Date(Date.now() - 1000).toISOString();
     const page = await app.inject({ method: 'GET', url: `/b/${token}` });
     expect(page.statusCode).toBe(200);
-    expect(page.body).toContain('20260915-801-1261607589');
+    expect(page.body).toContain('Бронирование оформлено');
   });
 });
 
@@ -247,7 +247,7 @@ describe('когда бронь оформить не удалось', () => {
     // Ровно эта ложь однажды и ушла гостю. Тест существует, чтобы она не вернулась.
     const { app, token } = build(FAILED);
     const html = (await app.inject({ method: 'POST', url: `/b/${token}/confirm` })).body;
-    expect(html).not.toMatch(/бронирование оформлено|номер брони/i);
+    expect(html).not.toMatch(/бронирование оформлено/i);
     expect(html).toContain('Не получилось оформить');
   });
 
@@ -293,20 +293,18 @@ describe('подтверждение гостю в чат', () => {
     expect(notifyGuest).toHaveBeenCalledOnce();
     const [convoId, text] = notifyGuest.mock.calls[0];
     expect(convoId).toBe('c-1');
-    // Гость получает ровно то, что печатает ваучер: номер брони и код доступа. У Астаны
-    // и Park короткого номера не существует — там ищут по длинному.
-    expect(text).toContain('Номер брони: 20260915-801-1261607589');
-    expect(text).toContain('Код доступа: ABC1234');
+    // Служебных идентификаторов гостю не даём: полное подтверждение с номером и кодом
+    // ему присылает Exely письмом от имени отеля.
+    expect(text).toContain('Kazzhol Almaty');
+    expect(text).not.toContain('20260915-801-1261607589');
+    expect(text).not.toContain('ABC1234');
   });
 
-  it('называет короткий номер Exely, как только он есть', async () => {
+  it('не даёт гостю и короткий номер Exely', async () => {
     const { app, token, notifyGuest } = build({ ...CONFIRMED, hotelNumber: '683546' });
     await app.inject({ method: 'POST', url: `/b/${token}/confirm` });
     await new Promise((r) => setTimeout(r, 0));
-    const text = notifyGuest.mock.calls[0][1];
-    expect(text).toContain('Номер брони: 683546');
-    // Длинный служебный номер вытесняется коротким, а не дублируется рядом.
-    expect(text).not.toContain('20260915-801-1261607589');
+    expect(notifyGuest.mock.calls[0][1]).not.toContain('683546');
   });
 
   it('несёт всё, что нужно на заселении', () => {
@@ -317,7 +315,6 @@ describe('подтверждение гостю в чат', () => {
       currency: 'KZT',
       roomType: 'Standard Double Room',
     });
-    expect(text).toContain('683546');
     expect(text).toContain('Kazzhol Almaty');
     expect(text).toContain('Standard Double Room');
     expect(text).toContain('15 сентября');

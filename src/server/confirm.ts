@@ -5,7 +5,7 @@
  * собранную бронь целиком — отель, номер, тариф, даты, себя, цену — и подтверждает одной
  * кнопкой, ничего не перевыбирая.
  *
- * Нажатие оформляет бронь в системе отеля и показывает её номер. «Оформлена» здесь значит,
+ * Нажатие оформляет бронь в системе отеля. «Оформлена» здесь значит,
  * что бронь прочитана обратно из системы и лежит там в статусе confirmed, — на слово ответу
  * о создании мы больше не верим: однажды он вернул номер брони, которой не существовало, и
  * гость получил ложное подтверждение.
@@ -96,8 +96,7 @@ export interface ConfirmDeps {
    * Пишет гостю в его же чат — туда, откуда он пришёл.
    *
    * Гость жмёт кнопку в браузере и закрывает вкладку; если подтверждение осталось только
-   * на той странице, у него на руках не остаётся НИЧЕГО — ни номера брони, ни условий.
-   * В переписке они остаются навсегда, и именно её он покажет на ресепшене.
+   * на той странице, у него на руках не остаётся ничего. В переписке оно остаётся навсегда.
    */
   notifyGuest?: (conversationId: string, text: string) => Promise<void>;
   /**
@@ -268,19 +267,21 @@ const GONE = page(
  *
  * Слово «оформлено» здесь появляется ТОЛЬКО после того, как бронь прочитана обратно из
  * системы отеля. Иначе — соседняя страница, с честным отказом.
+ *
+ * Номера брони и кода доступа здесь нет намеренно: это служебные идентификаторы, гостю
+ * они ни о чём не говорят. Полное подтверждение с ними Exely присылает ему письмом.
  */
-function bookedPage(d: ConfirmationData, number: string, total?: number | null): string {
+function bookedPage(d: ConfirmationData, total?: number | null): string {
   return page(
     'Бронирование оформлено',
     `<div class="ok">Бронирование оформлено</div>` +
-      `<p class="sub">Номер брони</p><p class="num">${esc(number)}</p>` +
       rows(d) +
       ((total ?? d.totalPrice)
         ? `<div class="total"><span class="k">К оплате при заселении</span>` +
           `<span class="v">${esc(money(total ?? d.totalPrice, d.currency))}</span></div>`
         : '') +
-      `<p class="note">Номер за вами, оплата — при заселении. Подтверждение отель отправил ` +
-      `вам на почту. Если планы изменятся, напишите нам в чат и назовите номер брони.</p>`,
+      `<p class="note">Номер за вами, оплата — при заселении. Подтверждение с номером брони ` +
+      `отель отправил вам на почту. Если планы изменятся — напишите нам в чат.</p>`,
   );
 }
 
@@ -314,17 +315,12 @@ export function guestConfirmation(
     roomType: string;
   },
 ): string {
-  // Говорим ровно то же, что печатает ваучер отеля: номер брони и код доступа.
-  //
-  // У Алматы номер короткий (683765) и присваивается с задержкой. У Астаны и Park короткого
-  // не бывает вовсе — там в ваучере «Бронь №» и есть длинный номер, по нему и ищут. Поэтому
-  // берём короткий, когда он есть, и длинный, когда его нет; код доступа идёт следом всегда,
-  // без него бронь на ресепшене всё равно не открыть.
+  // Ни номера брони, ни кода доступа: гостю они в переписке не нужны и выглядят как
+  // служебные внутренности. Полное подтверждение с номером и кодом Exely присылает ему
+  // письмом от имени отеля — там им и место. Сотрудникам номера уходят отдельно.
   const lines = [
     `Бронирование оформлено ✓`,
     ``,
-    `Номер брони: ${booked.hotelNumber || booked.number}`,
-    ...(booked.cancellationCode ? [`Код доступа: ${booked.cancellationCode}`] : []),
     `${d.hotelName}`,
     `${booked.roomType}`,
     `Заезд ${humanDate(d.checkIn)} с 15:00, выезд ${humanDate(d.checkOut)} до 12:00`,
@@ -337,6 +333,7 @@ export function guestConfirmation(
   if (d.freeCancellationUntil) {
     lines.push(`Бесплатная отмена до ${humanDate(d.freeCancellationUntil)}`);
   }
+  if (d.guestEmail) lines.push(`Подтверждение отправили на ${d.guestEmail}`);
   lines.push('', 'Ждём вас! Если что-то нужно изменить — напишите здесь.');
   return lines.join('\n');
 }
@@ -372,7 +369,7 @@ function registerRoutes(app: FastifyInstance, deps: ConfirmDeps): void {
   const isRequestCode = (v: string): boolean => v.startsWith('KZ-');
 
   const resultPage = (d: ConfirmationData, mark: string): string =>
-    isRequestCode(mark) ? failedPage(d, mark) : bookedPage(d, mark);
+    isRequestCode(mark) ? failedPage(d, mark) : bookedPage(d);
 
   app.get('/b/:token', async (req, reply) => {
     const { token } = req.params as { token: string };
@@ -546,6 +543,6 @@ function registerRoutes(app: FastifyInstance, deps: ConfirmDeps): void {
 
     return reply
       .type('text/html; charset=utf-8')
-      .send(bookedPage(d, booked.hotelNumber || booked.number, booked.total));
+      .send(bookedPage(d, booked.total));
   });
 }
