@@ -27,8 +27,8 @@ function rejectBadSignature(
   rawBody: string,
   header: unknown,
   source: string,
+  appSecret: string | undefined,
 ): boolean {
-  const appSecret = deps.config.whatsapp.appSecret;
   if (!appSecret) return false;
   const ok = verifySignature(rawBody, typeof header === 'string' ? header : undefined, appSecret);
   if (ok) return false;
@@ -105,13 +105,18 @@ export interface ServerDeps {
       webhookSecret?: string;
       phoneNumberIds: Record<string, string>;
     };
+    /** У Instagram отдельное приложение Meta и отдельный секрет подписи. */
+    instagram?: { appSecret?: string };
   };
   /** Extra route registrars (web widget WS, staff console) plugged in by the caller. */
   extraRoutes?: Array<(app: FastifyInstance) => void | Promise<void>>;
 }
 
 export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
-  const app = Fastify({ logger: false });
+  // Снаружи мы всегда за Caddy, и без этого req.ip у ВСЕХ гостей одинаков — адрес самого
+  // прокси. Тогда защита входа в панель, считающая попытки по паре «логин + адрес»,
+  // вырождается в счёт по одному логину, и перебор снова запирает владельца.
+  const app = Fastify({ logger: false, trustProxy: true });
 
   // A live WhatsApp channel without an app secret accepts unsigned (spoofable)
   // webhooks — loud warning so a prod misconfiguration can't stay silent.
@@ -176,7 +181,15 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
           return reply.code(401).send('invalid webhook secret');
         }
       }
-      if (rejectBadSignature(deps, rawBody, req.headers['x-hub-signature-256'], 'whatsapp')) {
+      if (
+        rejectBadSignature(
+          deps,
+          rawBody,
+          req.headers['x-hub-signature-256'],
+          'whatsapp',
+          deps.config.whatsapp.appSecret,
+        )
+      ) {
         return reply.code(401).send('invalid signature');
       }
       // Acknowledge immediately (Meta retries slow webhooks), then process async.
@@ -191,7 +204,16 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
     // the channel is configured (anonymous unsigned POSTs must not grow events).
     scope.post('/webhooks/instagram', async (req, reply) => {
       const rawBody = typeof req.body === 'string' ? req.body : '';
-      if (rejectBadSignature(deps, rawBody, req.headers['x-hub-signature-256'], 'instagram')) {
+      if (
+        rejectBadSignature(
+          deps,
+          rawBody,
+          req.headers['x-hub-signature-256'],
+          'instagram',
+          // У Instagram СВОЙ секрет; фейсбучный здесь не подходит — проверено на живых доставках.
+          deps.config.instagram?.appSecret,
+        )
+      ) {
         return reply.code(401).send('invalid signature');
       }
       await reply.code(200).send('');

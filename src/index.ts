@@ -271,6 +271,14 @@ async function main(): Promise<void> {
     }
   };
 
+  if (process.env.WEBHOOK_OBSERVE_ONLY === 'true') {
+    console.warn(
+      'WEBHOOK_OBSERVE_ONLY=true — подпись вебхуков ПРОВЕРЯЕТСЯ, но несовпадение НЕ отклоняется. ' +
+        'Пока флаг стоит, вебхук принимает запросы от кого угодно. Снимать его можно только ' +
+        'после того, как в журнале живая доставка Meta пройдёт без строки «подпись не совпала».',
+    );
+  }
+
   const app = await buildServer({
     engine,
     adapters,

@@ -179,6 +179,8 @@ async function makeServer(opts: { appSecret?: string } = {}) {
     store,
     config: {
       whatsapp: { verifyToken: 'verify-me', appSecret: opts.appSecret, phoneNumberIds: {} },
+      // Вебхук Instagram проверяется СВОИМ секретом — фейсбучный ему не подходит.
+      instagram: { appSecret: opts.appSecret },
     },
   });
   return { app, engine, store, calls };
@@ -375,7 +377,8 @@ describe('подпись вебхука', () => {
       store: { recordEvent: (t: string) => events.push(t) },
       config: {
         whatsapp: { verifyToken: 'v', appSecret: SECRET, phoneNumberIds: {} },
-        instagram: { igIds: {}, tokens: {} },
+        // У Instagram свой секрет подписи — фейсбучный ему не подходит.
+        instagram: { igIds: {}, tokens: {}, appSecret: SECRET },
       },
     } as never);
     return {

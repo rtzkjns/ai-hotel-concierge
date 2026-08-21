@@ -151,6 +151,13 @@ export function buildConfig(env: NodeJS.ProcessEnv) {
       tokens: instagramTokens,
       // Override API host+version (default graph.instagram.com/v26.0, Instagram Login path).
       baseUrl: env.INSTAGRAM_API_BASE,
+      /**
+       * Секрет ИМЕННО инстаграмного приложения. Он не равен фейсбучному: проверено на
+       * живых доставках Meta — с секретом WhatsApp подпись инстаграмного вебхука не
+       * сходится ни разу. Читается отдельно, чтобы правильный можно было вписать, не
+       * ломая WhatsApp.
+       */
+      appSecret: env.INSTAGRAM_APP_SECRET,
     },
     exely: {
       clientId: env.EXELY_CLIENT_ID,

@@ -7,7 +7,7 @@ import formbody from '@fastify/formbody';
 import multipart from '@fastify/multipart';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { MetricsSummary } from '../core/events';
-import { ACTION_TRACE_PREFIX } from '../core/engine';
+import { ACTION_TRACE_PREFIX, HOLDING_PREFIX } from '../core/engine';
 import { maskPII } from '../core/pii';
 import type { KbEntry } from '../types';
 import type {
@@ -205,6 +205,28 @@ function lastGuestAt(convo: Conversation): string | undefined {
 
 // --- Route registration ----------------------------------------------------------------
 
+/**
+ * Последняя реплика, которую МОЖНО показать сотруднику.
+ *
+ * В истории лежат служебные записи для модели — след выполненных действий и пометка
+ * ожидания. Гость их никогда не видел, и менеджер не должен: вместо последней фразы
+ * диалога он читал «[выполнено] бронь оформлена. Гостю об этом уже сообщено — не повторяй…».
+ */
+function lastVisible(
+  history: Array<{ role: string; content: string }>,
+): { role: string; content: string } | undefined {
+  return [...history]
+    .reverse()
+    .find(
+      (m) => !m.content.startsWith(ACTION_TRACE_PREFIX) && !m.content.startsWith(HOLDING_PREFIX),
+    );
+}
+
+/** Ответ уходит гостю несколькими сообщениями; «|||» — их граница, а не текст. */
+function joinParts(text: string): string {
+  return text.split('|||').map((x) => x.trim()).filter(Boolean).join('\n');
+}
+
 export async function registerConsoleRoutes(
   app: FastifyInstance,
   deps: ConsoleDeps,
@@ -214,6 +236,24 @@ export async function registerConsoleRoutes(
   await app.register(async (scope) => {
     await scope.register(cookie);
     await scope.register(formbody);
+    // Опечатка в адресе или старая закладка отдавала голый JSON фастифая — сотрудник
+    // видел «{"message":"Route GET:/console/nope not found"}» и решал, что панель сломалась.
+    scope.setNotFoundHandler((req, reply) => {
+      const staff = (req as { staff?: AuthedStaff }).staff;
+      return reply
+        .code(404)
+        .type('text/html; charset=utf-8')
+        .send(
+          shell(
+            'Страница не найдена',
+            `<div class="narrow"><h1>Такой страницы нет</h1>` +
+              `<p class="note">Возможно, ссылка устарела или в адресе опечатка.</p>` +
+              btn('На главную', { href: '/console' }) +
+              `</div>`,
+            { staff, active: '/console' },
+          ),
+        );
+    });
     // Загрузка файлов: меню в PDF, прайс в Excel, фотография прайса с ресепшена.
     await scope.register(multipart, { limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 } });
 
@@ -271,9 +311,14 @@ export async function registerConsoleRoutes(
       const body = (req.body ?? {}) as Record<string, unknown>;
       const login = typeof body.login === 'string' ? body.login.trim() : '';
       const password = typeof body.password === 'string' ? body.password : '';
-      // Считаем по логину, а НЕ по адресу: ресепшены сидят за одним NAT отеля, и
-      // блокировка по адресу заперла бы всю смену из-за одной опечатки.
-      const keys = [`l:${login.toLowerCase()}`];
+      // Считаем по паре «логин + адрес», а не по одному логину.
+      //
+      // По одному адресу нельзя: ресепшены сидят за общим NAT отеля, и одна опечатка
+      // заперла бы всю смену. По одному логину — тоже: кто угодно, зная имя «admin»,
+      // девятью запросами закрывал владельцу вход на пятнадцать минут. Пара решает оба
+      // случая: перебор запирает только самого перебирающего.
+      const ip = req.ip || 'unknown';
+      const keys = [`l:${login.toLowerCase()}|${ip}`];
       const lockedFor = Math.max(...keys.map((k) => loginLockedFor(k)));
       if (lockedFor > 0) {
         const mins = Math.max(1, Math.ceil(lockedFor / 60));
@@ -463,9 +508,8 @@ export async function registerConsoleRoutes(
       opts: { waiting?: boolean; mine?: boolean; overdue?: boolean; showProperty: boolean },
     ): string => {
       const last =
-        [...c.history].reverse().find((m) => m.role === 'user') ??
-        [...c.history].reverse().find((m) => !m.content.startsWith(ACTION_TRACE_PREFIX));
-      const preview = last ? maskFor(staff, last.content) : '';
+        [...c.history].reverse().find((m) => m.role === 'user') ?? lastVisible(c.history);
+      const preview = last ? maskFor(staff, joinParts(last.content)) : '';
       const cls =
         'card' +
         (opts.waiting ? ' card--wait' : '') +
@@ -567,8 +611,10 @@ export async function registerConsoleRoutes(
         const rows = botHandled
           .slice(0, 60)
           .map((c) => {
-            const last = c.history[c.history.length - 1];
-            const snippet = last ? maskFor(staff, last.content).slice(0, SNIPPET_CHARS) : '';
+            const last = lastVisible(c.history);
+            const snippet = last
+              ? maskFor(staff, joinParts(last.content)).slice(0, SNIPPET_CHARS)
+              : '';
             return (
               `<a class="row" href="${chatUrl(c.id)}">` +
               `<span class="dot" style="color:var(--ok)"></span>` +
@@ -657,7 +703,9 @@ export async function registerConsoleRoutes(
       let lastDay = '';
       const transcript = convo.history
         // Служебные отметки о выполненных действиях — заметки для модели, а не переписка.
-        .filter((m) => !m.content.startsWith(ACTION_TRACE_PREFIX))
+        .filter(
+          (m) => !m.content.startsWith(ACTION_TRACE_PREFIX) && !m.content.startsWith(HOLDING_PREFIX),
+        )
         .map((m) => {
           const created = m.createdAt;
           const day = created ? new Date(created).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' }) : '';
@@ -833,11 +881,13 @@ export async function registerConsoleRoutes(
       key: 'fact' | 'tone' | 'source';
       label: string;
       one: string;
+      /** «Новый факт», но «Новое правило» — без этого в заголовке стояло «Новый правило». */
+      newOne: string;
       none: string;
     }> = [
-      { key: 'fact', label: 'Факты', one: 'факт', none: 'Фактов пока нет' },
-      { key: 'tone', label: 'Как говорить', one: 'правило общения', none: 'Правил общения пока нет' },
-      { key: 'source', label: 'Источники', one: 'источник', none: 'Источников пока нет' },
+      { key: 'fact', label: 'Факты', one: 'факт', newOne: 'Новый факт', none: 'Фактов пока нет' },
+      { key: 'tone', label: 'Как говорить', one: 'правило общения', newOne: 'Новое правило общения', none: 'Правил общения пока нет' },
+      { key: 'source', label: 'Источники', one: 'источник', newOne: 'Новый источник', none: 'Источников пока нет' },
     ];
 
     /**
@@ -1185,7 +1235,9 @@ export async function registerConsoleRoutes(
     ): string => {
       const staff = req.staff!;
       const csrf = csrfTokenFor(req.sessionToken!);
-      const one = KB_KINDS.find((k) => k.key === entry.kind)!.one;
+      const kindInfo = KB_KINDS.find((k) => k.key === entry.kind)!;
+      const one = kindInfo.one;
+      const newOne = kindInfo.newOne;
       const prop = entry.property ?? '';
       const action = isNew ? '/console/kb/add' : `/console/kb/${entry.id}`;
       const head =
@@ -1202,7 +1254,7 @@ export async function registerConsoleRoutes(
           .map(([v, l]) => `<option value="${v}"${v === prop ? ' selected' : ''}>${escapeHtml(l)}</option>`)
           .join('') +
         `</select>` +
-        `<p class="hint">«Общая» — запись будут использовать все четыре отеля.</p></div>`;
+        `<p class="hint">«Вся сеть» — запись будут использовать все четыре отеля.</p></div>`;
 
       const sourceField =
         entry.kind === 'source'
@@ -1218,7 +1270,7 @@ export async function registerConsoleRoutes(
             `</details>`;
 
       return (
-        `<div class="narrow"><h1>${isNew ? `Новый ${one}` : `Изменить ${one}`}</h1>` +
+        `<div class="narrow"><h1>${isNew ? newOne : `Изменить ${one}`}</h1>` +
         `<form method="post" action="${action}" data-once>` +
         `<input type="hidden" name="_csrf" value="${escapeHtml(csrf)}">` +
         `<input type="hidden" name="kind" value="${entry.kind}">` +

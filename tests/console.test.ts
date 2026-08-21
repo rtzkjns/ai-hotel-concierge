@@ -1014,3 +1014,44 @@ describe('stylesheet cache busting', () => {
     expect(res.headers['content-type']).toContain('text/css');
   });
 });
+
+describe('перебор пароля не запирает владельца', () => {
+  it('блокировка держится за парой «логин + адрес», а не за одним логином', async () => {
+    // По одному логину кто угодно, зная имя «admin», девятью запросами закрывал владельцу
+    // вход на 15 минут. По одному адресу — заперли бы всю смену за общим NAT отеля.
+    const { app } = await makeApp();
+    const bad = (ip: string) =>
+      app.inject({
+        method: 'POST',
+        url: '/console/login',
+        headers: {
+          'x-forwarded-for': ip,
+          'content-type': 'application/x-www-form-urlencoded',
+        },
+        payload: 'login=admin&password=wrong',
+      });
+
+    // Злоумышленник со своего адреса перебирает пароль, пока его не запрут.
+    let attackerLocked = false;
+    for (let i = 0; i < 12; i += 1) {
+      if ((await bad('203.0.113.7')).statusCode === 429) {
+        attackerLocked = true;
+        break;
+      }
+    }
+    expect(attackerLocked, 'перебор должен упираться в блокировку').toBe(true);
+
+    // А владелец с другого адреса входит как ни в чём не бывало.
+    const owner = await app.inject({
+      method: 'POST',
+      url: '/console/login',
+      headers: {
+        'x-forwarded-for': '198.51.100.4',
+        'content-type': 'application/x-www-form-urlencoded',
+      },
+      payload: 'login=admin&password=admin-pass',
+    });
+    expect(owner.statusCode).toBe(302);
+    await app.close();
+  });
+});
