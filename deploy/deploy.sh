@@ -50,6 +50,11 @@ if ! command -v caddy >/dev/null; then
   sudo apt-get update && sudo apt-get install -y caddy
 fi
 sudo sed "s/bot.kazzhol.com/${DOMAIN}/g" "$APP_DIR/deploy/Caddyfile" | sudo tee /etc/caddy/Caddyfile >/dev/null
+# Штатный юнит Caddy идёт без Restart, то есть упавший Caddy не поднимается сам — а это
+# единственный вход снаружи: вебхуки, панель и ссылки на бронь у гостей на руках.
+sudo mkdir -p /etc/systemd/system/caddy.service.d
+sudo cp "$APP_DIR/deploy/caddy-restart.conf" /etc/systemd/system/caddy.service.d/restart.conf
+sudo systemctl daemon-reload
 sudo systemctl restart caddy
 
 echo "==> 7/7 Health check"

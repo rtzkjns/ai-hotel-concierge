@@ -442,3 +442,66 @@ describe('подпись вебхука', () => {
     restore();
   });
 });
+
+describe('менеджер отвечает из приложения Instagram', () => {
+  const IG = 'ig-hotel-1';
+  const GUEST = '55667788';
+  const echo = (text: string) => ({
+    object: 'instagram',
+    entry: [
+      {
+        id: IG,
+        messaging: [
+          { sender: { id: IG }, recipient: { id: GUEST }, message: { mid: 'm1', text, is_echo: true } },
+        ],
+      },
+    ],
+  });
+
+  function store(history: Array<{ role: string; content: string }>, status = 'active') {
+    const calls = { appended: [] as string[], status: [] as string[], events: [] as string[] };
+    return {
+      calls,
+      recordEvent: (t: string) => calls.events.push(t),
+      getConversation: () => ({ status, history }),
+      appendMessage: (_id: string, m: { content: string }) => calls.appended.push(m.content),
+      setStatus: (_id: string, s: string) => calls.status.push(s),
+    };
+  }
+
+  async function post(st: ReturnType<typeof store>, body: unknown) {
+    const app = await buildServer({
+      engine: { handle: vi.fn(async () => null) },
+      adapters: { instagram: new InstagramAdapter({ igIds: { almaty: IG }, tokens: { almaty: 't' } } as never) },
+      store: st,
+      config: { whatsapp: { phoneNumberIds: {} }, instagram: { igIds: { almaty: IG }, tokens: { almaty: 't' } } },
+    } as never);
+    await app.inject({
+      method: 'POST',
+      url: '/webhooks/instagram',
+      headers: { 'content-type': 'application/json' },
+      payload: JSON.stringify(body),
+    });
+    await app.close();
+  }
+
+  it('живой ответ менеджера глушит бота', async () => {
+    // Иначе менеджер пишет гостю из приложения, а бот отвечает поверх него — два голоса.
+    const st = store([{ role: 'assistant', content: 'Здравствуйте! Чем могу помочь?' }]);
+    await post(st, echo('Добрый день, я Айгуль, сейчас подберу вам номер'));
+
+    expect(st.calls.appended).toContain('Добрый день, я Айгуль, сейчас подберу вам номер');
+    expect(st.calls.status).toContain('handed_off');
+    expect(st.calls.events).toContain('ig_staff_echo');
+  });
+
+  it('собственное эхо бота ничего не глушит', async () => {
+    // Instagram помечает is_echo и наши отправки тоже: принять их за менеджера — значит
+    // заглушить бота после каждой его же реплики.
+    const st = store([{ role: 'assistant', content: 'Здравствуйте!|||Чем могу помочь?' }]);
+    await post(st, echo('Чем могу помочь?'));
+
+    expect(st.calls.appended).toHaveLength(0);
+    expect(st.calls.status).toHaveLength(0);
+  });
+});

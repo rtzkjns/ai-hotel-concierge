@@ -53,6 +53,9 @@ export interface TelegramTextCtx {
 }
 
 export class TelegramChannel {
+  private stopped = false;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+
   readonly bot: Telegraf;
   private readonly keyboard = Markup.inlineKeyboard(
     propertyList
@@ -211,17 +214,35 @@ export class TelegramChannel {
     }
   }
 
+  /**
+   * Поднимает канал и САМ поднимается обратно, если он упал.
+   *
+   * Промис launch() у Telegraf завершается только при остановке, поэтому падение канала
+   * выглядело так: строка в логе — и всё. Служба при этом «active», /healthz отвечает 200,
+   * остальные каналы работают, а Telegram молчит, и узнать об этом можно только случайно.
+   * Типичная причина — 409 Conflict, когда где-то поднялся второй экземпляр с тем же
+   * токеном; он проходит сам, и повтор через паузу возвращает канал в строй.
+   */
   launch(): void {
-    // Telegraf's launch() promise only settles on stop; fire and monitor errors.
-    void this.bot.launch().catch((err: unknown) => {
-      console.error(
-        'Telegram channel stopped:',
-        err instanceof Error ? err.message : 'unknown error',
-      );
-    });
+    const start = (attempt: number): void => {
+      void this.bot.launch().catch((err: unknown) => {
+        const reason = err instanceof Error ? err.message : 'unknown error';
+        console.error(`Telegram channel stopped: ${reason}`);
+        if (this.stopped) return;
+        // Пауза растёт, но не бесконечно: канал должен вернуться сам, не долбя Telegram.
+        const waitMs = Math.min(60_000, 5_000 * 2 ** Math.min(attempt, 4));
+        console.warn(`Telegram: перезапуск через ${Math.round(waitMs / 1000)} с`);
+        this.retryTimer = setTimeout(() => start(attempt + 1), waitMs);
+        this.retryTimer.unref?.();
+      });
+    };
+    start(0);
   }
 
   stop(reason: string): void {
+    // Осознанная остановка — не повод перезапускаться.
+    this.stopped = true;
+    if (this.retryTimer) clearTimeout(this.retryTimer);
     this.bot.stop(reason);
   }
 }

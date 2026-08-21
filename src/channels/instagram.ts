@@ -126,7 +126,7 @@ export class InstagramAdapter implements ChannelAdapter {
       for (const m of messaging as RawIgMessaging[]) {
         // Skip read/delivery receipts and echoes of our own outbound messages.
         if (m?.read !== undefined || m?.delivery !== undefined) continue;
-        if (m?.message?.is_echo === true) continue;
+        if (m?.message?.is_echo === true) continue; // разбираются отдельно, см. parseEchoes
         const psid = m?.sender?.id;
         if (typeof psid !== 'string') continue;
         // recipient.id = the hotel's IG account that received the DM → property.
@@ -168,6 +168,35 @@ export class InstagramAdapter implements ChannelAdapter {
     } catch {
       // Typing is cosmetic — never let it block or fail the actual reply.
     }
+  }
+
+  /**
+   * Эхо исходящих сообщений аккаунта.
+   *
+   * Instagram помечает как is_echo и наши собственные отправки, и ответ живого менеджера,
+   * написанный из приложения Instagram. Различить их можно только по тексту — поэтому
+   * возвращаем всё, а решает вызывающий, сверив с последней репликой бота. Без этого
+   * менеджер отвечает гостю, а бот продолжает говорить поверх него: два голоса в одном чате.
+   */
+  parseEchoes(body: unknown): Array<{ igId: string; psid: string; text: string }> {
+    const out: Array<{ igId: string; psid: string; text: string }> = [];
+    const entries = (body as { entry?: unknown[] })?.entry;
+    if (!Array.isArray(entries)) return out;
+    for (const entry of entries as Array<{ id?: unknown; messaging?: unknown }>) {
+      const messaging = entry?.messaging;
+      if (!Array.isArray(messaging)) continue;
+      for (const m of messaging as RawIgMessaging[]) {
+        if (m?.message?.is_echo !== true) continue;
+        const text = m?.message?.text;
+        // Получатель эха — гость: сообщение ушло ОТ аккаунта отеля К нему.
+        const psid = m?.recipient?.id;
+        const igId = m?.sender?.id ?? entry?.id;
+        if (typeof text !== 'string' || !text.trim()) continue;
+        if (typeof psid !== 'string' || typeof igId !== 'string') continue;
+        out.push({ igId, psid, text });
+      }
+    }
+    return out;
   }
 
   async send(senderId: string, parts: OutboundPart[]): Promise<void> {

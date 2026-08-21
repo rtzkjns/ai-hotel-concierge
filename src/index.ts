@@ -81,6 +81,20 @@ function createStaffNotifier(store: {
       if (property && !targets.size && byProperty[property]) targets.add(byProperty[property]);
       if (!targets.size && fallbackChat) targets.add(fallbackChat);
 
+      // Ни одного адресата — заявка гостя не должна исчезнуть в тишине. Раньше пустой
+      // Promise.all давал [], [].every() возвращал true, запасная ветка не срабатывала, и
+      // обращение пропадало без единой строки где бы то ни было.
+      if (targets.size === 0) {
+        console.error(
+          `ЗАЯВКА НЕ ДОСТАВЛЕНА: у отеля «${property ?? '—'}» нет ни одного получателя.\n${text}`,
+        );
+        store.recordEvent?.('staff_notify_no_recipients', {
+          property,
+          payload: { preview: text.slice(0, 200) },
+        });
+        return;
+      }
+
       const results = await Promise.all([...targets].map((c) => send(c, text)));
       // Никто не получил — заявка гостя не должна пропасть молча.
       if (results.every((ok) => !ok) && fallbackChat && !targets.has(fallbackChat)) {
@@ -262,6 +276,9 @@ async function main(): Promise<void> {
     adapters,
     store,
     config,
+    notifyStaff: async (text, property) => {
+      await staffNotifier.notify(text, property);
+    },
     extraRoutes: [
       (a) => widget.register(a),
       (a) =>

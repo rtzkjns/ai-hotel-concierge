@@ -40,6 +40,44 @@ function rejectBadSignature(
   return enforce;
 }
 
+
+/**
+ * Отправляет ответ гостю и НЕ даёт ему пропасть молча.
+ *
+ * Раньше сбой отправки только писался в console.error. Ответ при этом уже лежал в истории
+ * диалога, поэтому в панели переписка выглядела отвеченной, а гость сидел перед тишиной и
+ * не знал об этом никто. Ровно так 21 августа потерялись два ответа подряд: Meta отвергла
+ * отправку, а в панели всё выглядело благополучно.
+ *
+ * Теперь недоставка — это событие в журнале И заявка менеджерам с готовым текстом, который
+ * можно отправить руками. Так же, как это давно сделано для подтверждения брони.
+ */
+async function deliver(
+  deps: ServerDeps,
+  send: (senderId: string, parts: OutboundPart[]) => Promise<void>,
+  msg: InboundMessage,
+  parts: OutboundPart[],
+): Promise<void> {
+  try {
+    await send(msg.senderId, parts);
+    track(deps.store, 'message_delivered', { channel: msg.channel });
+  } catch (err) {
+    const reason = errorMessage(err);
+    console.error(`${msg.channel}: ответ гостю НЕ доставлен:`, maskPII(reason));
+    track(deps.store, 'message_delivery_failed', {
+      channel: msg.channel,
+      payload: { reason },
+    });
+    await deps.notifyStaff
+      ?.(
+        `Гостю НЕ доставлен ответ (${msg.channel}): ${reason}\n` +
+          `Диалог: ${msg.channel}:${msg.senderId}\n` +
+          `Отправьте вручную:\n\n${parts.map((p) => p.text).join('\n')}`,
+      )
+      .catch(() => undefined);
+  }
+}
+
 export interface EngineLike {
   handle(msg: InboundMessage): Promise<OutboundPart[] | null>;
 }
@@ -47,10 +85,15 @@ export interface EngineLike {
 export interface ServerDeps {
   engine: EngineLike;
   adapters: { whatsapp?: WhatsAppAdapter; instagram?: InstagramAdapter };
+  /** Зовут людей, когда ответ гостю не удалось доставить. Необязателен: тесты его не ставят. */
+  notifyStaff?: (text: string, property?: string) => Promise<void>;
   store: {
     recordEvent(type: string, data?: EventData): void;
     /** Optional (tests pass a minimal stub): needed to mute the bot on a WhatsApp staff takeover. */
-    getConversation?(id: string): { status: string } | null;
+    getConversation?(id: string): {
+      status: string;
+      history?: Array<{ role: string; content: string }>;
+    } | null;
     appendMessage?(id: string, message: { role: 'user' | 'assistant'; content: string }): void;
     setStatus?(id: string, status: 'active' | 'handed_off' | 'closed'): void;
   };
@@ -197,7 +240,9 @@ async function processWhatsApp(
       // Read receipt + typing must never block the actual reply.
       await adapter.typing(msg.senderId, msg.inboundId).catch(() => {});
       const parts = await deps.engine.handle(msg);
-      if (parts && parts.length > 0) await adapter.send(msg.senderId, parts);
+      if (parts && parts.length > 0) {
+        await deliver(deps, (id, p) => adapter.send(id, p), msg, parts);
+      }
     } catch (err) {
       console.error('whatsapp message handling failed:', maskPII(errorMessage(err)));
     }
@@ -243,11 +288,28 @@ async function processInstagram(deps: ServerDeps, rawBody: string): Promise<void
   } catch {
     return; // acked already; malformed payloads are simply dropped
   }
+  // Менеджер ответил гостю прямо из приложения Instagram — бот обязан замолчать, иначе в
+  // одном чате говорят двое. Своё собственное эхо отличаем по тексту: он уже лежит в истории.
+  for (const echo of adapter.parseEchoes?.(body) ?? []) {
+    const conversationId = `instagram:${echo.igId}|${echo.psid}`;
+    const convo = deps.store.getConversation?.(conversationId) ?? null;
+    if (!convo) continue;
+    const ours = [...(convo.history ?? [])]
+      .reverse()
+      .find((m) => m.role === 'assistant')?.content;
+    if (ours && ours.includes(echo.text.trim())) continue; // это мы сами
+    deps.store.appendMessage?.(conversationId, { role: 'assistant', content: echo.text });
+    if (convo.status !== 'handed_off') deps.store.setStatus?.(conversationId, 'handed_off');
+    track(deps.store, 'ig_staff_echo', { conversationId, channel: 'instagram' });
+  }
+
   for (const msg of adapter.parseWebhook(body)) {
     try {
       await adapter.typing?.(msg.senderId).catch(() => {});
       const parts = await deps.engine.handle(msg);
-      if (parts && parts.length > 0) await adapter.send(msg.senderId, parts);
+      if (parts && parts.length > 0) {
+        await deliver(deps, (id, p) => adapter.send(id, p), msg, parts);
+      }
     } catch (err) {
       console.error('instagram message handling failed:', maskPII(errorMessage(err)));
     }
