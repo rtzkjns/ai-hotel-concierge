@@ -77,6 +77,8 @@ export interface Booking {
   guestPhone?: string;
   /** Код, которым бронь читается обратно и по которому её меняет гость. */
   cancellationCode?: string;
+  /** Короткий номер Exely — по нему бронь ищут сотрудники отеля. */
+  hotelNumber?: string;
   upsellOffered?: boolean;
   upsellAccepted?: boolean;
   createdAt: string; // ISO timestamp

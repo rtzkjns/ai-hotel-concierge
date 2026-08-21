@@ -87,6 +87,10 @@ export type CreateBookingResult =
       cancellation: CancellationPolicy | null;
       /** Code the guest quotes to change or cancel; null when the back-end issues none. */
       cancellationCode?: string | null;
+      /** Короткий номер, по которому бронь ищут сотрудники отеля. */
+      hotelNumber?: string | null;
+      /** Ваучер Exely — и доказательство брони, и то, что можно открыть глазами. */
+      voucherUrl?: string | null;
     }
   | { mode: 'link'; bookingFormLink: string | null; reason: string };
 
@@ -312,6 +316,7 @@ export class BookingService {
             // Без кода бронь нельзя ни перечитать, ни изменить — а перечитать её
             // единственный способ убедиться, что она вообще существует.
             cancellationCode: placed.cancellationCode,
+            hotelNumber: placed.hotelNumber,
             upsellOffered: true,
             upsellAccepted: upsellTaken,
             createdAt: new Date().toISOString(),
@@ -343,6 +348,8 @@ export class BookingService {
           guests: args.guests,
           cancellation: offer.cancellationPolicy ?? null,
           cancellationCode: placed.cancellationCode ?? null,
+          hotelNumber: placed.hotelNumber ?? null,
+          voucherUrl: placed.voucherUrl ?? null,
         };
       }
       reason = placed.error ?? 'reservation_failed';

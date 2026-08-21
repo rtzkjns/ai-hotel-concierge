@@ -272,12 +272,23 @@ function failedPage(d: ConfirmationData, code: string): string {
  */
 export function guestConfirmation(
   d: ConfirmationData,
-  booked: { number: string; total?: number | null; currency?: string | null; roomType: string },
+  booked: {
+    number: string;
+    hotelNumber?: string | null;
+    cancellationCode?: string | null;
+    total?: number | null;
+    currency?: string | null;
+    roomType: string;
+  },
 ): string {
+  // Гостю — тот номер, по которому его найдут на ресепшене. Короткий приходит с задержкой;
+  // пока его нет, называем код доступа (он же в ваучере) — но НИКОГДА служебный номер,
+  // который на ресепшене ничего не находит.
+  const reference = booked.hotelNumber || booked.cancellationCode || booked.number;
   const lines = [
     `Бронирование оформлено ✓`,
     ``,
-    `Номер брони: ${booked.number}`,
+    `Номер брони: ${reference}`,
     `${d.hotelName}`,
     `${booked.roomType}`,
     `Заезд ${humanDate(d.checkIn)} с 15:00, выезд ${humanDate(d.checkOut)} до 12:00`,
@@ -438,7 +449,7 @@ function registerRoutes(app: FastifyInstance, deps: ConfirmDeps): void {
 
     // Бронь создана и прочитана обратно из системы отеля. Записываем номер: гонка двух
     // вкладок не должна привести ко второй брони.
-    store.claimConfirmation(token, booked.number);
+    store.claimConfirmation(token, booked.hotelNumber || booked.number);
     store.recordEvent('booking_confirmed', {
       conversationId: d.conversationId,
       property: d.property,
@@ -446,7 +457,7 @@ function registerRoutes(app: FastifyInstance, deps: ConfirmDeps): void {
     });
     await deps
       .notifyStaff(
-        `БРОНЬ ОФОРМЛЕНА ${booked.number} — ${d.hotelName}\n` +
+        `БРОНЬ ОФОРМЛЕНА ${booked.hotelNumber ?? booked.number} — ${d.hotelName}\n` +
           `${booked.roomType}${booked.ratePlanName ? ` · ${booked.ratePlanName}` : ''}\n` +
           `${humanDate(booked.checkIn)} — ${humanDate(booked.checkOut)}, ` +
           `${d.nights} ${nightsWord(d.nights)}, ${booked.guests} ${guestsWord(booked.guests)}\n` +
@@ -454,6 +465,9 @@ function registerRoutes(app: FastifyInstance, deps: ConfirmDeps): void {
           `Гость: ${guestName || '—'}, ${d.guestPhone}` +
           (d.guestEmail ? `, ${d.guestEmail}` : '') +
           (booked.cancellationCode ? `\nКод отмены: ${booked.cancellationCode}` : '') +
+          // Служебный номер нужен для поиска через API, ваучер — чтобы открыть глазами.
+          `\nСлужебный номер: ${booked.number}` +
+          (booked.voucherUrl ? `\nВаучер: ${booked.voucherUrl}` : '') +
           `\nДиалог: ${d.conversationId}`,
         d.property,
       )
@@ -467,6 +481,6 @@ function registerRoutes(app: FastifyInstance, deps: ConfirmDeps): void {
 
     return reply
       .type('text/html; charset=utf-8')
-      .send(bookedPage(d, booked.number, booked.total));
+      .send(bookedPage(d, booked.hotelNumber || booked.number, booked.total));
   });
 }

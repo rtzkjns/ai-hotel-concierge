@@ -65,6 +65,13 @@ export interface PlaceResult {
   error?: string;
   /** Code the guest quotes to change or cancel the stay (booking-engine path). */
   cancellationCode?: string;
+  /**
+   * The short number hotel staff search by. The long `number` above is labelled «служебный
+   * номер» in the hotel's own paperwork, and quoting it is why staff could not find bookings.
+   */
+  hotelNumber?: string;
+  /** Exely's guest voucher — proof the booking exists, and something staff can open. */
+  voucherUrl?: string;
 }
 
 /**

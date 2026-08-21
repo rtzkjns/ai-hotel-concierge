@@ -96,8 +96,10 @@ describe('BookingService.createBooking', () => {
       ratePlanName: 'Best Available Rate',
       guests: 2,
       cancellation: null,
-      // Этот бэкенд кода отмены не выдаёт — гость его и не получит.
+      // Этот бэкенд ни кода отмены, ни короткого номера не выдаёт.
       cancellationCode: null,
+      hotelNumber: null,
+      voucherUrl: null,
     });
 
     // Fresh availability was re-searched — never a stale checksum.

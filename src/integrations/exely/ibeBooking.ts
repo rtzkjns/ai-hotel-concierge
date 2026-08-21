@@ -48,6 +48,8 @@ export interface IbeDeps {
   language?: string;
   /** Integration key without the property suffix. */
   integrationKey?: string;
+  /** Паузы между попытками достать номер из ваучера. В тестах — [0], чтобы не спать. */
+  voucherRetryDelaysMs?: number[];
 }
 
 interface GuaranteeOption {
@@ -59,6 +61,7 @@ interface GuaranteeOption {
 
 interface IbeReservationBody {
   status?: string;
+  order_url?: string;
   number?: string;
   cancellation_code?: string;
   guarantee_options?: GuaranteeOption[];
@@ -283,6 +286,39 @@ export class IbeReservation implements ReservationClient {
     return codes?.length ? codes : null;
   }
 
+  /**
+   * Достаёт номер брони, который видят сотрудники отеля, и ссылку на ваучер.
+   *
+   * Это оказалось причиной жалобы «брони не видно». Длинный номер вида
+   * 20261218-801-1261642948 в самом ваучере подписан «Служебный номер»; человеческий номер
+   * брони — шестизначный (683546), он стоит в заголовке ваучера, по нему отель и ищет.
+   * Мы всё время называли сотрудникам служебный.
+   *
+   * Exely присваивает его АСИНХРОННО: первые секунд сорок ваучер показывает в заголовке всё
+   * тот же служебный номер. Поэтому мало подождать — надо ещё и не принять служебный номер за
+   * короткий: без проверки «дальше не цифра и не дефис» regex откусывал от 20270210-801-…
+   * первые восемь цифр и выдавал гостю «номер брони 20270210», которого не существует.
+   * Держать гостя минуту ради этого нельзя, поэтому ждём недолго и спокойно возвращаем
+   * undefined — бронь от этого не перестаёт существовать, а звать её есть чем.
+   */
+  async voucherNumber(orderUrl: string): Promise<string | undefined> {
+    const doFetch = this.deps.fetchImpl ?? fetch;
+    for (const waitMs of this.deps.voucherRetryDelaysMs ?? [0, 6_000, 9_000]) {
+      if (waitMs) await new Promise((r) => setTimeout(r, waitMs));
+      try {
+        const res = await doFetch(orderUrl, { signal: AbortSignal.timeout(TIMEOUT_MS) });
+        if (!res.ok) continue;
+        const html = await res.text();
+        // «Бронирование № 683546» — то же число, что в теме письма гостю.
+        const m = /Бронирование\s*№\s*(\d{4,9})(?![\d-])/.exec(html);
+        if (m) return m[1];
+      } catch {
+        // Ваучер — удобство, а не условие брони: молча пробуем ещё раз.
+      }
+    }
+    return undefined;
+  }
+
   /** Читает бронь обратно. Единственный независимый способ узнать, существует ли она. */
   async read(number: string, cancellationCode: string): Promise<IbeReservationBody | null> {
     const res = await this.call('read_reservation_2', {
@@ -360,12 +396,17 @@ export class IbeReservation implements ReservationClient {
       }
 
       const total = back.total?.price_after_tax ?? back.total?.price_before_tax;
+      const voucherUrl = back.order_url;
+      // Живой ваучер — ещё одно независимое подтверждение: у несуществующей брони он 403.
+      const hotelNumber = voucherUrl ? await this.voucherNumber(voucherUrl) : undefined;
       return {
         ok: true,
         number: created.number,
         status: back.status,
         total: typeof total === 'number' && total > 0 ? total : undefined,
         cancellationCode: created.cancellation_code,
+        hotelNumber,
+        voucherUrl,
         warnings: [],
       };
     } catch (err) {

@@ -276,6 +276,7 @@ export class Store {
         guest_name      TEXT,
         guest_phone     TEXT,
         cancellation_code TEXT,
+        hotel_number    TEXT,
         upsell_offered  INTEGER DEFAULT 0,
         upsell_accepted INTEGER DEFAULT 0,
         created_at      TEXT NOT NULL
@@ -354,6 +355,9 @@ export class Store {
     ) !== undefined;
     if (hasBookings && !hasColumn('bookings', 'cancellation_code')) {
       this.db.exec('ALTER TABLE bookings ADD COLUMN cancellation_code TEXT');
+    }
+    if (hasBookings && !hasColumn('bookings', 'hotel_number')) {
+      this.db.exec('ALTER TABLE bookings ADD COLUMN hotel_number TEXT');
     }
     // «В архив» появилось позже самой базы знаний — доливаем колонку на живой базе.
     const hasKb = (
@@ -665,8 +669,8 @@ export class Store {
         `INSERT INTO bookings
          (conversation_id, property, exely_number, status, check_in, check_out, guests,
           room_type, rate_plan_id, total, currency, guest_name, guest_phone,
-          cancellation_code, upsell_offered, upsell_accepted, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          cancellation_code, hotel_number, upsell_offered, upsell_accepted, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         b.conversationId,
@@ -683,6 +687,7 @@ export class Store {
         b.guestName ?? null,
         b.guestPhone ?? null,
         b.cancellationCode ?? null,
+        b.hotelNumber ?? null,
         b.upsellOffered ? 1 : 0,
         b.upsellAccepted ? 1 : 0,
         b.createdAt,
@@ -713,6 +718,7 @@ export class Store {
       guestName: (r.guest_name as string | null) ?? undefined,
       guestPhone: (r.guest_phone as string | null) ?? undefined,
       cancellationCode: (r.cancellation_code as string | null) ?? undefined,
+      hotelNumber: (r.hotel_number as string | null) ?? undefined,
       upsellOffered: (r.upsell_offered as number) === 1,
       upsellAccepted: (r.upsell_accepted as number) === 1,
       createdAt: r.created_at as string,

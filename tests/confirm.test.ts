@@ -293,17 +293,28 @@ describe('подтверждение гостю в чат', () => {
     expect(notifyGuest).toHaveBeenCalledOnce();
     const [convoId, text] = notifyGuest.mock.calls[0];
     expect(convoId).toBe('c-1');
-    expect(text).toContain('20260915-801-1261607589');
+    // Гостю называем то, по чему его найдут на ресепшене — код доступа, пока короткий
+    // номер Exely не присвоен. Служебный номер там ничего не находит.
+    expect(text).toContain('ABC1234');
+    expect(text).not.toContain('20260915-801-1261607589');
+  });
+
+  it('называет короткий номер Exely, как только он есть', async () => {
+    const { app, token, notifyGuest } = build({ ...CONFIRMED, hotelNumber: '683546' });
+    await app.inject({ method: 'POST', url: `/b/${token}/confirm` });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(notifyGuest.mock.calls[0][1]).toContain('683546');
   });
 
   it('несёт всё, что нужно на заселении', () => {
     const text = guestConfirmation(DATA, {
       number: '20260915-801-1261607589',
+      hotelNumber: '683546',
       total: 59500,
       currency: 'KZT',
       roomType: 'Standard Double Room',
     });
-    expect(text).toContain('20260915-801-1261607589');
+    expect(text).toContain('683546');
     expect(text).toContain('Kazzhol Almaty');
     expect(text).toContain('Standard Double Room');
     expect(text).toContain('15 сентября');
