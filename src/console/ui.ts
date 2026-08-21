@@ -541,7 +541,10 @@ export function shell(title: string, body: string, opts: ShellOpts = {}): string
       : escapeHtml(i.label);
 
   const topbar =
-    `<header class="topbar"><a class="topbar__brand" href="/console">Kazzhol<span>консоль</span></a>` +
+    `<header class="topbar"><a class="topbar__brand" href="/console">Kazzhol` +
+    // Сотрудники говорят про бота «София» — так его назвал отель. В панели он подписан
+    // так же, иначе менеджеры не понимают, чьи это диалоги и чьи заявки.
+    `<span>София · персональный менеджер</span></a>` +
     `<nav>` +
     items
       .map(

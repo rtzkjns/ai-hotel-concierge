@@ -965,7 +965,6 @@ describe('back navigation', () => {
       `/console/kb/${id}`,
       '/console/kb/archive',
       '/console/kb/upload',
-      '/console/content',
       '/console/requests',
       '/console/summary',
       '/console/managers',

@@ -40,10 +40,22 @@ describe('buildSystemPrompt: identity', () => {
     expect(p).not.toContain('Hotel Kazzhol Astana');
   });
 
-  it('is honestly a bot: never a human name, never pretends to be human', () => {
-    expect(prompt).toMatch(/never pretend to be (a )?human/i);
-    expect(prompt).toMatch(/never .*human name/i);
-    expect(prompt).toContain('бот-ассистент отеля'); // the light "ты бот?" one-liner
+  it('носит имя София и откликается на него', () => {
+    // Отель попросил дать боту имя: гость общается с «Софией», а не с безликим ассистентом.
+    expect(prompt).toContain('София');
+    expect(prompt).toMatch(/your name is София/i);
+  });
+
+  it('на прямой вопрос «ты бот?» отвечает правдой', () => {
+    // Имя и человеческая манера — да; обман на прямой вопрос — нет. Гость, которому
+    // соврали в лицо, теряет доверие ко всему отелю, а не только к переписке.
+    expect(prompt).toMatch(/never deny it, never dodge/i);
+    expect(prompt).toContain('виртуальный менеджер отеля');
+  });
+
+  it('не выдумывает себе человеческую жизнь', () => {
+    expect(prompt).toMatch(/never invent stories about your day/i);
+    expect(prompt).toMatch(/never claim to be physically at the hotel/i);
   });
 });
 
