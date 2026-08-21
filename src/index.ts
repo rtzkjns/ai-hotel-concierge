@@ -294,13 +294,19 @@ async function main(): Promise<void> {
             if (!convo) return;
             const res = await sendToConversation(convo, text);
             if (!res.ok) {
-              // Не доставили — это не потеря брони, но отель должен знать, что гость
-              // остался без номера на руках.
+              // Бронь на месте, но гость остался без номера на руках и не знает об этом.
+              // Отель должен узнать сразу и отправить подтверждение сам.
               store.recordEvent('guest_confirmation_failed', {
                 conversationId,
                 property: convo.property,
                 payload: { error: res.error },
               });
+              await staffNotifier.notify(
+                `Гостю НЕ доставлено подтверждение брони (${res.error ?? 'причина неизвестна'}).\n` +
+                  `Канал: ${convo.channel}. Диалог: ${conversationId}.\n` +
+                  `Отправьте гостю подтверждение вручную:\n\n${text}`,
+                convo.property,
+              );
             }
           },
           notifyStaff: async (text, property) => {

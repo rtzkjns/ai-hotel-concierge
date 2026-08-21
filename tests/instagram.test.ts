@@ -277,3 +277,25 @@ describe('InstagramAdapter: сторис и вложения', () => {
     expect(share.text).toContain('переслал');
   });
 });
+
+describe('диагностика отказов Instagram', () => {
+  it('доносит текст ошибки Meta, а не только код', async () => {
+    // «HTTP 400» одинаково выглядит и при истёкшем 24-часовом окне, и при протухшем
+    // токене. Без текста причину недоставленного подтверждения брони не найти.
+    const fetchFn = vi.fn(async () => ({
+      ok: false,
+      status: 400,
+      text: async () =>
+        JSON.stringify({
+          error: { message: 'This message is sent outside of allowed window.', code: 10 },
+        }),
+    })) as unknown as typeof fetch;
+    const adapter = new InstagramAdapter(
+      { igIds: { almaty: '1' }, tokens: { almaty: 't' } } as never,
+      fetchFn,
+    );
+    await expect(adapter.send('1:psid', [{ text: 'привет', delayMs: 0 }])).rejects.toThrow(
+      /outside of allowed window/,
+    );
+  });
+});

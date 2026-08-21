@@ -189,7 +189,14 @@ export class InstagramAdapter implements ChannelAdapter {
       body: JSON.stringify(body),
     });
     if (!res.ok) {
-      throw new Error(`Instagram send failed: HTTP ${res.status}`);
+      // Текст Meta обязан дойти до журнала: «HTTP 400» одинаково выглядит и когда истекло
+      // 24-часовое окно переписки, и когда токен протух, и когда ссылку сочли подозрительной.
+      // Без него причину недоставленного подтверждения брони пришлось бы угадывать.
+      const detail = await res.text().catch(() => '');
+      const meta = /"message"\s*:\s*"([^"]+)"/.exec(detail)?.[1];
+      throw new Error(
+        `Instagram send failed: HTTP ${res.status}${meta ? ` — ${meta}` : ''}`,
+      );
     }
   }
 }
