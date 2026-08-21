@@ -284,6 +284,43 @@ const GREETING_RE =
  * Если кроме приветствия в ответе ничего нет (гость написал «привет» второй раз), оставляем
  * как есть: лучше повтор, чем пустое сообщение.
  */
+/**
+ * Убирает род в словах бота о себе: «готова оформить», «рада помочь».
+ *
+ * У бота нет пола, и промпт это запрещает — но модель срывается, подхватывая род из
+ * прежних реплик в истории диалога. Заменяем на форму «мы»: отель и правда говорит о себе
+ * во множественном числе, так что звучит естественнее любого «готов/готова».
+ *
+ * Нарочно узко — только «готов(а)/рад(а)» перед глаголом и после «я». Расширять опасно:
+ * «номер готов к заселению» ни в коем случае не должно стать «номер готовы».
+ */
+export function neutraliseSelfGender(reply: string): string {
+  // \b в JS опирается на латиницу и с кириллицей не работает — границы задаём вручную
+  // через «слева не буква / справа не буква». Длинные формы в альтернативах идут первыми,
+  // иначе «готов» откусит начало «готова».
+  const L = '\\p{L}';
+  const edge = (body: string): RegExp => new RegExp(`(?<![${L}])${body}(?![${L}])`, 'giu');
+  const plural = (word: string): string => (/^рад/i.test(word) ? 'рады' : 'готовы');
+  // «Готова» в начале фразы обязана остаться с заглавной.
+  const keepCase = (sample: string, word: string): string =>
+    sample[0] === sample[0].toLocaleUpperCase('ru-RU') && sample[0] !== sample[0].toLocaleLowerCase('ru-RU')
+      ? word[0].toLocaleUpperCase('ru-RU') + word.slice(1)
+      : word;
+
+  return (
+    reply
+      // «я готова» разбираем ПЕРВЫМ: иначе следующее правило превратит его в «я готовы».
+      .replace(edge('я\\s+(готова|готов|рада|рад)'), (m: string, word: string) =>
+        keepCase(m, `мы ${plural(word)}`),
+      )
+      // «готова оформить», «рада помочь» — только перед глаголом в неопределённой форме.
+      .replace(
+        edge('(готова|готов|рада|рад)(\\s+[а-яё]+(?:ться|ть|чь))'),
+        (_m: string, word: string, tail: string) => keepCase(word, plural(word)) + tail,
+      )
+  );
+}
+
 export function dropRepeatedGreeting(reply: string, alreadyGreeted: boolean): string {
   if (!alreadyGreeted) return reply;
   const stripped = reply.replace(GREETING_RE, '');

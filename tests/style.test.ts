@@ -1,6 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
-import { styleSplit, humanDelays, URGENT_MULTIPLIER,
+import {
+  styleSplit,
+  humanDelays,
+  URGENT_MULTIPLIER,
   dropRepeatedGreeting,
+  neutraliseSelfGender,
 } from '../src/style/engine';
 import { NullTranscriber, WhisperTranscriber, createTranscriber } from '../src/integrations/transcribe';
 
@@ -190,5 +194,28 @@ describe('приветствие один раз за разговор', () => {
     expect(dropRepeatedGreeting('Привет в этом слове не в начале? нет', true)).toBe(
       'В этом слове не в начале? нет',
     );
+  });
+});
+
+describe('у бота нет пола', () => {
+  it('убирает род в словах о себе', () => {
+    // Поймано в бою: «уже готова оформить». Промпт это запрещает, но модель подхватывает
+    // род из собственных прежних реплик в истории диалога.
+    expect(neutraliseSelfGender('Уже готова оформить номер.')).toBe('Уже готовы оформить номер.');
+    expect(neutraliseSelfGender('Рада помочь!')).toBe('Рады помочь!');
+    expect(neutraliseSelfGender('Я готов подобрать вариант.')).toBe(
+      'Мы готовы подобрать вариант.',
+    );
+  });
+
+  it('сохраняет заглавную букву в начале фразы', () => {
+    expect(neutraliseSelfGender('Готова уточнить у коллег.')).toBe('Готовы уточнить у коллег.');
+  });
+
+  it('НЕ трогает род там, где речь не о боте', () => {
+    // «номер готовы к заселению» — это поломка текста, а не исправление стиля.
+    expect(neutraliseSelfGender('Номер готов к заселению.')).toBe('Номер готов к заселению.');
+    expect(neutraliseSelfGender('Завтрак готов с 07:00.')).toBe('Завтрак готов с 07:00.');
+    expect(neutraliseSelfGender('Вы готовы подтвердить?')).toBe('Вы готовы подтвердить?');
   });
 });

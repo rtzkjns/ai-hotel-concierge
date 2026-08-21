@@ -22,6 +22,7 @@ import type { Transcriber } from '../integrations/transcribe';
 import { properties, propertyList } from '../knowledge';
 import {
   dropRepeatedGreeting,
+  neutraliseSelfGender,
   dropRepeatedSentences,
   enforceOfficialTone,
   humanDelays,
@@ -546,6 +547,10 @@ export class Engine {
       // режем детерминированно. Служебные записи в истории (следы действий, «ожидание»)
       // за приветствие не считаются — иначе после них бот замолкал бы невпопад.
       reply = dropRepeatedGreeting(reply, alreadyGreeted(history));
+
+      // У бота нет пола. Промпт это запрещает, но модель срывается, подхватывая род из
+      // собственных прежних реплик в истории диалога, — поймано в бою на «готова оформить».
+      reply = neutraliseSelfGender(reply);
 
       // Проверено A/B-прогоном: «Парковка бесплатная?» → «Да, бесплатная»; но стоит
       // добавить второй, неизвестный вопрос («Сколько мест?») — и известная половина
