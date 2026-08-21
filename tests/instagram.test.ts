@@ -278,6 +278,63 @@ describe('InstagramAdapter: сторис и вложения', () => {
   });
 });
 
+describe('повторы при временном отказе Instagram', () => {
+  /** Отвечает по списку: сначала отказы, потом успех. */
+  function adapterWith(replies: Array<{ ok: boolean; status: number; body?: string }>) {
+    let i = 0;
+    const fetchFn = vi.fn(async () => {
+      const r = replies[Math.min(i++, replies.length - 1)];
+      return { ok: r.ok, status: r.status, text: async () => r.body ?? '' };
+    }) as unknown as typeof fetch;
+    const adapter = new InstagramAdapter(
+      { igIds: { almaty: '1' }, tokens: { almaty: 't' } } as never,
+      fetchFn,
+      async () => undefined,
+    );
+    return { adapter, fetchFn };
+  }
+
+  const BLOCKED = {
+    ok: false,
+    status: 400,
+    body: JSON.stringify({ error: { message: 'API access blocked.', code: 200 } }),
+  };
+  const OK = { ok: true, status: 200 };
+
+  it('повторяет «API access blocked» и всё-таки доставляет', async () => {
+    // Meta глушит всплески временно. Без повтора ответ гостю теряется навсегда, и он
+    // сидит перед молчащим чатом — так мы уже потеряли два ответа подряд.
+    const { adapter, fetchFn } = adapterWith([BLOCKED, BLOCKED, OK]);
+    await adapter.send('1:psid', [{ text: 'привет', delayMs: 0 }]);
+    expect(fetchFn).toHaveBeenCalledTimes(3);
+  });
+
+  it('не повторяет отказ, который повтором не лечится', async () => {
+    // Истёкшее окно переписки или протухший токен от повтора не пройдут — только
+    // потратят время и добавят Meta поводов заблокировать нас снова.
+    const expired = {
+      ok: false,
+      status: 400,
+      body: JSON.stringify({
+        error: { message: 'This message is sent outside of allowed window.', code: 10 },
+      }),
+    };
+    const { adapter, fetchFn } = adapterWith([expired]);
+    await expect(adapter.send('1:psid', [{ text: 'привет', delayMs: 0 }])).rejects.toThrow(
+      /outside of allowed window/,
+    );
+    expect(fetchFn).toHaveBeenCalledOnce();
+  });
+
+  it('сдаётся после нескольких попыток, а не бесконечно', async () => {
+    const { adapter, fetchFn } = adapterWith([BLOCKED]);
+    await expect(adapter.send('1:psid', [{ text: 'привет', delayMs: 0 }])).rejects.toThrow(
+      /API access blocked/,
+    );
+    expect(vi.mocked(fetchFn).mock.calls.length).toBeLessThanOrEqual(4);
+  });
+});
+
 describe('диагностика отказов Instagram', () => {
   it('доносит текст ошибки Meta, а не только код', async () => {
     // «HTTP 400» одинаково выглядит и при истёкшем 24-часовом окне, и при протухшем
@@ -293,6 +350,7 @@ describe('диагностика отказов Instagram', () => {
     const adapter = new InstagramAdapter(
       { igIds: { almaty: '1' }, tokens: { almaty: 't' } } as never,
       fetchFn,
+      async () => undefined,
     );
     await expect(adapter.send('1:psid', [{ text: 'привет', delayMs: 0 }])).rejects.toThrow(
       /outside of allowed window/,

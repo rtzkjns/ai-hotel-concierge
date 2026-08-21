@@ -72,6 +72,9 @@ export function decodeIgSenderId(senderId: string): { igId: string; psid: string
   return { igId: senderId.slice(0, sep), psid: senderId.slice(sep + 1) };
 }
 
+/** Паузы перед повторами отправки. Первый элемент — попытка без паузы. */
+const SEND_DELAYS_MS = [0, 2_000, 8_000, 20_000];
+
 export class InstagramAdapter implements ChannelAdapter {
   readonly channel = 'instagram' as const;
   /** igAccountId → property key, to tag inbound messages with their hotel. */
@@ -85,6 +88,9 @@ export class InstagramAdapter implements ChannelAdapter {
   constructor(
     private readonly cfg: InstagramConfig,
     private readonly fetchFn: typeof fetch = fetch,
+    /** Пауза между повторами — в тестах подменяется, чтобы не спать. */
+    private readonly sleep: (ms: number) => Promise<void> = (ms) =>
+      new Promise((r) => setTimeout(r, ms)),
   ) {
     // Each hotel's igId may hold MULTIPLE comma-separated ids (the Instagram Login `id` AND the
     // Business `user_id`), because a webhook's recipient.id can arrive as either — mapping both
@@ -176,28 +182,42 @@ export class InstagramAdapter implements ChannelAdapter {
     }
   }
 
-  /** One POST to a specific IG account's messages endpoint. Errors carry status only. */
+  /**
+   * Meta периодически отвечает «API access blocked» — временной блокировкой на всплеск
+   * запросов, которая снимается сама. Такой отказ НЕ значит, что сообщение доставлено,
+   * поэтому повтор безопасен и обязателен: без него ответ гостю теряется навсегда, а он
+   * остаётся сидеть перед молчащим чатом. Именно так мы уже потеряли два ответа подряд.
+   */
+  private static transient(status: number, body: string): boolean {
+    if (status === 429 || status >= 500) return true;
+    return status === 400 && /API access blocked|rate limit|too many/i.test(body);
+  }
+
+  /** One POST to a specific IG account's messages endpoint. Retries a transient refusal. */
   private async post(igId: string, body: unknown): Promise<void> {
     const account = igId || this.firstIgId;
     const token = this.tokenByIgId[account] ?? this.cfg.accessToken ?? '';
-    const res = await this.fetchFn(`${this.base}/${encodeURIComponent(account)}/messages`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) {
+    let last = '';
+    for (let attempt = 0; attempt < SEND_DELAYS_MS.length; attempt += 1) {
+      if (attempt > 0) await this.sleep(SEND_DELAYS_MS[attempt]);
+      const res = await this.fetchFn(`${this.base}/${encodeURIComponent(account)}/messages`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+      if (res.ok) return;
       // Текст Meta обязан дойти до журнала: «HTTP 400» одинаково выглядит и когда истекло
       // 24-часовое окно переписки, и когда токен протух, и когда ссылку сочли подозрительной.
       // Без него причину недоставленного подтверждения брони пришлось бы угадывать.
       const detail = await res.text().catch(() => '');
       const meta = /"message"\s*:\s*"([^"]+)"/.exec(detail)?.[1];
-      throw new Error(
-        `Instagram send failed: HTTP ${res.status}${meta ? ` — ${meta}` : ''}`,
-      );
+      last = `HTTP ${res.status}${meta ? ` — ${meta}` : ''}`;
+      if (!InstagramAdapter.transient(res.status, detail)) break;
     }
+    throw new Error(`Instagram send failed: ${last}`);
   }
 }
 
