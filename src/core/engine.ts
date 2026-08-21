@@ -268,6 +268,16 @@ export interface EngineDeps {
    * оформляет бронь сразу по «подтверждаю» в чате, как и раньше.
    */
   confirmationLink?: (data: ConfirmationData) => string;
+  /**
+   * Ссылка на этот диалог в админ-панели.
+   *
+   * Менеджер получает заявку в Telegram и должен как-то попасть в переписку. Точную
+   * ссылку в конкретный чат Instagram построить нельзя — API не отдаёт ни ник гостя, ни
+   * идентификатор переписки. Зато панель показывает весь разговор и умеет отвечать в тот
+   * же канал, откуда гость писал, — поэтому ведём туда, и это работает одинаково для
+   * Instagram, WhatsApp, Telegram и виджета.
+   */
+  chatLink?: (conversationId: string) => string;
 }
 
 export class Engine {
@@ -1187,12 +1197,19 @@ export class Engine {
           .slice(-ESCALATION_TRANSCRIPT_MESSAGES)
           .map((m) => `${m.role}: ${m.content}`)
           .join('\n');
+        const link = this.deps.chatLink?.(convo.id);
         await staffNotifier.notify(
           maskPII(
-            `🚨 Handoff needed — ${hotelName} (${convo.id})\n` +
-              `Type: ${input.type}\nReason: ${input.reason}\n${input.summary}\n\n` +
-              `--- Last messages ---\n${transcript}`,
-          ), convo.property,);
+            `🚨 ГОСТЬ ЖДЁТ ЧЕЛОВЕКА — ${hotelName}\n` +
+              `${input.summary}\n` +
+              `Причина: ${input.reason}\n` +
+              (link
+                ? `\nОткрыть переписку и ответить:\n${link}\n`
+                : `\nДиалог: ${convo.id}\n`) +
+              `\n--- последние сообщения ---\n${transcript}`,
+          ),
+          convo.property,
+        );
         track(store, 'escalation', {
           conversationId: convo.id,
           property: convo.property,

@@ -92,6 +92,8 @@ export interface ConfirmDeps {
   /** Заявка менеджерам — на случай, когда бронь оформить не удалось. */
   saveRequest: (lead: BookingLead) => void;
   notifyStaff: (text: string, property?: string) => Promise<void>;
+  /** Ссылка на диалог в панели — чтобы менеджер попал в переписку одним нажатием. */
+  chatLink?: (conversationId: string) => string;
   /**
    * Пишет гостю в его же чат — туда, откуда он пришёл.
    *
@@ -473,7 +475,8 @@ function registerRoutes(app: FastifyInstance, deps: ConfirmDeps): void {
             `${d.guests} ${guestsWord(d.guests)}\n` +
             `Гость: ${guestName || '—'}, ${d.guestPhone}` +
             (d.guestEmail ? `, ${d.guestEmail}` : '') +
-            `\nСвяжитесь с гостем и оформите вручную. Диалог: ${d.conversationId}`,
+            `\nСвяжитесь с гостем и оформите вручную.\n` +
+            `${deps.chatLink?.(d.conversationId) ?? `Диалог: ${d.conversationId}`}`,
           d.property,
         )
         .catch(() => undefined);

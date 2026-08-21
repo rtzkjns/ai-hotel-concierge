@@ -199,6 +199,12 @@ async function main(): Promise<void> {
     styleGuide: loadStyleGuide(),
     knowledgeFor: (property) => contentSync.knowledgeFor(property),
     confirmationLink,
+    // Ссылка ведёт в панель, а не в Instagram: точную ссылку на конкретную переписку
+    // Instagram не отдаёт (ни ник гостя, ни id треда), а панель показывает весь разговор
+    // и отвечает в тот канал, откуда гость пришёл, — одинаково для всех каналов.
+    chatLink: publicBase
+      ? (conversationId) => `${publicBase}/console/chats/${encodeURIComponent(conversationId)}`
+      : undefined,
   });
 
   // Initial pull so the bot boots on the freshest catalog. Bounded + non-fatal: if Exely Content
@@ -294,6 +300,9 @@ async function main(): Promise<void> {
           store,
           createBooking: (args) => bookingService.createBooking(args),
           saveRequest: (lead) => store.saveLead(lead),
+          chatLink: publicBase
+            ? (id) => `${publicBase}/console/chats/${encodeURIComponent(id)}`
+            : undefined,
           // Сверка склада: единственный признак настоящей брони, который движок не
           // может нарисовать. Расхождение зовёт людей, а не разворачивает гостя.
           auditBooking: (a) => {

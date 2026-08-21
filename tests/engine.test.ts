@@ -595,3 +595,40 @@ describe('бронь не зависит от канала', () => {
     expect(await bookIn('webwidget')).toEqual(['webwidget']);
   });
 });
+
+describe('заявка менеджеру ведёт в переписку', () => {
+  it('в уведомление попадает ссылка на диалог в панели', async () => {
+    // Менеджер получает заявку в Telegram и должен попасть в переписку. Точную ссылку в
+    // конкретный чат Instagram построить нельзя — API не отдаёт ни ник, ни id треда.
+    const { engine, store, notifier } = makeEngine({
+      client: fakeClient([
+        toolUse('escalate_to_human', {
+          type: 'human_requested',
+          reason: 'гость просит менеджера',
+          summary: 'Хочет обсудить корпоративный договор',
+        }),
+        finalText('передаю менеджеру'),
+      ]),
+      chatLink: (id) => `https://bot.test/console/chats/${encodeURIComponent(id)}`,
+    });
+    withProperty(store, 'instagram', '77|55', 'almaty');
+
+    await engine.handle(textMsg('позовите человека', 'instagram', '77|55'));
+
+    expect(notifier.texts).toHaveLength(1);
+    expect(notifier.texts[0]).toContain('https://bot.test/console/chats/instagram%3A77%7C55');
+    expect(notifier.texts[0]).toContain('Открыть переписку');
+  });
+
+  it('без внешнего адреса называет диалог, а не молчит', async () => {
+    const { engine, store, notifier } = makeEngine({
+      client: fakeClient([
+        toolUse('escalate_to_human', { type: 'complaint', reason: 'шум', summary: 'Жалоба' }),
+        finalText('передаю'),
+      ]),
+    });
+    withProperty(store, 'telegram', '5', 'almaty');
+    await engine.handle(textMsg('жалоба', 'telegram', '5'));
+    expect(notifier.texts[0]).toContain('telegram:5');
+  });
+});
