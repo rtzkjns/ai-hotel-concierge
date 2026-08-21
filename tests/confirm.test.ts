@@ -342,3 +342,60 @@ describe('подтверждение гостю в чат', () => {
     expect(notifyGuest).not.toHaveBeenCalled();
   });
 });
+
+describe('дорешивание номера Exely', () => {
+  it('запускается, когда короткого номера ещё нет', async () => {
+    // Иначе у сотрудников на руках остаётся только служебный номер, по которому
+    // бронь не находится — с этой жалобы всё и началось.
+    const store = memoryStore();
+    const resolveHotelNumber = vi.fn();
+    const app = Fastify();
+    registerConfirmRoutes(app, {
+      store,
+      createBooking: async () => ({ ...CONFIRMED, voucherUrl: 'https://secure.exely.test/v/1' }),
+      saveRequest: vi.fn(),
+      notifyStaff: vi.fn(async () => undefined),
+      resolveHotelNumber,
+    });
+    const token = newConfirmationToken();
+    store.saveConfirmation({
+      token,
+      data: DATA,
+      expiresAt: new Date(Date.now() + CONFIRMATION_TTL_MS).toISOString(),
+    });
+
+    await app.inject({ method: 'POST', url: `/b/${token}/confirm` });
+    expect(resolveHotelNumber).toHaveBeenCalledOnce();
+    expect(resolveHotelNumber.mock.calls[0][0]).toMatchObject({
+      number: '20260915-801-1261607589',
+      voucherUrl: 'https://secure.exely.test/v/1',
+      property: 'almaty',
+    });
+  });
+
+  it('не запускается, когда номер уже известен', async () => {
+    const store = memoryStore();
+    const resolveHotelNumber = vi.fn();
+    const app = Fastify();
+    registerConfirmRoutes(app, {
+      store,
+      createBooking: async () => ({
+        ...CONFIRMED,
+        hotelNumber: '683546',
+        voucherUrl: 'https://secure.exely.test/v/1',
+      }),
+      saveRequest: vi.fn(),
+      notifyStaff: vi.fn(async () => undefined),
+      resolveHotelNumber,
+    });
+    const token = newConfirmationToken();
+    store.saveConfirmation({
+      token,
+      data: DATA,
+      expiresAt: new Date(Date.now() + CONFIRMATION_TTL_MS).toISOString(),
+    });
+
+    await app.inject({ method: 'POST', url: `/b/${token}/confirm` });
+    expect(resolveHotelNumber).not.toHaveBeenCalled();
+  });
+});

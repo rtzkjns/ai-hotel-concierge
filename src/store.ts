@@ -694,6 +694,13 @@ export class Store {
       );
   }
 
+  /** Короткий номер Exely приходит с задержкой — дописываем его, когда он появился. */
+  setBookingHotelNumber(exelyNumber: string, hotelNumber: string): void {
+    this.db
+      .prepare('UPDATE bookings SET hotel_number = ? WHERE exely_number = ?')
+      .run(hotelNumber, exelyNumber);
+  }
+
   updateBookingStatus(exelyNumber: string, status: string): void {
     this.db.prepare('UPDATE bookings SET status = ? WHERE exely_number = ?').run(status, exelyNumber);
   }

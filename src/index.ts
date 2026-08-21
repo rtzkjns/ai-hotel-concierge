@@ -18,6 +18,7 @@ import { RateLimiter } from './core/rateLimit';
 import { startRetention } from './core/retention';
 import { StubAmoCrm } from './integrations/amocrm';
 import { createCabinetProviders } from './integrations/exely';
+import { fetchVoucherNumber } from './integrations/exely/ibeBooking';
 import { ExelyContentSync } from './knowledge/contentSync';
 import { extractText } from './knowledge/documents';
 import { SourceSync } from './knowledge/sourceSync';
@@ -258,6 +259,20 @@ async function main(): Promise<void> {
           store,
           createBooking: (args) => bookingService.createBooking(args),
           saveRequest: (lead) => store.saveLead(lead),
+          // Догоняем короткий номер Exely и досылаем его менеджерам: искать бронь по
+          // служебному номеру бесполезно, а он — единственное, что есть сразу.
+          resolveHotelNumber: ({ number, voucherUrl, property, hotelName }) => {
+            void fetchVoucherNumber(voucherUrl, { delaysMs: [20_000, 30_000, 60_000] })
+              .then(async (hotelNumber) => {
+                if (!hotelNumber) return;
+                store.setBookingHotelNumber(number, hotelNumber);
+                await staffNotifier.notify(
+                  `Бронь ${number} — номер в Exely: ${hotelNumber}\n${hotelName}\nПо нему бронь и ищется.`,
+                  property,
+                );
+              })
+              .catch(() => undefined);
+          },
           // Подтверждение уходит гостю в тот же канал, откуда он писал.
           notifyGuest: async (conversationId, text) => {
             const convo = store.getConversation(conversationId);

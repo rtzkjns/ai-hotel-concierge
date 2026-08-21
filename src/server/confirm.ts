@@ -100,6 +100,20 @@ export interface ConfirmDeps {
    * В переписке они остаются навсегда, и именно её он покажет на ресепшене.
    */
   notifyGuest?: (conversationId: string, text: string) => Promise<void>;
+  /**
+   * Дорешивает короткий номер Exely, если к моменту нажатия его ещё не было.
+   *
+   * Он присваивается через минуту-полторы, а держать гостя на странице всё это время
+   * нельзя. Поэтому бронь отдаётся сразу, а номер, по которому отель её ищет, догоняет
+   * фоном — иначе сотрудники снова остаются с одним служебным номером на руках, ровно с
+   * той жалобы всё и началось.
+   */
+  resolveHotelNumber?: (args: {
+    number: string;
+    voucherUrl: string;
+    property: string;
+    hotelName: string;
+  }) => void;
 }
 
 const CODE_ALPHABET = 'ACEFHJKLMNPRTUVWXY3479';
@@ -480,6 +494,15 @@ function registerRoutes(app: FastifyInstance, deps: ConfirmDeps): void {
         d.property,
       )
       .catch(() => undefined);
+
+    if (!booked.hotelNumber && booked.voucherUrl) {
+      deps.resolveHotelNumber?.({
+        number: booked.number,
+        voucherUrl: booked.voucherUrl,
+        property: d.property,
+        hotelName: d.hotelName,
+      });
+    }
 
     // Подтверждение в переписку — не блокируя ответ страницы: гость не должен ждать
     // доставки в Instagram, чтобы увидеть свой номер брони.

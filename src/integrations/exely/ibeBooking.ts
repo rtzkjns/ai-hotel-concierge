@@ -219,6 +219,38 @@ export function buildIbeBooking(
   };
 }
 
+/**
+ * Вытаскивает короткий номер брони из HTML ваучера.
+ *
+ * «Бронирование № 683546» — то же число, что в теме письма гостю и в поиске отеля.
+ * Проверка «дальше не цифра и не дефис» обязательна: пока Exely не присвоил короткий
+ * номер, в заголовке стоит служебный (20270210-801-…), и без неё отсюда возвращались
+ * первые восемь его цифр — номер, которого не существует.
+ */
+export function parseVoucherNumber(html: string): string | undefined {
+  return /Бронирование\s*№\s*(\d{4,9})(?![\d-])/.exec(html)?.[1];
+}
+
+/** Тянет короткий номер, повторяя попытки: Exely присваивает его асинхронно. */
+export async function fetchVoucherNumber(
+  orderUrl: string,
+  opts: { fetchImpl?: typeof fetch; delaysMs?: number[] } = {},
+): Promise<string | undefined> {
+  const doFetch = opts.fetchImpl ?? fetch;
+  for (const waitMs of opts.delaysMs ?? [0, 6_000, 9_000]) {
+    if (waitMs) await new Promise((r) => setTimeout(r, waitMs));
+    try {
+      const res = await doFetch(orderUrl, { signal: AbortSignal.timeout(TIMEOUT_MS) });
+      if (!res.ok) continue;
+      const found = parseVoucherNumber(await res.text());
+      if (found) return found;
+    } catch {
+      // Ваучер — удобство, а не условие брони: молча пробуем ещё раз.
+    }
+  }
+  return undefined;
+}
+
 export class IbeReservation implements ReservationClient {
   /** Отмену движок не отдаёт — бронь снимает сотрудник в Edelweiss. */
   readonly supportsCancel = false;
@@ -301,22 +333,11 @@ export class IbeReservation implements ReservationClient {
    * Держать гостя минуту ради этого нельзя, поэтому ждём недолго и спокойно возвращаем
    * undefined — бронь от этого не перестаёт существовать, а звать её есть чем.
    */
-  async voucherNumber(orderUrl: string): Promise<string | undefined> {
-    const doFetch = this.deps.fetchImpl ?? fetch;
-    for (const waitMs of this.deps.voucherRetryDelaysMs ?? [0, 6_000, 9_000]) {
-      if (waitMs) await new Promise((r) => setTimeout(r, waitMs));
-      try {
-        const res = await doFetch(orderUrl, { signal: AbortSignal.timeout(TIMEOUT_MS) });
-        if (!res.ok) continue;
-        const html = await res.text();
-        // «Бронирование № 683546» — то же число, что в теме письма гостю.
-        const m = /Бронирование\s*№\s*(\d{4,9})(?![\d-])/.exec(html);
-        if (m) return m[1];
-      } catch {
-        // Ваучер — удобство, а не условие брони: молча пробуем ещё раз.
-      }
-    }
-    return undefined;
+  voucherNumber(orderUrl: string): Promise<string | undefined> {
+    return fetchVoucherNumber(orderUrl, {
+      fetchImpl: this.deps.fetchImpl,
+      delaysMs: this.deps.voucherRetryDelaysMs,
+    });
   }
 
   /** Читает бронь обратно. Единственный независимый способ узнать, существует ли она. */
