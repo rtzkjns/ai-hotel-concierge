@@ -69,6 +69,17 @@ export function decodeSenderId(senderId: string): { phoneNumberId: string; waId:
  * Verify Meta's X-Hub-Signature-256 header: 'sha256=' + HMAC-SHA256(appSecret, rawBody).
  * Constant-time comparison; anything malformed is simply invalid.
  */
+/** Что именно не сошлось — для журнала. Хэши, не секреты: их можно писать в лог. */
+export function signatureDebug(
+  rawBody: string,
+  header: string | undefined,
+  appSecret: string,
+): string {
+  const expected = createHmac('sha256', appSecret).update(rawBody, 'utf8').digest('hex');
+  const given = header?.startsWith('sha256=') ? header.slice('sha256='.length) : '(нет заголовка)';
+  return `тело ${rawBody.length} байт, ждали ${expected.slice(0, 12)}…, пришло ${given.slice(0, 12)}…`;
+}
+
 export function verifySignature(
   rawBody: string,
   header: string | undefined,

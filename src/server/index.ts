@@ -3,7 +3,7 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import type { InstagramAdapter } from '../channels/instagram';
 import type { InboundMessage, OutboundPart } from '../channels/types';
-import { verifySignature, type WhatsAppAdapter } from '../channels/whatsapp';
+import { signatureDebug, verifySignature, type WhatsAppAdapter } from '../channels/whatsapp';
 import { track, type EventData } from '../core/events';
 import { maskPII } from '../core/pii';
 import { registerLegalRoutes } from './legal';
@@ -34,7 +34,8 @@ function rejectBadSignature(
   if (ok) return false;
   const enforce = process.env.WEBHOOK_OBSERVE_ONLY !== 'true';
   console.warn(
-    `${source}: подпись не совпала${enforce ? ' — запрос отклонён' : ' — пропускаем (режим наблюдения)'}`,
+    `${source}: подпись не совпала${enforce ? ' — запрос отклонён' : ' — пропускаем (режим наблюдения)'}` +
+      ` · ${signatureDebug(rawBody, typeof header === 'string' ? header : undefined, appSecret)}`,
   );
   track(deps.store, 'webhook_signature_mismatch', { payload: { source, enforce } });
   return enforce;
