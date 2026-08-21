@@ -385,3 +385,27 @@ describe('Store', () => {
     });
   });
 });
+
+describe('мёртвые получатели заявок', () => {
+  it('отключается тот, кому Telegram отвечает 403', () => {
+    // Заблокировавший бота менеджер иначе остаётся в списке навсегда: каждая заявка
+    // даёт ошибку, и за этим шумом перестают быть видны настоящие сбои доставки.
+    const s = new Store(':memory:');
+    s.setStaffChat('almaty', '111', 'Живой');
+    s.setStaffChat('almaty', '222', 'Заблокировал бота');
+    expect(s.staffChatsFor('almaty')).toHaveLength(2);
+
+    expect(s.deactivateStaffChat('222')).toBe(true);
+    const left = s.staffChatsFor('almaty');
+    expect(left).toHaveLength(1);
+    expect(left[0].chatId).toBe('111');
+  });
+
+  it('повторное отключение ничего не меняет', () => {
+    const s = new Store(':memory:');
+    s.setStaffChat('almaty', '222', 'Кто-то');
+    expect(s.deactivateStaffChat('222')).toBe(true);
+    expect(s.deactivateStaffChat('222')).toBe(false);
+    expect(s.deactivateStaffChat('нет такого')).toBe(false);
+  });
+});

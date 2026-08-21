@@ -155,6 +155,20 @@ export class Store {
     return rows.map((r) => ({ chatId: r.body, title: r.title }));
   }
 
+  /**
+   * Отключает получателя, которому Telegram отказал наглухо.
+   *
+   * Заблокировавший бота менеджер иначе остаётся в списке навсегда: каждая заявка даёт
+   * ошибку, журнал забивается ими, и на этом фоне не видно НАСТОЯЩИХ сбоев доставки.
+   * Возвращает true, если кого-то действительно отключили.
+   */
+  deactivateStaffChat(chatId: string): boolean {
+    const res = this.db
+      .prepare("UPDATE kb_entries SET active = 0 WHERE kind='staffchat' AND body = ? AND active = 1")
+      .run(chatId);
+    return res.changes > 0;
+  }
+
   listStaffChats(): Array<{ id: number; property: string; chatId: string; title: string }> {
     const rows = this.db
       .prepare("SELECT id, property, title, body FROM kb_entries WHERE kind='staffchat' ORDER BY property, id")

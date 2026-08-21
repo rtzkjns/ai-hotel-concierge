@@ -38,6 +38,8 @@ import { Store } from './store';
 /** Staff alerts: Telegram staff chat via raw Bot API when configured, console otherwise. */
 function createStaffNotifier(store: {
   staffChatsFor?(p: string): Array<{ chatId: string; title: string }>;
+  deactivateStaffChat?(chatId: string): boolean;
+  recordEvent?(type: string, data?: { property?: string; payload?: unknown }): void;
 }): StaffNotifier {
   const token = config.telegram.botToken;
   const fallbackChat = config.telegram.staffGroupChatId;
@@ -53,6 +55,13 @@ function createStaffNotifier(store: {
       });
       if (!res.ok) {
         console.error(`staff notify failed: Telegram HTTP ${res.status} (chat ${chatId})`);
+        // 403 — это «бот заблокирован» или «диалог не начат», и само оно не пройдёт.
+        // Такой получатель остаётся в списке навсегда и на каждой заявке даёт ошибку,
+        // за которой перестают быть видны настоящие сбои доставки. Отключаем его.
+        if (res.status === 403 && store.deactivateStaffChat?.(chatId)) {
+          console.warn(`staff chat ${chatId} отключён: Telegram отвечает 403`);
+          store.recordEvent?.('staff_chat_disabled', { payload: { chatId } });
+        }
         return false;
       }
       return true;
