@@ -75,6 +75,8 @@ export interface Booking {
   currency?: string;
   guestName?: string;
   guestPhone?: string;
+  /** Код, которым бронь читается обратно и по которому её меняет гость. */
+  cancellationCode?: string;
   upsellOffered?: boolean;
   upsellAccepted?: boolean;
   createdAt: string; // ISO timestamp

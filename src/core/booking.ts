@@ -309,6 +309,9 @@ export class BookingService {
             currency: offer.currency,
             guestName: `${args.guestFirstName} ${args.guestLastName}`,
             guestPhone: args.guestPhone,
+            // Без кода бронь нельзя ни перечитать, ни изменить — а перечитать её
+            // единственный способ убедиться, что она вообще существует.
+            cancellationCode: placed.cancellationCode,
             upsellOffered: true,
             upsellAccepted: upsellTaken,
             createdAt: new Date().toISOString(),
