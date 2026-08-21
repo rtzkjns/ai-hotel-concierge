@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
-import { styleSplit, humanDelays, URGENT_MULTIPLIER } from '../src/style/engine';
+import { styleSplit, humanDelays, URGENT_MULTIPLIER,
+  dropRepeatedGreeting,
+} from '../src/style/engine';
 import { NullTranscriber, WhisperTranscriber, createTranscriber } from '../src/integrations/transcribe';
 
 describe('styleSplit', () => {
@@ -150,5 +152,43 @@ describe('ссылки в длинных ответах', () => {
   it('короткий ответ со ссылкой не трогает вовсе', () => {
     const text = 'Всё готово: https://example.com/b/abc — нажмите кнопку.';
     expect(styleSplit(text)).toEqual([text]);
+  });
+});
+
+describe('приветствие один раз за разговор', () => {
+  it('снимает приветствие, если уже здоровались', () => {
+    // Бот, здоровающийся в каждом сообщении, выдаёт себя мгновенно: живой человек
+    // говорит «здравствуйте» один раз.
+    expect(dropRepeatedGreeting('Здравствуйте! Чем могу помочь?', true)).toBe('Чем могу помочь?');
+    expect(dropRepeatedGreeting('Добрый вечер, свободен Standard Double.', true)).toBe(
+      'Свободен Standard Double.',
+    );
+  });
+
+  it('работает на всех четырёх языках', () => {
+    expect(dropRepeatedGreeting('Сәлеметсіз бе! Бөлме бар.', true)).toBe('Бөлме бар.');
+    expect(dropRepeatedGreeting('Hello! The room is available.', true)).toBe(
+      'The room is available.',
+    );
+    expect(dropRepeatedGreeting('您好，有空房。', true)).toBe('有空房。');
+  });
+
+  it('первое приветствие не трогает', () => {
+    expect(dropRepeatedGreeting('Здравствуйте! Чем могу помочь?', false)).toBe(
+      'Здравствуйте! Чем могу помочь?',
+    );
+  });
+
+  it('не оставляет гостя без ответа, когда кроме приветствия ничего нет', () => {
+    // Гость поздоровался второй раз — лучше повтор, чем пустое сообщение.
+    expect(dropRepeatedGreeting('Здравствуйте!', true)).toBe('Здравствуйте!');
+  });
+
+  it('не откусывает начало похожего слова', () => {
+    // «Приветствую» — приветствие, «Приветствуем вас в отеле» — нет.
+    expect(dropRepeatedGreeting('Приветствуем вас в отеле', true)).toBe('Приветствуем вас в отеле');
+    expect(dropRepeatedGreeting('Привет в этом слове не в начале? нет', true)).toBe(
+      'В этом слове не в начале? нет',
+    );
   });
 });

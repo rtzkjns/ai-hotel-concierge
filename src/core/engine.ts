@@ -20,7 +20,13 @@ import type { AvailabilityProvider } from '../integrations/exely/provider';
 import type { PaymentGateway } from '../integrations/payments';
 import type { Transcriber } from '../integrations/transcribe';
 import { properties, propertyList } from '../knowledge';
-import { dropRepeatedSentences, enforceOfficialTone, humanDelays, styleSplit } from '../style/engine';
+import {
+  dropRepeatedGreeting,
+  dropRepeatedSentences,
+  enforceOfficialTone,
+  humanDelays,
+  styleSplit,
+} from '../style/engine';
 import type {
   BookingLead,
   Channel,
@@ -96,6 +102,21 @@ export function needsSubstance(reply: string, toolsUsed: string[]): boolean {
   // Как и названная цифра: значит факт уже прозвучал.
   if (/\d/.test(text)) return false;
   return /(уточн|передал|передаю|перед[аа]|коллег|вернусь)/i.test(text);
+}
+
+/**
+ * Здоровались ли уже в этом разговоре.
+ *
+ * Считаем по СОДЕРЖАТЕЛЬНЫМ репликам бота: служебные записи о выполненных действиях
+ * гостю не показываются, и принимать их за состоявшееся приветствие нельзя.
+ */
+export function alreadyGreeted(history: ChatMessage[]): boolean {
+  return history.some(
+    (m) =>
+      m.role === 'assistant' &&
+      !m.content.startsWith(ACTION_TRACE_PREFIX) &&
+      !m.content.startsWith(HOLDING_PREFIX),
+  );
 }
 
 /** Отказ, ограничение или «пока нельзя» — содержательный ответ, а не отписка. */
@@ -519,6 +540,12 @@ export class Engine {
       // history is fed back to the model, so an un-stripped smiley would teach it to keep
       // using them regardless of the prompt.
       reply = enforceOfficialTone(result.reply);
+
+      // Здороваться в каждом ответе — то, чем бот выдаёт себя мгновенно: живой человек
+      // говорит «здравствуйте» один раз за разговор. Промптом это не удержалось, поэтому
+      // режем детерминированно. Служебные записи в истории (следы действий, «ожидание»)
+      // за приветствие не считаются — иначе после них бот замолкал бы невпопад.
+      reply = dropRepeatedGreeting(reply, alreadyGreeted(history));
 
       // Проверено A/B-прогоном: «Парковка бесплатная?» → «Да, бесплатная»; но стоит
       // добавить второй, неизвестный вопрос («Сколько мест?») — и известная половина

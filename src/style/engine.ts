@@ -252,6 +252,46 @@ function sentencesOf(text: string): string[] {
  * If everything was a repeat, the caller gets an empty string and substitutes a short
  * acknowledgement: saying nothing new is better than saying the same thing again.
  */
+/**
+ * Приветствия на всех четырёх языках, с которыми к нам пишут.
+ * Порядок важен: длинные варианты идут первыми, иначе «Добрый» съест «Добрый вечер».
+ */
+const GREETING_RE =
+  new RegExp(
+    '^\\s*(?:' +
+      [
+        'здравствуйте', 'здравствуй', 'доброе утро', 'добрый день', 'добрый вечер',
+        'доброго времени суток', 'приветствую', 'привет',
+        'сәлеметсіз бе', 'сәлеметсізбе', 'қайырлы таң', 'қайырлы күн', 'қайырлы кеш', 'сәлем',
+        'good morning', 'good afternoon', 'good evening', 'greetings', 'hello', 'hi there', 'hi',
+        '您好', '你好',
+      ].join('|') +
+      ')' +
+      // Дальше не может идти буква, иначе «Приветствую» откусит начало «Приветствуем».
+      '(?![\\p{L}])' +
+      // Съедаем знаки после приветствия, включая китайские «，。！».
+      '[\\s,!.…—–\\-，。！]*',
+    'iu',
+  );
+
+/**
+ * Убирает приветствие, если поздоровались уже раньше.
+ *
+ * Модель здоровается в каждом ответе, и в переписке это читается неестественно: живой
+ * человек говорит «здравствуйте» один раз. Правилом в промпте не держится — проверено, —
+ * поэтому режем детерминированно.
+ *
+ * Если кроме приветствия в ответе ничего нет (гость написал «привет» второй раз), оставляем
+ * как есть: лучше повтор, чем пустое сообщение.
+ */
+export function dropRepeatedGreeting(reply: string, alreadyGreeted: boolean): string {
+  if (!alreadyGreeted) return reply;
+  const stripped = reply.replace(GREETING_RE, '');
+  if (!stripped.trim()) return reply;
+  // Первая буква остатка была строчной, потому что шла после «Здравствуйте!».
+  return stripped.charAt(0).toLocaleUpperCase('ru-RU') + stripped.slice(1);
+}
+
 export function dropRepeatedSentences(reply: string, previousReplies: string[]): string {
   if (!reply.trim() || !previousReplies.length) return reply;
   const seen = new Set(previousReplies.flatMap((p) => sentencesOf(p).map(normalise)).filter(Boolean));
