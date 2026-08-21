@@ -98,6 +98,24 @@ function fakeBookingService() {
     })),
     cancelBooking: vi.fn(async () => ({ ok: true })),
     bookingStatus: vi.fn(async () => ({ source: 'local' as const, status: null })),
+    prepareConfirmation: vi.fn(async () => ({
+      ok: true as const,
+      offer: {
+        roomType: 'Standard Double Room',
+        available: true,
+        availableCount: 5,
+        pricePerNight: 46750,
+        currency: 'KZT',
+        roomTypeId: '42',
+        ratePlanId: '7',
+        ratePlanName: 'Best Available Rate',
+        totalPrice: 93500,
+        checksum: 'c',
+        placements: ['36257'],
+        bookingFormLink: 'https://book.example/x',
+      },
+      bookingFormLink: 'https://book.example/x',
+    })),
   };
 }
 
@@ -533,5 +551,47 @@ describe('Engine — live-synced knowledge (Exely Content)', () => {
     const createMock = deps.client.messages.create as unknown as CreateMock;
     // The static Almaty knowledge (src/knowledge) names the AquaFit wellness complex.
     expect(createMock.mock.calls[0][0].system).toContain('AquaFit');
+  });
+});
+
+describe('бронь не зависит от канала', () => {
+  /** Один и тот же диалог о брони, проигранный в разных каналах. */
+  async function bookIn(channel: Channel) {
+    const links: string[] = [];
+    const { engine, store } = makeEngine({
+      client: fakeClient([
+        toolUse('create_booking', {
+          checkIn: '2026-08-10',
+          checkOut: '2026-08-12',
+          guests: 2,
+          roomTypeId: '42',
+          ratePlanId: '7',
+          guestFirstName: 'Aibek',
+          guestLastName: 'S',
+          guestPhone: '+77012345678',
+          guestEmail: 'a@example.com',
+        }),
+        finalText('вот ссылка'),
+      ]),
+      confirmationLink: () => {
+        links.push(channel);
+        return `https://example.test/b/${channel}`;
+      },
+    });
+    withProperty(store, channel, '9', 'almaty');
+    await engine.handle(textMsg('да, подтверждаю', channel, '9'));
+    return links;
+  }
+
+  it('WhatsApp оформляет бронь тем же путём, что Instagram', async () => {
+    // Владелец спросил прямо: когда WhatsApp включат, бронь пойдёт так же? Ответ должен
+    // держаться кодом, а не обещанием — оба канала зовут один и тот же движок.
+    expect(await bookIn('whatsapp')).toEqual(['whatsapp']);
+    expect(await bookIn('instagram')).toEqual(['instagram']);
+  });
+
+  it('и Telegram с виджетом тоже', async () => {
+    expect(await bookIn('telegram')).toEqual(['telegram']);
+    expect(await bookIn('webwidget')).toEqual(['webwidget']);
   });
 });
