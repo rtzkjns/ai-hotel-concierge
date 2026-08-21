@@ -91,6 +91,8 @@ export type CreateBookingResult =
       hotelNumber?: string | null;
       /** Ваучер Exely — и доказательство брони, и то, что можно открыть глазами. */
       voucherUrl?: string | null;
+      /** Сколько таких номеров было свободно ДО брони — для последующей сверки склада. */
+      availableBefore?: number | null;
     }
   | { mode: 'link'; bookingFormLink: string | null; reason: string };
 
@@ -350,6 +352,7 @@ export class BookingService {
           cancellationCode: placed.cancellationCode ?? null,
           hotelNumber: placed.hotelNumber ?? null,
           voucherUrl: placed.voucherUrl ?? null,
+          availableBefore: offer.availableCount ?? null,
         };
       }
       reason = placed.error ?? 'reservation_failed';

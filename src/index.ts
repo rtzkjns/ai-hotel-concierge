@@ -12,6 +12,7 @@ import { config, enabledChannels } from './config';
 import { hashPassword } from './console/auth';
 import { registerConsoleRoutes, type SendToConversation } from './console/routes';
 import { BookingService } from './core/booking';
+import { auditBookingHeldInventory } from './core/bookingAudit';
 import { metricsSummary } from './core/events';
 import { Engine } from './core/engine';
 import { RateLimiter } from './core/rateLimit';
@@ -259,6 +260,20 @@ async function main(): Promise<void> {
           store,
           createBooking: (args) => bookingService.createBooking(args),
           saveRequest: (lead) => store.saveLead(lead),
+          // Сверка склада: единственный признак настоящей брони, который движок не
+          // может нарисовать. Расхождение зовёт людей, а не разворачивает гостя.
+          auditBooking: (a) => {
+            void auditBookingHeldInventory(
+              {
+                provider: availabilityProvider,
+                recordEvent: (type, data) => store.recordEvent(type, data),
+                notifyStaff: async (text, property) => {
+                  await staffNotifier.notify(text, property);
+                },
+              },
+              a,
+            ).catch(() => undefined);
+          },
           // Догоняем короткий номер Exely и досылаем его менеджерам: искать бронь по
           // служебному номеру бесполезно, а он — единственное, что есть сразу.
           resolveHotelNumber: ({ number, voucherUrl, property, hotelName }) => {

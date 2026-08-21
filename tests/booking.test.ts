@@ -100,6 +100,7 @@ describe('BookingService.createBooking', () => {
       cancellationCode: null,
       hotelNumber: null,
       voucherUrl: null,
+      availableBefore: null,
     });
 
     // Fresh availability was re-searched — never a stale checksum.

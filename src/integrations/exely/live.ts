@@ -153,6 +153,7 @@ function normalizeRoomStay(
       rs.fullPlacementsName ??
       'Room',
     available: (rs.availability ?? 1) > 0,
+    availableCount: rs.availability ?? null,
     pricePerNight: totalPrice === null ? null : Math.round(totalPrice / nights),
     currency: rs.currencyCode ?? 'KZT',
     roomTypeId: roomType.id !== undefined ? String(roomType.id) : null,

@@ -114,6 +114,25 @@ export interface ConfirmDeps {
     property: string;
     hotelName: string;
   }) => void;
+  /**
+   * Сверяет через минуту, что бронь действительно заняла номер.
+   *
+   * Гостю к этому моменту уже сказано «оформлено» — и это правильно, ответ движка
+   * подтверждён чтением. Но склад считает отдельная система, и если он не сдвинулся,
+   * об этом должны узнать люди, а не выяснить это гость на ресепшене.
+   */
+  auditBooking?: (args: {
+    property: string;
+    hotelName: string;
+    checkIn: string;
+    checkOut: string;
+    guests: number;
+    roomTypeId: string;
+    roomType: string;
+    countBefore: number;
+    bookingNumber: string;
+    conversationId: string;
+  }) => void;
 }
 
 const CODE_ALPHABET = 'ACEFHJKLMNPRTUVWXY3479';
@@ -494,6 +513,21 @@ function registerRoutes(app: FastifyInstance, deps: ConfirmDeps): void {
         d.property,
       )
       .catch(() => undefined);
+
+    if (typeof booked.availableBefore === 'number') {
+      deps.auditBooking?.({
+        property: d.property,
+        hotelName: d.hotelName,
+        checkIn: d.checkIn,
+        checkOut: d.checkOut,
+        guests: d.guests,
+        roomTypeId: d.roomTypeId,
+        roomType: d.roomType,
+        countBefore: booked.availableBefore,
+        bookingNumber: booked.hotelNumber ?? booked.number,
+        conversationId: d.conversationId,
+      });
+    }
 
     if (!booked.hotelNumber && booked.voucherUrl) {
       deps.resolveHotelNumber?.({

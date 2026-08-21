@@ -17,6 +17,9 @@ export interface CancellationPolicy {
 export interface RoomOffer {
   roomType: string;
   available: boolean;
+  /** Сколько номеров этой категории свободно. Падение на единицу после брони —
+   *  сильнейшее доказательство, что бронь настоящая: считает его Search, а не движок. */
+  availableCount?: number | null;
   pricePerNight: number | null; // KZT; null if unknown
   currency: string; // 'KZT'
   notes?: string;
