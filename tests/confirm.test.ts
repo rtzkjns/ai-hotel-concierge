@@ -299,11 +299,19 @@ describe('подтверждение гостю в чат', () => {
     expect(text).not.toContain('20260915-801-1261607589');
   });
 
+  it('подписывает код доступа кодом, а не номером брони', async () => {
+    // Гость, назвавший на ресепшене «номер брони ABC1234», получит непонимающий взгляд.
+    const { app, token, notifyGuest } = build();
+    await app.inject({ method: 'POST', url: `/b/${token}/confirm` });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(notifyGuest.mock.calls[0][1]).toContain('Код брони: ABC1234');
+  });
+
   it('называет короткий номер Exely, как только он есть', async () => {
     const { app, token, notifyGuest } = build({ ...CONFIRMED, hotelNumber: '683546' });
     await app.inject({ method: 'POST', url: `/b/${token}/confirm` });
     await new Promise((r) => setTimeout(r, 0));
-    expect(notifyGuest.mock.calls[0][1]).toContain('683546');
+    expect(notifyGuest.mock.calls[0][1]).toContain('Номер брони: 683546');
   });
 
   it('несёт всё, что нужно на заселении', () => {

@@ -284,11 +284,14 @@ export function guestConfirmation(
   // Гостю — тот номер, по которому его найдут на ресепшене. Короткий приходит с задержкой;
   // пока его нет, называем код доступа (он же в ваучере) — но НИКОГДА служебный номер,
   // который на ресепшене ничего не находит.
+  // Подпись меняется вместе со смыслом: номер брони и код доступа — разные вещи, и гость,
+  // назвавший на ресепшене «номер» вместо кода, получит непонимающий взгляд.
+  const label = booked.hotelNumber ? 'Номер брони' : 'Код брони';
   const reference = booked.hotelNumber || booked.cancellationCode || booked.number;
   const lines = [
     `Бронирование оформлено ✓`,
     ``,
-    `Номер брони: ${reference}`,
+    `${label}: ${reference}`,
     `${d.hotelName}`,
     `${booked.roomType}`,
     `Заезд ${humanDate(d.checkIn)} с 15:00, выезд ${humanDate(d.checkOut)} до 12:00`,
@@ -457,7 +460,7 @@ function registerRoutes(app: FastifyInstance, deps: ConfirmDeps): void {
     });
     await deps
       .notifyStaff(
-        `БРОНЬ ОФОРМЛЕНА ${booked.hotelNumber ?? booked.number} — ${d.hotelName}\n` +
+        `БРОНЬ ОФОРМЛЕНА ${booked.hotelNumber ?? `(код ${booked.cancellationCode ?? '—'})`} — ${d.hotelName}\n` +
           `${booked.roomType}${booked.ratePlanName ? ` · ${booked.ratePlanName}` : ''}\n` +
           `${humanDate(booked.checkIn)} — ${humanDate(booked.checkOut)}, ` +
           `${d.nights} ${nightsWord(d.nights)}, ${booked.guests} ${guestsWord(booked.guests)}\n` +
@@ -468,6 +471,11 @@ function registerRoutes(app: FastifyInstance, deps: ConfirmDeps): void {
           // Служебный номер нужен для поиска через API, ваучер — чтобы открыть глазами.
           `\nСлужебный номер: ${booked.number}` +
           (booked.voucherUrl ? `\nВаучер: ${booked.voucherUrl}` : '') +
+          // Exely присваивает короткий номер в течение минуты. Пока его нет, сотрудник
+          // откроет ваучер и увидит его там — искать по служебному номеру бесполезно.
+          (booked.hotelNumber
+            ? ''
+            : `\nКороткий номер Exely появится в течение минуты — он в заголовке ваучера`) +
           `\nДиалог: ${d.conversationId}`,
         d.property,
       )
