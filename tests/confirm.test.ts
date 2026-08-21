@@ -6,6 +6,7 @@ import {
   maskPhone,
   newConfirmationToken,
   nightsWord,
+  guestConfirmation,
   registerConfirmRoutes,
   type ConfirmationData,
   type ConfirmDeps,
@@ -91,15 +92,16 @@ function build(
   const createBooking = vi.fn(async (_args: Parameters<ConfirmDeps['createBooking']>[0]) => booked);
   const saveRequest = vi.fn((_lead: BookingLead) => undefined);
   const notifyStaff = vi.fn(async (_text: string, _property?: string) => undefined);
+  const notifyGuest = vi.fn(async (_id: string, _text: string) => undefined);
   const app = Fastify();
-  registerConfirmRoutes(app, { store, createBooking, saveRequest, notifyStaff });
+  registerConfirmRoutes(app, { store, createBooking, saveRequest, notifyStaff, notifyGuest });
   const token = newConfirmationToken();
   store.saveConfirmation({
     token,
     data,
     expiresAt: new Date(Date.now() + ttlMs).toISOString(),
   });
-  return { app, store, token, createBooking, saveRequest, notifyStaff };
+  return { app, store, token, createBooking, saveRequest, notifyStaff, notifyGuest };
 }
 
 describe('оформление текста заявки', () => {
@@ -277,5 +279,47 @@ describe('когда бронь оформить не удалось', () => {
     const { app, token } = build(FAILED);
     const html = (await app.inject({ method: 'POST', url: `/b/${token}/confirm` })).body;
     expect(html).toContain(DATA.bookingFormLink!);
+  });
+});
+
+describe('подтверждение гостю в чат', () => {
+  it('уходит гостю в его же переписку после оформления', async () => {
+    // Гость закрывает вкладку — на руках у него должно остаться сообщение с номером брони,
+    // а не только страница, которую он больше не откроет.
+    const { app, token, notifyGuest } = build();
+    await app.inject({ method: 'POST', url: `/b/${token}/confirm` });
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(notifyGuest).toHaveBeenCalledOnce();
+    const [convoId, text] = notifyGuest.mock.calls[0];
+    expect(convoId).toBe('c-1');
+    expect(text).toContain('20260915-801-1261607589');
+  });
+
+  it('несёт всё, что нужно на заселении', () => {
+    const text = guestConfirmation(DATA, {
+      number: '20260915-801-1261607589',
+      total: 59500,
+      currency: 'KZT',
+      roomType: 'Standard Double Room',
+    });
+    expect(text).toContain('20260915-801-1261607589');
+    expect(text).toContain('Kazzhol Almaty');
+    expect(text).toContain('Standard Double Room');
+    expect(text).toContain('15 сентября');
+    expect(text).toContain('16 сентября');
+    expect(text).toContain('15:00');
+    expect(text).toContain('12:00');
+    expect(text).toContain('Асель Нурланова');
+    expect(text).toContain(`${(59500).toLocaleString('ru-RU')} ₸`);
+    // Ни ссылок, ни служебных слов — это сообщение от менеджера, а не квитанция.
+    expect(text).not.toContain('http');
+  });
+
+  it('не обещает бронь, когда её не оформили', async () => {
+    const { app, token, notifyGuest } = build(FAILED);
+    await app.inject({ method: 'POST', url: `/b/${token}/confirm` });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(notifyGuest).not.toHaveBeenCalled();
   });
 });

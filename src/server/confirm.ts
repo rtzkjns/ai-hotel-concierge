@@ -92,6 +92,14 @@ export interface ConfirmDeps {
   /** Заявка менеджерам — на случай, когда бронь оформить не удалось. */
   saveRequest: (lead: BookingLead) => void;
   notifyStaff: (text: string, property?: string) => Promise<void>;
+  /**
+   * Пишет гостю в его же чат — туда, откуда он пришёл.
+   *
+   * Гость жмёт кнопку в браузере и закрывает вкладку; если подтверждение осталось только
+   * на той странице, у него на руках не остаётся НИЧЕГО — ни номера брони, ни условий.
+   * В переписке они остаются навсегда, и именно её он покажет на ресепшене.
+   */
+  notifyGuest?: (conversationId: string, text: string) => Promise<void>;
 }
 
 const CODE_ALPHABET = 'ACEFHJKLMNPRTUVWXY3479';
@@ -258,6 +266,34 @@ function failedPage(d: ConfirmationData, code: string): string {
   );
 }
 
+/**
+ * Подтверждение, которое гость получает в чат. Не письмо и не квитанция — сообщение от
+ * менеджера: всё нужное на заселение, без служебных слов и без ссылок.
+ */
+export function guestConfirmation(
+  d: ConfirmationData,
+  booked: { number: string; total?: number | null; currency?: string | null; roomType: string },
+): string {
+  const lines = [
+    `Бронирование оформлено ✓`,
+    ``,
+    `Номер брони: ${booked.number}`,
+    `${d.hotelName}`,
+    `${booked.roomType}`,
+    `Заезд ${humanDate(d.checkIn)} с 15:00, выезд ${humanDate(d.checkOut)} до 12:00`,
+    `${d.guests} ${guestsWord(d.guests)}, ${d.nights} ${nightsWord(d.nights)}`,
+  ];
+  const total = booked.total ?? d.totalPrice;
+  if (total) lines.push(`Итого ${money(total, booked.currency ?? d.currency)} — оплата при заселении`);
+  const name = [d.guestFirstName, d.guestLastName].filter((x) => x && x !== '—').join(' ');
+  if (name) lines.push(`На имя: ${name}`);
+  if (d.freeCancellationUntil) {
+    lines.push(`Бесплатная отмена до ${humanDate(d.freeCancellationUntil)}`);
+  }
+  lines.push('', 'Ждём вас! Если что-то нужно изменить — напишите здесь.');
+  return lines.join('\n');
+}
+
 /** Случайный токен: угадать ссылку на чужую заявку должно быть невозможно. */
 export function newConfirmationToken(): string {
   return randomBytes(16).toString('base64url');
@@ -421,6 +457,12 @@ function registerRoutes(app: FastifyInstance, deps: ConfirmDeps): void {
           `\nДиалог: ${d.conversationId}`,
         d.property,
       )
+      .catch(() => undefined);
+
+    // Подтверждение в переписку — не блокируя ответ страницы: гость не должен ждать
+    // доставки в Instagram, чтобы увидеть свой номер брони.
+    void deps
+      .notifyGuest?.(d.conversationId, guestConfirmation(d, booked))
       .catch(() => undefined);
 
     return reply

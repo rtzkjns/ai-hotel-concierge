@@ -258,6 +258,21 @@ async function main(): Promise<void> {
           store,
           createBooking: (args) => bookingService.createBooking(args),
           saveRequest: (lead) => store.saveLead(lead),
+          // Подтверждение уходит гостю в тот же канал, откуда он писал.
+          notifyGuest: async (conversationId, text) => {
+            const convo = store.getConversation(conversationId);
+            if (!convo) return;
+            const res = await sendToConversation(convo, text);
+            if (!res.ok) {
+              // Не доставили — это не потеря брони, но отель должен знать, что гость
+              // остался без номера на руках.
+              store.recordEvent('guest_confirmation_failed', {
+                conversationId,
+                property: convo.property,
+                payload: { error: res.error },
+              });
+            }
+          },
           notifyStaff: async (text, property) => {
             await staffNotifier.notify(text, property);
           },
