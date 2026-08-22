@@ -22,6 +22,28 @@ import { registerLegalRoutes } from './legal';
  *
  * Возвращает true, если запрос надо отклонить.
  */
+/**
+ * Подбирает ключ по живой доставке.
+ *
+ * У Instagram подпись не сходится, и какой секрет верный — неизвестно: документация Meta
+ * называет App Secret из App settings → Basic, но на пути Instagram Login у приложения своя
+ * идентичность со своим секретом, а на форуме Meta есть тред ровно с нашим симптомом, где не
+ * подошёл ни один. Гадать бессмысленно — пусть ответит сама доставка.
+ *
+ * В INSTAGRAM_APP_SECRET_CANDIDATES кладутся секреты-кандидаты через запятую. В журнал идёт
+ * ТОЛЬКО номер совпавшего — ни секретов, ни тела, ни текста гостя.
+ */
+function matchingCandidate(rawBody: string, header: unknown): number | null {
+  const raw = process.env.INSTAGRAM_APP_SECRET_CANDIDATES ?? '';
+  const list = raw.split(',').map((x) => x.trim()).filter(Boolean);
+  for (let i = 0; i < list.length; i += 1) {
+    if (verifySignature(rawBody, typeof header === 'string' ? header : undefined, list[i])) {
+      return i + 1;
+    }
+  }
+  return null;
+}
+
 function rejectBadSignature(
   deps: ServerDeps,
   rawBody: string,
@@ -31,11 +53,19 @@ function rejectBadSignature(
 ): boolean {
   if (!appSecret) return false;
   const ok = verifySignature(rawBody, typeof header === 'string' ? header : undefined, appSecret);
-  if (ok) return false;
+  if (ok) {
+    // Успех тоже пишем: без этого тишина в журнале означает и «всё сошлось», и «доставок
+    // вообще не было», а различить это критично перед снятием режима наблюдения.
+    console.log(`${source}: подпись ок`);
+    track(deps.store, 'webhook_signature_ok', { payload: { source } });
+    return false;
+  }
   const enforce = process.env.WEBHOOK_OBSERVE_ONLY !== 'true';
+  const candidate = matchingCandidate(rawBody, header);
   console.warn(
     `${source}: подпись не совпала${enforce ? ' — запрос отклонён' : ' — пропускаем (режим наблюдения)'}` +
-      ` · ${signatureDebug(rawBody, typeof header === 'string' ? header : undefined, appSecret)}`,
+      ` · ${signatureDebug(rawBody, typeof header === 'string' ? header : undefined, appSecret)}` +
+      (candidate ? ` · ПОДОШЁЛ КАНДИДАТ №${candidate}` : ''),
   );
   track(deps.store, 'webhook_signature_mismatch', { payload: { source, enforce } });
   return enforce;

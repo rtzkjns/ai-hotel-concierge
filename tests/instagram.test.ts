@@ -508,3 +508,78 @@ describe('менеджер отвечает из приложения Instagram'
     expect(st.calls.status).toHaveLength(0);
   });
 });
+
+describe('подбор верного секрета по живой доставке', () => {
+  const RIGHT = 'настоящий-секрет';
+  const WRONG = 'тот-что-в-настройках';
+  const payload = JSON.stringify({ object: 'instagram', entry: [] });
+  const signWith = (secret: string) =>
+    `sha256=${createHmac('sha256', secret).update(payload).digest('hex')}`;
+
+  async function build(candidates?: string) {
+    const prev = process.env.INSTAGRAM_APP_SECRET_CANDIDATES;
+    if (candidates) process.env.INSTAGRAM_APP_SECRET_CANDIDATES = candidates;
+    else delete process.env.INSTAGRAM_APP_SECRET_CANDIDATES;
+    const events: string[] = [];
+    const app = await buildServer({
+      engine: { handle: vi.fn(async () => null) },
+      adapters: {},
+      store: { recordEvent: (t: string) => events.push(t) },
+      config: {
+        whatsapp: { verifyToken: 'v', phoneNumberIds: {} },
+        instagram: { igIds: {}, tokens: {}, appSecret: WRONG },
+      },
+    } as never);
+    return {
+      app,
+      events,
+      restore: () => {
+        if (prev === undefined) delete process.env.INSTAGRAM_APP_SECRET_CANDIDATES;
+        else process.env.INSTAGRAM_APP_SECRET_CANDIDATES = prev;
+      },
+    };
+  }
+
+  const post = (app: Awaited<ReturnType<typeof build>>['app'], sig: string) =>
+    app.inject({
+      method: 'POST',
+      url: '/webhooks/instagram',
+      headers: { 'content-type': 'application/json', 'x-hub-signature-256': sig },
+      payload,
+    });
+
+  it('называет номер подошедшего кандидата, не раскрывая его', async () => {
+    // Гадать, какой из секретов Meta верный, бессмысленно — пусть ответит сама доставка.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { app, restore } = await build(`мимо,${RIGHT}`);
+    await post(app, signWith(RIGHT));
+
+    const line = warn.mock.calls.map((c) => String(c[0])).join(' ');
+    expect(line).toContain('ПОДОШЁЛ КАНДИДАТ №2');
+    expect(line).not.toContain(RIGHT);
+    warn.mockRestore();
+    restore();
+    await app.close();
+  });
+
+  it('успешную проверку тоже записывает — тишина не значит «всё сошлось»', async () => {
+    // Иначе пустой журнал одинаково означает «подпись верна» и «доставок не было»,
+    // а различить это обязательно до снятия режима наблюдения.
+    const { app, events, restore } = await build();
+    await post(app, signWith(WRONG));
+    expect(events).toContain('webhook_signature_ok');
+    restore();
+    await app.close();
+  });
+
+  it('без кандидатов ведёт себя как раньше', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { app, events, restore } = await build();
+    await post(app, 'sha256=deadbeef');
+    expect(events).toContain('webhook_signature_mismatch');
+    expect(warn.mock.calls.map((c) => String(c[0])).join(' ')).not.toContain('КАНДИДАТ');
+    warn.mockRestore();
+    restore();
+    await app.close();
+  });
+});
