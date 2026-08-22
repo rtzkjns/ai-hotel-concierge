@@ -104,6 +104,8 @@ export interface ServerDeps {
       appSecret?: string;
       /** Shared secret sent by 360dialog as a custom webhook header (d360 does not HMAC-sign). */
       webhookSecret?: string;
+      /** 'd360' подписывает своим ключом — HMAC нашего приложения к нему неприменим. */
+      provider?: string;
       phoneNumberIds: Record<string, string>;
     };
     /** У Instagram отдельное приложение Meta и отдельный секрет подписи. */
@@ -182,7 +184,13 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
           return reply.code(401).send('invalid webhook secret');
         }
       }
+      // 360dialog подписывает доставки СВОИМ ключом, а не секретом нашего приложения:
+      // проверка ключом Meta там не может сойтись в принципе и за сутки дала 60 ложных
+      // тревог, за которыми потерялись бы настоящие. Гарантией на этом провайдере служит
+      // общий секрет в заголовке — он проверен выше и без него запрос сюда не доходит.
+      const metaSigned = deps.config.whatsapp.provider !== 'd360';
       if (
+        metaSigned &&
         rejectBadSignature(
           deps,
           rawBody,

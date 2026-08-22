@@ -563,3 +563,75 @@ describe('WhatsApp round-trip integration', () => {
     await app.close();
   });
 });
+
+describe('подпись вебхука на разных провайдерах', () => {
+  const SECRET = 'meta-app-secret';
+  const SHARED = 'shared-header-secret';
+  const payload = JSON.stringify({ object: 'whatsapp_business_account', entry: [] });
+
+  /** На Meta общего заголовка нет — там гарантией служит именно подпись. */
+  async function build(provider: string) {
+    const events: string[] = [];
+    const app = await buildServer({
+      engine: { handle: vi.fn(async () => null) },
+      adapters: {},
+      store: { recordEvent: (t: string) => events.push(t) },
+      config: {
+        whatsapp: {
+          verifyToken: 'v',
+          appSecret: SECRET,
+          webhookSecret: provider === 'd360' ? SHARED : undefined,
+          provider,
+          phoneNumberIds: {},
+        },
+        instagram: { igIds: {}, tokens: {} },
+      },
+    } as never);
+    return { app, events };
+  }
+
+  it('360dialog: чужая подпись Meta не считается ошибкой', async () => {
+    // d360 подписывает своим ключом. Проверка ключом Meta там не сходится НИКОГДА и за
+    // сутки дала 60 ложных тревог, за которыми потерялись бы настоящие. Гарантия здесь —
+    // общий секрет в заголовке.
+    const { app, events } = await build('d360');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/webhooks/whatsapp',
+      headers: {
+        'content-type': 'application/json',
+        'x-kazzhol-webhook-secret': SHARED,
+        'x-hub-signature-256': 'sha256=подпись360dialog',
+      },
+      payload,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(events).not.toContain('webhook_signature_mismatch');
+    await app.close();
+  });
+
+  it('360dialog: без общего секрета в заголовке запрос всё равно отвергается', async () => {
+    // Отключив проверку Meta, нельзя остаться совсем без защиты.
+    const { app } = await build('d360');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/webhooks/whatsapp',
+      headers: { 'content-type': 'application/json' },
+      payload,
+    });
+    expect(res.statusCode).toBe(401);
+    await app.close();
+  });
+
+  it('Meta: подпись по-прежнему проверяется', async () => {
+    const { app, events } = await build('meta');
+    await app.inject({
+      method: 'POST',
+      url: '/webhooks/whatsapp',
+      headers: { 'content-type': 'application/json', 'x-hub-signature-256': 'sha256=deadbeef' },
+      payload,
+    });
+    expect(events).toContain('webhook_signature_mismatch');
+    await app.close();
+  });
+});
