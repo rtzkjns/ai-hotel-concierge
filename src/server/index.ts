@@ -349,8 +349,16 @@ async function processInstagram(deps: ServerDeps, rawBody: string): Promise<void
   } catch {
     return; // acked already; malformed payloads are simply dropped
   }
-  // Менеджер ответил гостю прямо из приложения Instagram — бот обязан замолчать, иначе в
-  // одном чате говорят двое. Своё собственное эхо отличаем по тексту: он уже лежит в истории.
+  // Исходящее аккаунта — записываем в историю, но бота НЕ глушим.
+  //
+  // Instagram помечает как is_echo и наши собственные отправки, и ответ живого менеджера, и
+  // автоответ, настроенный в самом аккаунте. Различить их нельзя. Раньше здесь стоял перевод
+  // диалога в handed_off — и он выстрелил в живого гостя: автоответ «перейдите на наш сайт»
+  // был принят за менеджера, бот замолчал, а гостья спрашивала меню, даты и число человек
+  // в пустоту, пока не написала жалобу. Молчание перед гостем хуже, чем два голоса в чате,
+  // и несравнимо хуже, чем лишняя строка в истории.
+  //
+  // Диалог теперь передаётся человеку только явно — когда менеджер берёт его в панели.
   for (const echo of adapter.parseEchoes?.(body) ?? []) {
     const conversationId = `instagram:${echo.igId}|${echo.psid}`;
     const convo = deps.store.getConversation?.(conversationId) ?? null;
@@ -360,7 +368,6 @@ async function processInstagram(deps: ServerDeps, rawBody: string): Promise<void
       .find((m) => m.role === 'assistant')?.content;
     if (ours && ours.includes(echo.text.trim())) continue; // это мы сами
     deps.store.appendMessage?.(conversationId, { role: 'assistant', content: echo.text });
-    if (convo.status !== 'handed_off') deps.store.setStatus?.(conversationId, 'handed_off');
     track(deps.store, 'ig_staff_echo', { conversationId, channel: 'instagram' });
   }
 

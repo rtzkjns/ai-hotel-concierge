@@ -217,7 +217,7 @@ describe('Engine.handle', () => {
     expect(deps.client.messages.create).not.toHaveBeenCalled();
   });
 
-  it('acknowledges once while the request is still waiting for a manager', async () => {
+  it('говорит «передаю менеджеру» один раз, а потом возвращается к работе', async () => {
     const { engine, store, deps } = makeEngine();
     const convo = withProperty(store, 'telegram', '1', 'almaty');
     convo.status = 'handed_off';
@@ -228,9 +228,26 @@ describe('Engine.handle', () => {
     expect(first?.[0].text).toContain('менеджер');
     expect(deps.client.messages.create).not.toHaveBeenCalled();
 
-    // Но повторять эту строку на каждое сообщение нельзя — это тоже поломка.
+    // Гость написал снова, а человек не подключился — значит его и не будет. Молчать
+    // дальше нельзя: ровно так гостья спрашивала меню, даты и число человек в пустоту,
+    // пока не написала жалобу.
     const second = await engine.handle(textMsg('ну?'));
-    expect(second).toBeNull();
+    expect(second).not.toBeNull();
+    expect(deps.client.messages.create).toHaveBeenCalled();
+    expect(store.conversations.get('telegram:1')!.status).toBe('active');
+    expect(store.events.map((e) => e.type)).toContain('handoff_resumed');
+  });
+
+  it('но молчит, пока диалог реально взят человеком', async () => {
+    const { engine, store, deps } = makeEngine();
+    const convo = withProperty(store, 'telegram', '2', 'almaty');
+    convo.status = 'handed_off';
+    convo.takenBy = 'aigul';
+
+    expect(await engine.handle(textMsg('ало', 'telegram', '2'))).toBeNull();
+    expect(await engine.handle(textMsg('вы тут?', 'telegram', '2'))).toBeNull();
+    expect(deps.client.messages.create).not.toHaveBeenCalled();
+    expect(store.conversations.get('telegram:2')!.status).toBe('handed_off');
   });
 
   it('still records the guest message in the transcript while handed off', async () => {

@@ -405,32 +405,47 @@ export class Engine {
       }
     }
 
-    // A human took this chat over — the bot stays silent until it is handed back,
-    // but the guest's words must still land in the transcript the manager reads.
+    // Диалог передан человеку: бот молчит, но слова гостя обязаны попасть в переписку,
+    // которую менеджер читает.
     if (convo.status === 'handed_off') {
-      if (msg.text !== undefined && msg.text.trim() !== '') {
-        store.appendMessage(convo.id, { role: 'user', content: msg.text });
-        track(store, 'message_in', {
+      const text = msg.text?.trim() ?? '';
+      const saidHolding = [...convo.history]
+        .reverse()
+        .find((m) => m.role === 'assistant')
+        ?.content.startsWith(HOLDING_MARK);
+
+      // Гость написал СНОВА, а человек так и не подключился — значит его и не будет.
+      // Дальше молчать нельзя: именно так гостья спрашивала меню, даты и число человек
+      // в пустоту, пока не написала жалобу. Возвращаем бота к работе ДО записи сообщения,
+      // чтобы дальше всё шло обычным путём и реплика не задвоилась. Менеджер уже уведомлён;
+      // возьмёт диалог в панели — takenBy встанет, и бот снова умолкнет.
+      if (!convo.takenBy && text && saidHolding) {
+        store.setStatus(convo.id, 'active');
+        convo.status = 'active';
+        track(store, 'handoff_resumed', {
           conversationId: convo.id,
           property: convo.property,
           channel: msg.channel,
-          payload: { language: convo.language, handedOff: true },
         });
-      }
-      // Пока диалог никем не взят, полное молчание — худший исход в самой горячей
-      // точке: гость с жалобой прямо в отеле писал и не получал вообще ничего.
-      // Одна короткая строка, не чаще чем раз в HOLDING_REPLY_GAP_MS.
-      if (!convo.takenBy && msg.text?.trim()) {
-        // Говорим это ровно один раз: если последним сказали то же самое, молчим —
-        // повторять одну строку на каждое сообщение так же плохо, как молчать.
-        const lastFromUs = [...convo.history].reverse().find((m) => m.role === 'assistant');
-        if (!lastFromUs?.content.startsWith(HOLDING_MARK)) {
+      } else {
+        if (text) {
+          store.appendMessage(convo.id, { role: 'user', content: text });
+          track(store, 'message_in', {
+            conversationId: convo.id,
+            property: convo.property,
+            channel: msg.channel,
+            payload: { language: convo.language, handedOff: true },
+          });
+        }
+        // Полное молчание — худший исход в самой горячей точке: гость с жалобой прямо в
+        // отеле писал и не получал вообще ничего. Одна короткая строка, ровно один раз.
+        if (!convo.takenBy && text && !saidHolding) {
           const line = HOLDING_REPLY[convo.language ?? 'ru'];
           store.appendMessage(convo.id, { role: 'assistant', content: `${HOLDING_MARK}${line}` });
           return [{ text: line, delayMs: 0 }];
         }
+        return null;
       }
-      return null;
     }
 
     const hinted = this.resolveProperty(msg.propertyHint);
