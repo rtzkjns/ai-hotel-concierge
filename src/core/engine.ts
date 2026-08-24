@@ -20,6 +20,7 @@ import type { AvailabilityProvider } from '../integrations/exely/provider';
 import type { PaymentGateway } from '../integrations/payments';
 import type { Transcriber } from '../integrations/transcribe';
 import { properties, propertyList } from '../knowledge';
+import { guardInventedPrices } from '../style/prices';
 import {
   dropRepeatedGreeting,
   neutraliseSelfGender,
@@ -119,6 +120,9 @@ export function alreadyGreeted(history: ChatMessage[]): boolean {
       !m.content.startsWith(HOLDING_PREFIX),
   );
 }
+
+/** Инструменты, после которых названные суммы законны: они пришли из системы отеля. */
+const PRICE_TOOLS = ['check_availability', 'create_booking', 'get_room_info', 'check_promo_code'];
 
 /** Отказ, ограничение или «пока нельзя» — содержательный ответ, а не отписка. */
 const LIMITATION_RE =
@@ -576,6 +580,27 @@ export class Engine {
       // У бота нет пола. Промпт это запрещает, но модель срывается, подхватывая род из
       // собственных прежних реплик в истории диалога, — поймано в бою на «готова оформить».
       reply = neutraliseSelfGender(reply);
+
+      // Выдуманная цена — самая дорогая ошибка бота: гость закладывает её в поездку и
+      // узнаёт правду на месте. Запрет в промпте был с самого начала и не удержал —
+      // бот назвал «трансфер из аэропорта 14 000 ₸», числа которого нет нигде. Режем.
+      const priced = guardInventedPrices(
+        reply,
+        // Знания того отеля, о котором идёт разговор: цены у отелей разные, и сумма из
+        // соседнего отеля здесь такая же выдумка, как взятая с потолка.
+        propertyList.find((p) => p.key === convo.property)
+          ? this.knowledgeOf(propertyList.find((p) => p.key === convo.property)!)
+          : '',
+        (result.toolsUsed ?? []).some((t) => PRICE_TOOLS.includes(t)),
+      );
+      if (priced.invented.length) {
+        track(store, 'invented_price_blocked', {
+          conversationId: convo.id,
+          property: convo.property,
+          payload: { sums: priced.invented },
+        });
+      }
+      reply = priced.reply;
 
       // Проверено A/B-прогоном: «Парковка бесплатная?» → «Да, бесплатная»; но стоит
       // добавить второй, неизвестный вопрос («Сколько мест?») — и известная половина
