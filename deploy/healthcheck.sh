@@ -12,23 +12,48 @@ add() { PROBLEMS="${PROBLEMS}
 • $1"; }
 
 # --- Instagram: токен жив и право на отправку не отозвано ---
+#
+# Пустой ответ и отвергнутый токен — РАЗНЫЕ вещи, и путать их нельзя. Meta периодически
+# глушит запросы на часы и просто не отвечает; сторож называл это «токен НЕ работает» и
+# поднимал владельца среди дня из-за сетевой заминки. Токены при этом были живы — проверено.
+# Поэтому: одна повторная попытка, и тревога только когда Meta ЯВНО что-то ответила.
+IG_USERNAME='import sys,json
+try: print(json.load(sys.stdin).get("username",""))
+except Exception: print("")'
+IG_ERROR='import sys,json
+try: print(json.load(sys.stdin).get("error",{}).get("message",""))
+except Exception: print("")'
+IG_SUBS='import sys,json
+try: print("ok" if json.load(sys.stdin).get("data") else "no")
+except Exception: print("skip")'
+
 for H in ALMATY ASTANA PARK_ALMATY SEVEN; do
   T=$(grep "^INSTAGRAM_TOKEN_${H}=" "$ENV" | cut -d= -f2-)
   [ -z "$T" ] && continue
-  ME=$(curl -s -m 20 "https://graph.instagram.com/v23.0/me?fields=username&access_token=${T}")
-  U=$(printf '%s' "$ME" | python3 -c 'import sys,json
-try: print(json.load(sys.stdin).get("username",""))
-except Exception: print("")' 2>/dev/null)
+
+  ME=$(curl -s -m 20 "https://graph.instagram.com/v26.0/me?fields=username&access_token=${T}")
+  U=$(printf '%s' "$ME" | python3 -c "$IG_USERNAME" 2>/dev/null)
   if [ -z "$U" ]; then
-    ERR=$(printf '%s' "$ME" | head -c 160)
-    add "Instagram ${H}: токен НЕ работает — ${ERR}"
+    sleep 15
+    ME=$(curl -s -m 20 "https://graph.instagram.com/v26.0/me?fields=username&access_token=${T}")
+    U=$(printf '%s' "$ME" | python3 -c "$IG_USERNAME" 2>/dev/null)
+  fi
+
+  if [ -z "$U" ]; then
+    ERR=$(printf '%s' "$ME" | python3 -c "$IG_ERROR" 2>/dev/null)
+    if [ -n "$ERR" ]; then
+      add "Instagram ${H}: токен отвергнут — ${ERR}"
+    else
+      add "Instagram ${H}: Meta не ответила дважды подряд — проверьте, отвечает ли бот в директе"
+    fi
     continue
   fi
-  SUB=$(curl -s -m 20 "https://graph.instagram.com/v23.0/me/subscribed_apps?access_token=${T}" \
-    | python3 -c 'import sys,json
-try: print("ok" if json.load(sys.stdin).get("data") else "no")
-except Exception: print("no")' 2>/dev/null)
-  [ "$SUB" != "ok" ] && add "Instagram ${H} (${U}): ПОДПИСКА НА ВХОДЯЩИЕ СЛЕТЕЛА — гости пишут, бот не видит"
+
+  SUB=$(curl -s -m 20 "https://graph.instagram.com/v26.0/me/subscribed_apps?access_token=${T}" | python3 -c "$IG_SUBS" 2>/dev/null)
+  # «skip» — это тоже отсутствие ответа, а не слетевшая подписка.
+  if [ "$SUB" = "no" ]; then
+    add "Instagram ${H} (${U}): ПОДПИСКА НА ВХОДЯЩИЕ СЛЕТЕЛА — гости пишут, бот не видит"
+  fi
 done
 
 # --- Exely: авторизация по каждому кабинету ---
