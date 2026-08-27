@@ -182,6 +182,151 @@ describe('сборка запроса к движку', () => {
     expect(stay.guest_count_info.guest_counts[0].count).toBeLessThanOrEqual(2);
   });
 
+  // Раскладку гостей присылает сам движок. Повторяем её дословно — оба прежних дефекта
+  // («Invalid adult placement», «More guests than it allows») родились из самодеятельности.
+  const FAMILY = {
+    id: '6156',
+    placements: [
+      { code: '8504', index: 1, kind: 'adult', capacity: 2 },
+      { code: '80887', index: 2, kind: 'extra_adult', capacity: 1 },
+    ],
+  };
+
+  it('ребёнок объявляется ребёнком, с возрастом и возрастной группой', () => {
+    const stay = stayOf(
+      buildIbeBooking(
+        '801',
+        rq({
+          roomType: FAMILY,
+          guestCount: { adultCount: 2, childCount: 1, childAges: [7] },
+          guests: [
+            { firstName: 'А', lastName: 'А' },
+            { firstName: 'Б', lastName: 'Б' },
+            { firstName: 'В', lastName: 'В' },
+          ],
+          seats: [
+            { index: 1, kind: 'adult' },
+            { index: 1, kind: 'adult' },
+            { index: 2, kind: 'extra_adult', age: 7, ageGroup: 297 },
+          ],
+        }),
+        'ru-ru',
+      ),
+    );
+    expect(stay.guest_count_info.guest_counts).toEqual([
+      { age_qualifying_code: 'adult', count: 2, index: 1, placement_index: 1 },
+      { age_qualifying_code: 'child', count: 1, index: 2, placement_index: 2, age: 7, age_group: 297 },
+    ]);
+  });
+
+  it('взрослого не превращает в ребёнка: без возраста — обычное место', () => {
+    const stay = stayOf(
+      buildIbeBooking(
+        '801',
+        rq({
+          roomType: FAMILY,
+          guestCount: { adultCount: 3 },
+          guests: [
+            { firstName: 'А', lastName: 'А' },
+            { firstName: 'Б', lastName: 'Б' },
+            { firstName: 'В', lastName: 'В' },
+          ],
+          seats: [
+            { index: 1, kind: 'adult' },
+            { index: 1, kind: 'adult' },
+            { index: 2, kind: 'extra_adult' },
+          ],
+        }),
+        'ru-ru',
+      ),
+    );
+    expect(stay.guest_count_info.guest_counts).toEqual([
+      { age_qualifying_code: 'adult', count: 2, index: 1, placement_index: 1 },
+      { age_qualifying_code: 'adult', count: 1, index: 2, placement_index: 2 },
+    ]);
+  });
+
+  it('двоих детей разного возраста не сливает в одну запись', () => {
+    const stay = stayOf(
+      buildIbeBooking(
+        '801',
+        rq({
+          roomType: {
+            id: '6156',
+            placements: [
+              { code: '8504', index: 1, kind: 'adult', capacity: 2 },
+              { code: '80887', index: 2, kind: 'extra_adult', capacity: 2 },
+            ],
+          },
+          guestCount: { adultCount: 2, childCount: 2, childAges: [3, 9] },
+          guests: Array.from({ length: 4 }, (_, i) => ({ firstName: `Г${i}`, lastName: 'Г' })),
+          seats: [
+            { index: 1, kind: 'adult' },
+            { index: 1, kind: 'adult' },
+            { index: 2, kind: 'extra_adult', age: 3, ageGroup: 296 },
+            { index: 2, kind: 'extra_adult', age: 9, ageGroup: 297 },
+          ],
+        }),
+        'ru-ru',
+      ),
+    );
+    const kids = stay.guest_count_info.guest_counts.filter(
+      (g: { age_qualifying_code: string }) => g.age_qualifying_code === 'child',
+    );
+    expect(kids).toHaveLength(2);
+    expect(kids.map((k: { age: number }) => k.age).sort()).toEqual([3, 9]);
+  });
+
+  it('каждый гость садится ровно туда, куда его посчитали', () => {
+    const stay = stayOf(
+      buildIbeBooking(
+        '801',
+        rq({
+          roomType: FAMILY,
+          guestCount: { adultCount: 2, childCount: 1, childAges: [7] },
+          guests: [
+            { firstName: 'А', lastName: 'А' },
+            { firstName: 'Б', lastName: 'Б' },
+            { firstName: 'В', lastName: 'В' },
+          ],
+          seats: [
+            { index: 1, kind: 'adult' },
+            { index: 1, kind: 'adult' },
+            { index: 2, kind: 'extra_adult', age: 7, ageGroup: 297 },
+          ],
+        }),
+        'ru-ru',
+      ),
+    );
+    expect(stay.guests.map((g: { placement: { index: number } }) => g.placement.index)).toEqual([1, 1, 2]);
+  });
+
+  it('число посаженных всегда равно числу гостей — иначе движок скажет «больше, чем вмещает»', () => {
+    for (const seats of [
+      [{ index: 1, kind: 'adult' }],
+      [{ index: 1, kind: 'adult' }, { index: 1, kind: 'adult' }],
+      [{ index: 1, kind: 'adult' }, { index: 1, kind: 'adult' }, { index: 2, kind: 'extra_adult', age: 5, ageGroup: 296 }],
+    ]) {
+      const stay = stayOf(
+        buildIbeBooking(
+          '801',
+          rq({
+            roomType: FAMILY,
+            guestCount: { adultCount: 2 },
+            guests: seats.map((_, i) => ({ firstName: `Г${i}`, lastName: 'Г' })),
+            seats,
+          }),
+          'ru-ru',
+        ),
+      );
+      const placed = stay.guest_count_info.guest_counts.reduce(
+        (n: number, g: { count: number }) => n + g.count,
+        0,
+      );
+      expect(placed).toBe(seats.length);
+    }
+  });
+
   it('переносит имя, телефон и почту гостя — ради этого всё и затевалось', () => {
     const body = buildIbeBooking('801', rq(), 'ru-ru');
     expect(res(body).customer.first_name).toBe('Асель');

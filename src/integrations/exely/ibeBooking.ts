@@ -83,6 +83,13 @@ interface IbeRoomStay {
     }>;
   }>;
   rate_plans?: Array<{ code?: string }>;
+  /** Движок сам расписывает, кого куда сажать — это эталон, а не подсказка. */
+  guests?: Array<{
+    placement?: { index?: number; kind?: string; age_group?: number };
+    age?: number;
+    age_group?: number;
+    count?: number;
+  }>;
 }
 
 interface IbeResponse {
@@ -158,9 +165,34 @@ export function buildIbeBooking(
       count: number;
       index: number;
       placement_index: number;
+      age?: number;
+      age_group?: number;
     }>;
 
-    if (byCapacity) {
+    // Движок прислал готовую раскладку — повторяем её дословно. Это единственная ветка,
+    // которая правильно селит детей: ребёнок занимает дополнительное место, но объявляется
+    // своим возрастом и возрастной группой, иначе отель не узнает, что едет ребёнок.
+    if (rs.seats?.length) {
+      const merged = new Map<string, (typeof guestCounts)[number]>();
+      for (const seat of rs.seats) {
+        const isChild = typeof seat.age === 'number';
+        const key = `${seat.index}|${isChild ? 'child' : 'adult'}|${seat.age ?? ''}|${seat.ageGroup ?? ''}`;
+        const hit = merged.get(key);
+        if (hit) {
+          hit.count += 1;
+          continue;
+        }
+        merged.set(key, {
+          age_qualifying_code: isChild ? 'child' : 'adult',
+          count: 1,
+          index: merged.size + 1,
+          placement_index: seat.index,
+          ...(isChild ? { age: seat.age } : {}),
+          ...(isChild && seat.ageGroup !== undefined ? { age_group: seat.ageGroup } : {}),
+        });
+      }
+      guestCounts = [...merged.values()];
+    } else if (byCapacity) {
       guestCounts = [];
       let left = adults;
       for (const [i, p] of placements.entries()) {
@@ -343,16 +375,26 @@ export class IbeReservation implements ReservationClient {
   async placementsFor(
     propertyId: string,
     stay: BookingRq['roomStays'][number],
-  ): Promise<BookingRq['roomStays'][number]['roomType']['placements'] | null> {
+  ): Promise<{
+    placements: BookingRq['roomStays'][number]['roomType']['placements'];
+    seats: NonNullable<BookingRq['roomStays'][number]['seats']>;
+  } | null> {
+    // Детей обязательно называем здесь: спросив места только под взрослых, мы получали
+    // набор на меньшую компанию и ловили «More guests have been assigned to room than
+    // it allows». Возраст влияет и на цену, и на то, какое место ребёнку разрешено.
+    const guests: Array<Record<string, unknown>> = [
+      { age_qualifying_code: 'adult', count: Math.max(1, stay.guestCount.adultCount) },
+    ];
+    for (const age of stay.guestCount.childAges ?? []) {
+      guests.push({ age_qualifying_code: 'child', count: 1, age });
+    }
     const res = await this.call('hotel_availability', {
       language: this.language,
       currency: 'KZT',
       criterions: [
         {
           hotels: [{ code: propertyId }],
-          guests: [
-            { age_qualifying_code: 'adult', count: Math.max(1, stay.guestCount.adultCount) },
-          ],
+          guests,
           start_date: ibeDateTime(stay.stayDates.arrivalDateTime),
           end_date: ibeDateTime(stay.stayDates.departureDateTime),
         },
@@ -375,7 +417,23 @@ export class IbeReservation implements ReservationClient {
         capacity: p.capacity,
       }))
       .filter((p) => p.code !== '');
-    return found?.length ? found : null;
+    if (!found?.length) return null;
+
+    // Готовая раскладка от движка — по записи на человека. Её и повторим.
+    const seats: NonNullable<BookingRq['roomStays'][number]['seats']> = [];
+    for (const g of match?.guests ?? []) {
+      const index = g.placement?.index;
+      if (typeof index !== 'number') continue;
+      for (let n = 0; n < Math.max(1, g.count ?? 1); n += 1) {
+        seats.push({
+          index,
+          kind: g.placement?.kind ?? 'adult',
+          age: g.age,
+          ageGroup: g.age_group ?? g.placement?.age_group,
+        });
+      }
+    }
+    return { placements: found, seats };
   }
 
   /**
@@ -432,11 +490,12 @@ export class IbeReservation implements ReservationClient {
       // Места движка вместо символьных из поиска Exely — иначе «code is invalid».
       const roomStays: BookingRq['roomStays'] = [];
       for (const stay of b.roomStays) {
-        const placements = await this.placementsFor(propertyId, stay);
-        if (!placements) return { ok: false, error: 'ibe: номер недоступен на эти даты' };
+        const occupancy = await this.placementsFor(propertyId, stay);
+        if (!occupancy) return { ok: false, error: 'ibe: номер недоступен на эти даты' };
         roomStays.push({
           ...stay,
-          roomType: { ...stay.roomType, placements },
+          roomType: { ...stay.roomType, placements: occupancy.placements },
+          seats: occupancy.seats,
         });
       }
       const resolved: BookingRq = { ...b, roomStays };

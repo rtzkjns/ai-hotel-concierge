@@ -35,7 +35,15 @@ export interface BookingRq {
       placements: Array<{ code: string; index?: number; kind?: string; capacity?: number }>;
     };
     guests: Array<{ firstName: string; lastName: string }>;
-    guestCount: { adultCount: number; childCount?: number };
+    guestCount: { adultCount: number; childCount?: number; childAges?: number[] };
+    /**
+     * Раскладка гостей ПО СЛОВАМ ДВИЖКА — по одной записи на человека.
+     * Движок в ответе на поиск сам говорит, кого куда сажать; мы это повторяем, а не
+     * выводим заново. Оба прежних дефекта («Invalid adult placement», «More guests than
+     * it allows») родились именно из самодеятельности. Пусто — значит движка не
+     * спрашивали (путь Exely Search), тогда работает прежняя раскладка.
+     */
+    seats?: Array<{ index: number; kind: string; age?: number; ageGroup?: number }>;
     checksum: string;
     services?: Array<{ id: string }>;
   }>;
@@ -122,7 +130,7 @@ export function buildBooking(
         guests: [{ firstName: guest.first, lastName: guest.last }],
         guestCount:
           childCount > 0
-            ? { adultCount: Math.max(1, adults), childCount }
+            ? { adultCount: Math.max(1, adults), childCount, childAges }
             : { adultCount: Math.max(1, adults) },
         checksum: offer.checksum ?? '',
       },
