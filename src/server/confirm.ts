@@ -64,7 +64,12 @@ export interface ConfirmStore {
   findConfirmation(
     token: string,
   ): { data: unknown; expiresAt: string; bookingNumber: string | null } | null;
+  /** Атомарно занимает свободный токен. Возвращает false, если его уже занял кто-то другой. */
   claimConfirmation(token: string, bookingNumber: string): boolean;
+  /** Записывает итог поверх метки «оформляем». */
+  settleConfirmation(token: string, bookingNumber: string, from: string): boolean;
+  /** Снимает метку «оформляем», если оформление сорвалось. */
+  releaseConfirmation(token: string, from: string): void;
   recordEvent(
     type: string,
     data?: { conversationId?: string; property?: string; payload?: unknown },
@@ -265,6 +270,24 @@ const GONE = page(
 );
 
 /**
+ * Метка «оформляем прямо сейчас». Ставится ДО обращения к движку и этим закрывает гонку:
+ * гость нажимает «Подтвердить» дважды (а ждать приходится до пятнадцати секунд, пока
+ * присваивается номер ваучера), и раньше это давало ДВЕ настоящие брони в отеле —
+ * обе страницы рапортовали успех, персонал получал два уведомления.
+ * Значение намеренно не начинается с «KZ-», иначе оно прочтётся как код заявки.
+ */
+export const IN_PROGRESS = 'IN-PROGRESS';
+
+const workingPage = (): string =>
+  page(
+    'Оформляем',
+    `<h1>Оформляем бронирование</h1>` +
+      `<p class="note">Это занимает до полуминуты. Страница обновится сама — ` +
+      `не нажимайте кнопку повторно и не закрывайте вкладку.</p>` +
+      `<script>setTimeout(function(){location.reload()},5000)</script>`,
+  );
+
+/**
  * Страница оформленной брони — её же видит гость, обновивший страницу.
  *
  * Слово «оформлено» здесь появляется ТОЛЬКО после того, как бронь прочитана обратно из
@@ -371,7 +394,7 @@ function registerRoutes(app: FastifyInstance, deps: ConfirmDeps): void {
   const isRequestCode = (v: string): boolean => v.startsWith('KZ-');
 
   const resultPage = (d: ConfirmationData, mark: string): string =>
-    isRequestCode(mark) ? failedPage(d, mark) : bookedPage(d);
+    mark === IN_PROGRESS ? workingPage() : isRequestCode(mark) ? failedPage(d, mark) : bookedPage(d);
 
   app.get('/b/:token', async (req, reply) => {
     const { token } = req.params as { token: string };
@@ -415,21 +438,54 @@ function registerRoutes(app: FastifyInstance, deps: ConfirmDeps): void {
       return reply.type('text/html; charset=utf-8').send(resultPage(d, hit.code));
     }
 
-    const booked = await deps.createBooking({
-      conversationId: d.conversationId,
-      property: d.property,
-      checkIn: d.checkIn,
-      checkOut: d.checkOut,
-      guests: d.guests,
-      roomTypeId: d.roomTypeId,
-      ratePlanId: d.ratePlanId,
-      guestFirstName: d.guestFirstName,
-      guestLastName: d.guestLastName,
-      guestPhone: d.guestPhone,
-      guestEmail: d.guestEmail ?? undefined,
-      comment: d.comment ?? undefined,
-      language: d.language,
-    });
+    // Забираем токен ДО обращения к движку. Это единственное место, где гонка двух
+    // вкладок закрывается по-настоящему: UPDATE ... WHERE booking_number IS NULL
+    // атомарен, и второй запрос уходит показывать состояние, а не оформлять вторую бронь.
+    if (!store.claimConfirmation(token, IN_PROGRESS)) {
+      const again = load(token);
+      return reply
+        .type('text/html; charset=utf-8')
+        .send(again?.code ? resultPage(d, again.code) : GONE);
+    }
+
+    // Любой срыв ВНУТРИ оформления обязан снять метку: иначе гость навсегда останется
+    // на странице «оформляем», а токен станет мёртвым. Бронь при этом могла и создаться,
+    // поэтому персонал узнаёт об этом отдельно, а гостю не обещаем ни успеха, ни отказа.
+    let booked: Awaited<ReturnType<typeof deps.createBooking>>;
+    try {
+      booked = await deps.createBooking({
+        conversationId: d.conversationId,
+        property: d.property,
+        checkIn: d.checkIn,
+        checkOut: d.checkOut,
+        guests: d.guests,
+        roomTypeId: d.roomTypeId,
+        ratePlanId: d.ratePlanId,
+        guestFirstName: d.guestFirstName,
+        guestLastName: d.guestLastName,
+        guestPhone: d.guestPhone,
+        guestEmail: d.guestEmail ?? undefined,
+        comment: d.comment ?? undefined,
+        language: d.language,
+      });
+    } catch (err) {
+      store.releaseConfirmation(token, IN_PROGRESS);
+      store.recordEvent('confirmation_crashed', {
+        conversationId: d.conversationId,
+        property: d.property,
+        payload: { error: err instanceof Error ? err.message : String(err) },
+      });
+      await deps
+        .notifyStaff(
+          `⚠️ СБОЙ ПРИ ОФОРМЛЕНИИ — ${d.hotelName}\n` +
+            `${humanDate(d.checkIn)} — ${humanDate(d.checkOut)}, ${d.roomType}\n` +
+            `Гость: ${[d.guestFirstName, d.guestLastName].filter((x) => x && x !== '—').join(' ')}, ${d.guestPhone}\n` +
+            'Бронь МОГЛА создаться в системе — проверьте вручную и свяжитесь с гостем.',
+          d.property,
+        )
+        .catch(() => undefined);
+      throw err;
+    }
 
     const guestName = [d.guestFirstName, d.guestLastName].filter((x) => x && x !== '—').join(' ');
 
@@ -437,12 +493,7 @@ function registerRoutes(app: FastifyInstance, deps: ConfirmDeps): void {
       // Номер мог уйти, пока гость думал, или движок недоступен. Врать нельзя: говорим как
       // есть, отдаём заявку людям и оставляем форму отеля как рабочий путь.
       const code = requestCode();
-      if (!store.claimConfirmation(token, code)) {
-        const again = load(token);
-        return reply
-          .type('text/html; charset=utf-8')
-          .send(again?.code ? resultPage(d, again.code) : GONE);
-      }
+      store.settleConfirmation(token, code, IN_PROGRESS);
       deps.saveRequest({
         conversationId: d.conversationId,
         kind: 'booking',
@@ -483,9 +534,9 @@ function registerRoutes(app: FastifyInstance, deps: ConfirmDeps): void {
       return reply.type('text/html; charset=utf-8').send(failedPage(d, code));
     }
 
-    // Бронь создана и прочитана обратно из системы отеля. Записываем номер: гонка двух
-    // вкладок не должна привести ко второй брони.
-    store.claimConfirmation(token, booked.hotelNumber || booked.number);
+    // Бронь создана и прочитана обратно из системы отеля. Записываем номер поверх метки
+    // «оформляем» — гонку двух вкладок мы закрыли раньше, до обращения к движку.
+    store.settleConfirmation(token, booked.hotelNumber || booked.number, IN_PROGRESS);
     store.recordEvent('booking_confirmed', {
       conversationId: d.conversationId,
       property: d.property,

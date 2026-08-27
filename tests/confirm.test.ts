@@ -77,6 +77,16 @@ function memoryStore() {
       r.bookingNumber = number;
       return true;
     },
+    settleConfirmation(token: string, number: string, from: string) {
+      const r = rows.get(token);
+      if (!r || r.bookingNumber !== from) return false;
+      r.bookingNumber = number;
+      return true;
+    },
+    releaseConfirmation(token: string, from: string) {
+      const r = rows.get(token);
+      if (r && r.bookingNumber === from) r.bookingNumber = null;
+    },
     recordEvent(type: string, data?: { payload?: unknown }) {
       events.push({ type, payload: data?.payload });
     },
@@ -389,5 +399,67 @@ describe('дорешивание номера Exely', () => {
 
     await app.inject({ method: 'POST', url: `/b/${token}/confirm` });
     expect(resolveHotelNumber).not.toHaveBeenCalled();
+  });
+});
+
+// Гость нажимает «Подтвердить» дважды — на медленной связи это обычное дело, тем более
+// что ждать приходится до пятнадцати секунд, пока Exely присвоит номер ваучера.
+// Раньше это давало ДВЕ настоящие брони в отеле: токен столбился уже после движка.
+describe('двойное нажатие «Подтвердить»', () => {
+  it('создаёт РОВНО одну бронь при двух одновременных запросах', async () => {
+    let started = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const store = memoryStore();
+    // Движок отвечает не мгновенно — именно в этом окне и возникала вторая бронь.
+    const createBooking = vi.fn(async () => { started += 1; await gate; return CONFIRMED; });
+    const app = Fastify();
+    registerConfirmRoutes(app, {
+      store,
+      createBooking,
+      saveRequest: vi.fn(),
+      notifyStaff: vi.fn(async () => undefined),
+    });
+    const token = newConfirmationToken();
+    store.saveConfirmation({
+      token,
+      data: DATA,
+      expiresAt: new Date(Date.now() + CONFIRMATION_TTL_MS).toISOString(),
+    });
+
+    const first = app.inject({ method: 'POST', url: `/b/${token}/confirm` });
+    // Второй запрос уходит, пока первый ещё внутри движка.
+    await new Promise((r) => setTimeout(r, 5));
+    const second = await app.inject({ method: 'POST', url: `/b/${token}/confirm` });
+    release();
+    const firstRes = await first;
+
+    expect(createBooking).toHaveBeenCalledTimes(1);
+    expect(started).toBe(1);
+    expect(firstRes.statusCode).toBe(200);
+    // Второму показываем состояние, а не вторую бронь и не ошибку.
+    expect(second.statusCode).toBe(200);
+    expect(second.body).toContain('Оформляем');
+  });
+
+  it('снимает метку «оформляем», если оформление рухнуло, — токен не мертвеет', async () => {
+    const store = memoryStore();
+    const createBooking = vi.fn(async () => { throw new Error('движок упал'); });
+    const notifyStaff = vi.fn(async () => undefined);
+    const app = Fastify();
+    registerConfirmRoutes(app, { store, createBooking, saveRequest: vi.fn(), notifyStaff });
+    const token = newConfirmationToken();
+    store.saveConfirmation({
+      token,
+      data: DATA,
+      expiresAt: new Date(Date.now() + CONFIRMATION_TTL_MS).toISOString(),
+    });
+
+    await app.inject({ method: 'POST', url: `/b/${token}/confirm` });
+
+    expect(store.rows.get(token)!.bookingNumber).toBeNull();
+    // Персонал обязан узнать: бронь могла создаться на стороне отеля.
+    expect(notifyStaff).toHaveBeenCalled();
+    expect(store.events.some((e) => e.type === 'confirmation_crashed')).toBe(true);
   });
 });

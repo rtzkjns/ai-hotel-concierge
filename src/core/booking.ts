@@ -18,6 +18,25 @@ import { localizeBookingLink } from '../integrations/exely/bookingLink';
 const CHECK_IN_TIME = 'T15:00:00';
 const CHECK_OUT_TIME = 'T12:00:00';
 
+/** Ребёнком отель считает гостя до 18; всё вне 0..17 — не возраст, а сбой разбора. */
+export const MAX_CHILD_AGE = 17;
+/** Больше шести детей в одном номере не бывает — это точно ошибка разбора. */
+export const MAX_CHILDREN = 6;
+
+/**
+ * Возвращает первый неправдоподобный возраст ребёнка или null, если всё в порядке.
+ * Молча чинить такие значения нельзя: подставить возраст за гостя — то же самое,
+ * что его выдумать. Поэтому вызывающий обязан НЕ бронировать и позвать человека.
+ */
+export function badChildAge(ages: number[] | undefined): number | null {
+  if (!ages?.length) return null;
+  if (ages.length > MAX_CHILDREN) return ages.length;
+  for (const age of ages) {
+    if (!Number.isInteger(age) || age < 0 || age > MAX_CHILD_AGE) return age;
+  }
+  return null;
+}
+
 /** The subset of Store the booking service needs (structural, for easy faking). */
 export interface BookingStore {
   saveBooking(b: Booking): void;
@@ -179,6 +198,21 @@ export class BookingService {
     const { store, provider, propertyIdResolver } = this.deps;
     const reservation = this.reservationFor(args.property);
     const bookingEnabled = this.bookingEnabledFor(args.property);
+
+    // Возраст ребёнка приходит из разговора, а разговор можно понять неправильно.
+    // Движок проверено принимает «ребёнка 200 лет» и молча селит его — то есть отель
+    // получит бронь с заведомой чепухой. Чинить это подгонкой возраста нельзя: это
+    // ровно выдумывание за гостя. Поэтому не бронируем и отдаём людям.
+    const badAge = badChildAge(args.childAges);
+    if (badAge !== null) {
+      this.saveLinkLead(args, undefined, 'implausible_child_age');
+      track(store, 'booking_link_sent', {
+        conversationId: args.conversationId,
+        property: args.property,
+        payload: { reason: 'implausible_child_age', age: badAge },
+      });
+      return { mode: 'link', bookingFormLink: null, reason: 'implausible_child_age' };
+    }
 
     // Always re-search: prices change and a stale checksum is rejected by Exely. Include
     // childAges so a family stay re-prices with the children, matching the search the guest saw.

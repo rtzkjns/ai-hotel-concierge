@@ -554,6 +554,9 @@ export class Engine {
     let reply: string;
     let handedOff: boolean;
     let usedTools: string[] = [];
+    // Признак хода, а не разговора: получил ли бот в ЭТОМ ходу настоящие цены от Exely.
+    // Заслон от выдуманных сумм опирается на него, а не на факт вызова инструмента.
+    const turn = { livePrices: false };
     try {
       const result = await generateReply(history, {
         client: this.deps.client,
@@ -563,7 +566,7 @@ export class Engine {
           languageHint +
           this.liveContentFor(convo.property) +
           kbSection,
-        tools: this.buildTools(convo, history),
+        tools: this.buildTools(convo, history, turn),
         exhaustedReply: ROUNDS_EXHAUSTED_FALLBACK[convo.language ?? 'ru'],
       });
       // Enforce the official register deterministically, BEFORE the reply is stored: the
@@ -591,7 +594,13 @@ export class Engine {
         propertyList.find((p) => p.key === convo.property)
           ? this.knowledgeOf(propertyList.find((p) => p.key === convo.property)!)
           : '',
-        (result.toolsUsed ?? []).some((t) => PRICE_TOOLS.includes(t)),
+        // ВАЖНО: заслон снимает не сам ФАКТ вызова инструмента, а полученные живые цены.
+        // Раньше хватало вызова — и для отеля без кабинета Exely выходило наоборот:
+        // check_availability отвечал «живых цен нет», а заслон уже был снят, и выдуманная
+        // сумма шла гостю насквозь. То есть защита выключалась ровно в том случае,
+        // ради которого написана.
+        (result.toolsUsed ?? []).some((t) => t !== 'check_availability' && PRICE_TOOLS.includes(t)) ||
+          turn.livePrices,
       );
       if (priced.invented.length) {
         track(store, 'invented_price_blocked', {
@@ -822,7 +831,11 @@ export class Engine {
   }
 
   /** Binds every tool to this conversation: ids, property defaults, notifications. */
-  private buildTools(convo: Conversation, history: ChatMessage[]): ToolHandlers {
+  private buildTools(
+    convo: Conversation,
+    history: ChatMessage[],
+    turn: { livePrices: boolean } = { livePrices: false },
+  ): ToolHandlers {
     const { store, availabilityProvider, bookingService, paymentGateway, crm, staffNotifier } =
       this.deps;
     const hotelName = properties[convo.property]?.name ?? convo.property;
@@ -902,6 +915,12 @@ export class Engine {
             roomTypeId: offers[0].roomTypeId as number | undefined,
             ratePlanId: offers[0].ratePlanId as number | undefined,
           });
+        }
+        // Живые цены получены — только теперь названные суммы законны, и только теперь
+        // снимается заслон от выдуманных цен. Заглушка сюда не доходит: её отсекает
+        // защита выше, которая вырезает подставные суммы и зовёт людей.
+        if (Array.isArray(offers) && offers.length > 0) {
+          turn.livePrices = true;
         }
         // Список исчерпывающий. Без этой пометки бот дописывал «есть и другие категории»,
         // опираясь на каталог из базы знаний, — и это неправда: остальные заняты.

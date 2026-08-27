@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { BookingService } from '../src/core/booking';
+import { BookingService, badChildAge } from '../src/core/booking';
 import { ExelyReservation } from '../src/integrations/exely/reservation';
 import type { AvailabilityResult, RoomOffer } from '../src/integrations/exely/types';
 import type { Booking, BookingLead } from '../src/types';
@@ -452,5 +452,30 @@ describe('BookingService.createBooking — Round-2 hardening', () => {
     const result = await svc(http).service.createBooking(args);
     expect(result.mode).toBe('confirmed');
     if (result.mode === 'confirmed') expect(result.total).toBe(120000); // offer.totalPrice, not 0
+  });
+});
+
+// Движок проверено принимает «ребёнка 200 лет» и молча его селит — отель получит
+// бронь с чепухой. Подгонять возраст за гостя нельзя: это и есть выдумывание.
+describe('неправдоподобный возраст ребёнка', () => {
+  it('пропускает нормальные возрасты', () => {
+    expect(badChildAge(undefined)).toBeNull();
+    expect(badChildAge([])).toBeNull();
+    expect(badChildAge([0])).toBeNull();
+    expect(badChildAge([7, 12, 17])).toBeNull();
+  });
+
+  it('ловит чепуху вместо возраста', () => {
+    expect(badChildAge([200])).toBe(200);
+    expect(badChildAge([-1])).toBe(-1);
+    expect(badChildAge([18])).toBe(18);
+    expect(badChildAge([7.5])).toBe(7.5);
+    expect(badChildAge([Number.NaN])).toBeNaN();
+    expect(badChildAge([5, 999])).toBe(999);
+  });
+
+  it('ловит невозможное число детей', () => {
+    expect(badChildAge([1, 2, 3, 4, 5, 6])).toBeNull();
+    expect(badChildAge([1, 2, 3, 4, 5, 6, 7])).toBe(7);
   });
 });

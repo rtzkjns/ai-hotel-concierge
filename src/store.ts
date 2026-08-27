@@ -798,6 +798,25 @@ export class Store {
     return res.changes > 0;
   }
 
+  /**
+   * Записывает итог поверх метки «оформляем». Токен к этому моменту уже забран
+   * claimConfirmation, поэтому условие тут не по NULL, а по самой метке — иначе итог
+   * не запишется и гость навсегда останется на странице ожидания.
+   */
+  settleConfirmation(token: string, bookingNumber: string, from: string): boolean {
+    const res = this.db
+      .prepare('UPDATE confirmations SET booking_number = ? WHERE token = ? AND booking_number = ?')
+      .run(bookingNumber, token, from);
+    return res.changes > 0;
+  }
+
+  /** Снимает метку «оформляем», если оформление сорвалось до записи итога. */
+  releaseConfirmation(token: string, from: string): void {
+    this.db
+      .prepare('UPDATE confirmations SET booking_number = NULL WHERE token = ? AND booking_number = ?')
+      .run(token, from);
+  }
+
   // --- MICE ----------------------------------------------------------------
 
   saveMice(m: MiceRequest): void {
