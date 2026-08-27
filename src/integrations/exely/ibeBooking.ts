@@ -120,12 +120,21 @@ export function describeErrors(res: IbeResponse): string {
  * bank, so nothing is left half-finished if the guest closes the chat. Prepaid options exist
  * but would strand a booking mid-payment with no human watching.
  */
+/**
+ * Берём ТОЛЬКО тот способ оплаты, который мы способны довести до конца сами.
+ *
+ * Раньше в крайнем случае брался options[0] — то есть подошла бы и гарантия банковской
+ * картой. Карты у нас нет: бронь создалась бы и навсегда осталась неподтверждённой, а
+ * гостю мы бы сказали «оформлено». Найдено на тарифе «Long Stay» (заезды от 30 ночей
+ * в Алматы и Park), где оплаты при заселении нет вовсе.
+ *
+ * Ничего не подошло — пусть гость дооформит на форме отеля, где карту ввести можно.
+ */
 export function pickGuarantee(options: GuaranteeOption[] | undefined): GuaranteeOption | undefined {
   if (!options?.length) return undefined;
   return (
     options.find((o) => o.payment_system_code === 'AT_ARRIVAL') ??
-    options.find((o) => o.require_prepayment === false) ??
-    options[0]
+    options.find((o) => o.require_prepayment === false)
   );
 }
 

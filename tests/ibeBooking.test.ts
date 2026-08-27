@@ -327,6 +327,23 @@ describe('сборка запроса к движку', () => {
     }
   });
 
+  // Карты у нас нет. Взяв гарантию с предоплатой, мы создали бы бронь, которую нечем
+  // подтвердить, и сказали бы гостю «оформлено». Найдено на тарифе «Long Stay».
+  it('не берёт способ оплаты, который мы не можем довести до конца', () => {
+    const card = { code: '9', payment_system_code: 'CARD', require_prepayment: true } as never;
+    expect(pickGuarantee([card])).toBeUndefined();
+    expect(pickGuarantee([])).toBeUndefined();
+    expect(pickGuarantee(undefined)).toBeUndefined();
+  });
+
+  it('берёт оплату при заселении, когда она есть', () => {
+    const card = { code: '9', payment_system_code: 'CARD', require_prepayment: true } as never;
+    const arrival = { code: '1', payment_system_code: 'AT_ARRIVAL' } as never;
+    const free = { code: '2', payment_system_code: 'OTHER', require_prepayment: false } as never;
+    expect(pickGuarantee([card, arrival])?.code).toBe('1');
+    expect(pickGuarantee([card, free])?.code).toBe('2');
+  });
+
   it('переносит имя, телефон и почту гостя — ради этого всё и затевалось', () => {
     const body = buildIbeBooking('801', rq(), 'ru-ru');
     expect(res(body).customer.first_name).toBe('Асель');

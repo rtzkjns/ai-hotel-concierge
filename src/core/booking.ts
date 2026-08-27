@@ -203,6 +203,19 @@ export class BookingService {
     // Движок проверено принимает «ребёнка 200 лет» и молча селит его — то есть отель
     // получит бронь с заведомой чепухой. Чинить это подгонкой возраста нельзя: это
     // ровно выдумывание за гостя. Поэтому не бронируем и отдаём людям.
+    // «Только дети» бронировать нельзя, и молча дописывать взрослого — тоже: в отель
+    // уедет состав, которого гость не называл, и цена за лишнего человека. Проверено:
+    // движок такой запрос принимает и спокойно селит семилетнего одного.
+    if (Math.max(0, args.guests) < 1) {
+      this.saveLinkLead(args, undefined, 'no_adult_in_party');
+      track(store, 'booking_link_sent', {
+        conversationId: args.conversationId,
+        property: args.property,
+        payload: { reason: 'no_adult_in_party' },
+      });
+      return { mode: 'link', bookingFormLink: null, reason: 'no_adult_in_party' };
+    }
+
     const badAge = badChildAge(args.childAges);
     if (badAge !== null) {
       this.saveLinkLead(args, undefined, 'implausible_child_age');
