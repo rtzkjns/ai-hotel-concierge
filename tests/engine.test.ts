@@ -430,6 +430,37 @@ describe('Engine.handle', () => {
     expect(notifier.texts.some((t) => t.includes('без живых цен'))).toBe(true);
   });
 
+  // Живая проверка: Алматы на 5 гостей отдаёт 0 предложений, а на тех же датах на двоих — 9.
+  // Номера свободны, просто впятером в один не помещаются. Сказать «мест нет» — соврать
+  // и отправить семью искать другие даты, которые ни при чём.
+  it('большая компания: не выдаёт «мест нет», когда номера есть, но не вмещают', async () => {
+    const live = vi.fn(async (q: { property: string; guests?: number }) => ({
+      property: q.property,
+      checkIn: '2026-10-05',
+      checkOut: '2026-10-07',
+      // ноль на всю компанию, но есть предложения на двоих — ровно как в бою
+      offers:
+        (q.guests ?? 0) > 2
+          ? []
+          : [{ roomType: 'Standard', available: true, pricePerNight: 50000, currency: 'KZT' }],
+      source: 'exely' as const,
+    }));
+    const { engine, store } = makeEngine({
+      client: fakeClient([
+        toolUse('check_availability', { checkIn: '2026-10-05', checkOut: '2026-10-07', guests: 5 }),
+        finalText('впятером в один номер не разместить — предложу два рядом'),
+      ]),
+      availabilityProvider: { checkAvailability: live } as never,
+    });
+    withProperty(store, 'telegram', '77', 'almaty');
+
+    await engine.handle(textMsg('нужен номер на 5 человек 5 октября', 'telegram', '77'));
+
+    // Инструмент обязан перепроверить те же даты на двоих, чтобы отличить «занято» от «не влезут».
+    expect(live.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(live.mock.calls.some((c) => (c[0] as { guests?: number }).guests === 2)).toBe(true);
+  });
+
   it('applies the 0.6 delay multiplier on the web widget channel', async () => {
     const reply = finalText('секунду, гляну по датам — сейчас всё расскажу подробно');
     const tg = makeEngine({ client: fakeClient([reply]) });

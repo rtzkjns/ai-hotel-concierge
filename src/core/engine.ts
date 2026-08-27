@@ -915,6 +915,34 @@ export class Engine {
           };
         }
         if (Array.isArray(offers) && offers.length === 0) {
+          // «Ноль предложений» значит две РАЗНЫЕ вещи, и путать их — врать гостю.
+          // Живая проверка: на 5 человек Алматы отдаёт 0, а на тех же датах на двоих — 9.
+          // Номера свободны, просто впятером в один не помещаются. Сказать «мест нет» —
+          // отправить семью искать другие даты, которых ей не нужно.
+          const party = Number(input.guests ?? 0) + (input.childAges?.length ?? 0);
+          if (party > 2) {
+            const forTwo = await availabilityProvider
+              .checkAvailability({
+                property,
+                checkIn: input.checkIn,
+                checkOut: input.checkOut,
+                guests: 2,
+              })
+              .catch(() => null);
+            if (forTwo && forTwo.source !== 'stub' && forTwo.offers.length > 0) {
+              return {
+                ...(result as object),
+                soldOut: false,
+                partyTooLarge: true,
+                instruction:
+                  `Номера на эти даты СВОБОДНЫ, но ни один не вмещает ${party} чел. — в этом и причина. ` +
+                  'НЕ говори «мест нет» и не предлагай другие даты: даты ни при чём. Скажи прямо, что ' +
+                  'такую компанию в один номер не разместить, и предложи два номера рядом. Оформить два ' +
+                  'номера сразу ты не можешь — запиши заявку и передай менеджеру, честно сказав об этом. ' +
+                  'Цены отдельных номеров называй только те, что вернул инструмент.',
+              };
+            }
+          }
           const sameCity = propertyList
             .filter((h) => h.key !== property && h.bookable !== false && h.city === properties[property]?.city)
             .map((h) => `${h.name} (property key: ${h.key})`);
