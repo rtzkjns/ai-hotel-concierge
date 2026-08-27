@@ -39,6 +39,13 @@ export interface CreateBookingInput {
   comment?: string;
   upsellAccepted?: UpsellKind[];
   childAges?: number[];
+  /** Дополнительные номера той же брони: одна бронь, несколько комнат. */
+  extraRooms?: Array<{
+    roomTypeId: string;
+    ratePlanId: string;
+    guests: number;
+    childAges?: number[];
+  }>;
   property?: PropertyKey;
 }
 
@@ -171,6 +178,29 @@ export const toolDefinitions: Anthropic.Tool[] = [
           type: 'array',
           items: { type: 'string', enum: ['early_checkin', 'late_checkout', 'upgrade'] },
           description: 'Upsells the guest accepted, if any.',
+        },
+        extraRooms: {
+          type: 'array',
+          description:
+            'ADDITIONAL rooms for the same stay, when one room cannot hold the whole party ' +
+            '(e.g. five guests) or the guest asked for several rooms. The fields above describe ' +
+            'the FIRST room; each entry here is one more room in the SAME booking. Use ids from ' +
+            'check_availability offers, and split the party so every room fits its own occupancy. ' +
+            'Omit for an ordinary single-room booking.',
+          items: {
+            type: 'object',
+            properties: {
+              roomTypeId: { type: 'string', description: 'Room type id from a check_availability offer' },
+              ratePlanId: { type: 'string', description: 'Rate plan id from a check_availability offer' },
+              guests: { type: 'number', description: 'ADULT guests in THIS room' },
+              childAges: {
+                type: 'array',
+                items: { type: 'number' },
+                description: 'Ages of children in THIS room, if any',
+              },
+            },
+            required: ['roomTypeId', 'ratePlanId', 'guests'],
+          },
         },
         property: propertySchema,
       },

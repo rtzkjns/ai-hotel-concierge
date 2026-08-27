@@ -498,3 +498,51 @@ describe('сумма не расходится между нажатием и о
     expect(reopened.body).not.toContain(staleSum);
   });
 });
+
+// Пятеро в один номер не помещаются нигде в сети — правильный ответ два номера.
+// Движок принимает несколько номеров ОДНОЙ бронью (проверено вживую на 2 и 3 номерах).
+describe('бронь на несколько номеров', () => {
+  const TWO_ROOMS: ConfirmationData = {
+    ...DATA,
+    guests: 3,
+    roomType: 'Family room',
+    totalPrice: 253850,
+    extraRooms: [
+      { roomTypeId: '5052704', ratePlanId: '349868', roomType: 'Standard Double Room', guests: 2, totalPrice: 84850 },
+    ],
+  };
+
+  it('показывает КАЖДЫЙ номер и с кем он едет', async () => {
+    const { app, token } = build(CONFIRMED, TWO_ROOMS);
+    const html = (await app.inject({ method: 'GET', url: `/b/${token}` })).body;
+    expect(html).toContain('Номер 1');
+    expect(html).toContain('Family room');
+    expect(html).toContain('Номер 2');
+    expect(html).toContain('Standard Double Room');
+  });
+
+  it('складывает гостей по всем номерам, а не показывает только первый', async () => {
+    const { app, token } = build(CONFIRMED, TWO_ROOMS);
+    const html = (await app.inject({ method: 'GET', url: `/b/${token}` })).body;
+    expect(html).toContain('5 гостей');
+    expect(html).not.toMatch(/Гостей<\/span><span class="v">3 /);
+  });
+
+  it('передаёт дополнительные номера в оформление одной бронью', async () => {
+    const { app, token, createBooking } = build(CONFIRMED, TWO_ROOMS);
+    await app.inject({ method: 'POST', url: `/b/${token}/confirm` });
+    expect(createBooking).toHaveBeenCalledOnce();
+    expect(createBooking.mock.calls[0][0].extraRooms).toEqual([
+      { roomTypeId: '5052704', ratePlanId: '349868', guests: 2, childAges: undefined },
+    ]);
+  });
+
+  it('обычная бронь одного номера не меняется', async () => {
+    const { app, token, createBooking } = build();
+    const html = (await app.inject({ method: 'GET', url: `/b/${token}` })).body;
+    expect(html).toContain('Номер</span>');
+    expect(html).not.toContain('Номер 1');
+    await app.inject({ method: 'POST', url: `/b/${token}/confirm` });
+    expect(createBooking.mock.calls[0][0].extraRooms).toEqual([]);
+  });
+});

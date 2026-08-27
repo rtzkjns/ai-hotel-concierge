@@ -51,6 +51,18 @@ export interface ConfirmationData {
   /** Форма отеля: гостю, который не хочет ждать менеджера и оформит бронь сам. */
   bookingFormLink?: string | null;
   freeCancellationUntil?: string | null;
+  /**
+   * Дополнительные номера ТОЙ ЖЕ брони — когда компания не помещается в один номер.
+   * Поля выше описывают первый номер. Пусто — обычная бронь одного номера.
+   */
+  extraRooms?: Array<{
+    roomTypeId: string;
+    ratePlanId: string;
+    roomType: string;
+    guests: number;
+    childAges?: number[];
+    totalPrice?: number | null;
+  }> | null;
 }
 
 export interface ConfirmStore {
@@ -95,6 +107,13 @@ export interface ConfirmDeps {
     guestEmail?: string;
     comment?: string;
     language?: Language | null;
+    /** Дополнительные номера ТОЙ ЖЕ брони. */
+    extraRooms?: Array<{
+      roomTypeId: string;
+      ratePlanId: string;
+      guests: number;
+      childAges?: number[];
+    }>;
   }) => Promise<CreateBookingResult>;
   /** Заявка менеджерам — на случай, когда бронь оформить не удалось. */
   saveRequest: (lead: BookingLead) => void;
@@ -247,14 +266,25 @@ function page(title: string, inner: string): string {
 }
 
 function rows(d: ConfirmationData): string {
-  const list: Array<[string, string]> = [
-    ['Отель', d.hotelName],
-    ['Номер', d.roomType],
+  const extras = d.extraRooms ?? [];
+  const totalGuests = d.guests + extras.reduce((n, r) => n + r.guests, 0);
+  const list: Array<[string, string]> = [['Отель', d.hotelName]];
+  // Несколько номеров в одной брони: гость должен видеть КАЖДЫЙ и с кем он едет,
+  // иначе «2 номера» на странице выглядят как одна комната и сюрприз на стойке.
+  if (extras.length) {
+    list.push([`Номер 1`, `${d.roomType} — ${d.guests} ${guestsWord(d.guests)}`]);
+    extras.forEach((r, i) => {
+      list.push([`Номер ${i + 2}`, `${r.roomType} — ${r.guests} ${guestsWord(r.guests)}`]);
+    });
+  } else {
+    list.push(['Номер', d.roomType]);
+  }
+  list.push(
     ['Заезд', humanDate(d.checkIn)],
     ['Выезд', humanDate(d.checkOut)],
     ['Срок', `${d.nights} ${nightsWord(d.nights)}`],
-    ['Гостей', `${d.guests} ${guestsWord(d.guests)}`],
-  ];
+    ['Гостей', `${totalGuests} ${guestsWord(totalGuests)}`],
+  );
   if (d.ratePlanName) list.push(['Тариф', d.ratePlanName]);
   const name = [d.guestFirstName, d.guestLastName].filter(Boolean).join(' ');
   if (name) list.push(['Имя', name]);
@@ -475,6 +505,13 @@ function registerRoutes(app: FastifyInstance, deps: ConfirmDeps): void {
         guestEmail: d.guestEmail ?? undefined,
         comment: d.comment ?? undefined,
         language: d.language,
+        // Дополнительные номера оформляются ОДНОЙ бронью вместе с первым.
+        extraRooms: (d.extraRooms ?? []).map((r) => ({
+          roomTypeId: r.roomTypeId,
+          ratePlanId: r.ratePlanId,
+          guests: r.guests,
+          childAges: r.childAges,
+        })),
       });
     } catch (err) {
       store.releaseConfirmation(token, IN_PROGRESS);

@@ -86,6 +86,19 @@ export interface CreateBookingArgs {
   childAges?: number[];
   /** Guest's language — the booking form must open in it, not in Russian. */
   language?: Language | null;
+  /**
+   * ДОПОЛНИТЕЛЬНЫЕ номера той же брони. Проверено на живом движке: одна бронь на
+   * несколько номеров принимается (2 и 3 номера, разные и одинаковые категории).
+   * Так надёжнее, чем бронировать по очереди: номер брони один, и второй номер
+   * не успеют разобрать между двумя оформлениями.
+   * Пусто — обычная бронь одного номера, весь прежний путь не меняется.
+   */
+  extraRooms?: Array<{
+    roomTypeId: string;
+    ratePlanId: string;
+    guests: number;
+    childAges?: number[];
+  }>;
 }
 
 export type CreateBookingResult =
@@ -325,6 +338,58 @@ export class BookingService {
         `${upsellNote}${(args.comment ?? '').slice(0, guestRoom)}`,
         args.childAges,
       );
+
+      // Дополнительные номера той же брони. Каждый ищем отдельно: у него свой состав
+      // гостей, а значит свои места и своя цена. Не нашли — не бронируем ЧАСТЬ заказа
+      // молча: гость просил два номера, получить один и не узнать об этом он не должен.
+      for (const extra of args.extraRooms ?? []) {
+        const extraAvail = await provider
+          .checkAvailability({
+            property: args.property,
+            checkIn: args.checkIn,
+            checkOut: args.checkOut,
+            guests: extra.guests,
+            childAges: extra.childAges,
+          })
+          .catch(() => null);
+        const extraOffer = extraAvail?.offers.find(
+          (o) =>
+            o.checksum !== null &&
+            o.roomTypeId === extra.roomTypeId &&
+            o.ratePlanId === extra.ratePlanId,
+        );
+        if (!extraOffer) {
+          this.saveLinkLead(args, offer, 'extra_room_unavailable');
+          track(store, 'booking_link_sent', {
+            conversationId: args.conversationId,
+            property: args.property,
+            payload: { reason: 'extra_room_unavailable', roomTypeId: extra.roomTypeId },
+          });
+          return {
+            mode: 'link',
+            bookingFormLink: localizeBookingLink(offer.bookingFormLink, args.language ?? null),
+            reason: 'extra_room_unavailable',
+          };
+        }
+        booking.roomStays.push(
+          buildBooking(
+            propertyId,
+            extraOffer,
+            `${args.checkIn}${CHECK_IN_TIME}`,
+            `${args.checkOut}${CHECK_OUT_TIME}`,
+            extra.guests,
+            {
+              first: args.guestFirstName,
+              last: args.guestLastName,
+              phone: args.guestPhone,
+              email: args.guestEmail,
+            },
+            '',
+            extra.childAges,
+          ).roomStays[0],
+        );
+      }
+
       const placed = await reservation.place(booking);
       if (placed.ok && placed.number) {
         // A real booking is never free — treat a 0/absent remote total as unknown and fall back

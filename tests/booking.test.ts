@@ -479,3 +479,78 @@ describe('неправдоподобный возраст ребёнка', () =>
     expect(badChildAge([1, 2, 3, 4, 5, 6, 7])).toBe(7);
   });
 });
+
+// Пятеро в один номер не помещаются нигде в сети. Движок принимает несколько номеров
+// ОДНОЙ бронью — проверено вживую на двух и трёх номерах. Так надёжнее, чем бронировать
+// по очереди: номер брони один, и второй номер не успеют разобрать между оформлениями.
+describe('бронь на несколько номеров', () => {
+  const second: RoomOffer = {
+    ...offer,
+    roomType: 'Standard Double',
+    roomTypeId: '43',
+    ratePlanId: '7',
+    totalPrice: 80000,
+    checksum: 'chk-second',
+  };
+
+  function serviceWith(offers: RoomOffer[]) {
+    const captured: unknown[] = [];
+    const store = fakeStore();
+    const service = new BookingService({
+      store,
+      provider: fakeProvider(offers),
+      reservation: {
+        place: vi.fn(async (b: unknown) => {
+          captured.push(b);
+          return { ok: true, number: 'KZ-88', status: 'confirmed', total: 200000 };
+        }),
+        cancel: vi.fn(),
+        get: vi.fn(),
+      } as never,
+      bookingEnabled: true,
+      propertyIdResolver: resolver,
+    });
+    return { service, store, captured };
+  }
+
+  it('кладёт ОБА номера в одну заявку', async () => {
+    const { service, captured } = serviceWith([offer, second]);
+
+    const res = await service.createBooking({
+      ...args,
+      guests: 3,
+      extraRooms: [{ roomTypeId: '43', ratePlanId: '7', guests: 2 }],
+    });
+
+    expect(res.mode).toBe('confirmed');
+    const rq = captured[0] as { roomStays: Array<{ roomType: { id: string }; guestCount: { adultCount: number } }> };
+    expect(rq.roomStays).toHaveLength(2);
+    expect(rq.roomStays[0].roomType.id).toBe('42');
+    expect(rq.roomStays[0].guestCount.adultCount).toBe(3);
+    expect(rq.roomStays[1].roomType.id).toBe('43');
+    expect(rq.roomStays[1].guestCount.adultCount).toBe(2);
+  });
+
+  it('второй номер разобрали — НЕ бронирует половину заказа молча', async () => {
+    // В выдаче только первый номер: второго уже нет.
+    const { service, store, captured } = serviceWith([offer]);
+
+    const res = await service.createBooking({
+      ...args,
+      extraRooms: [{ roomTypeId: '43', ratePlanId: '7', guests: 2 }],
+    });
+
+    expect(res.mode).toBe('link');
+    expect((res as { reason: string }).reason).toBe('extra_room_unavailable');
+    // Ни одной брони создано не было — гость просил два номера, а не один.
+    expect(captured).toHaveLength(0);
+    expect(store.leads).toHaveLength(1);
+  });
+
+  it('без дополнительных номеров ведёт себя ровно как раньше', async () => {
+    const { service, captured } = serviceWith([offer]);
+    await service.createBooking(args);
+    const rq = captured[0] as { roomStays: unknown[] };
+    expect(rq.roomStays).toHaveLength(1);
+  });
+});

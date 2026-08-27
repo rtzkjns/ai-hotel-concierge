@@ -808,6 +808,35 @@ export class Engine {
 
     const nights = Math.max(1, Math.round((Date.parse(checkOut) - Date.parse(checkIn)) / 86400000));
     const offer = prepared.offer;
+
+    // Дополнительные номера той же брони: цену и название каждого берём у движка тем же
+    // способом, что и для первого. Не смогли получить — ссылку не выдаём вовсе: показать
+    // гостю неполный заказ хуже, чем переспросить.
+    const extras: NonNullable<ConfirmationData['extraRooms']> = [];
+    let extrasTotal = 0;
+    for (const room of input.extraRooms ?? []) {
+      const p = await prepare.call(this.deps.bookingService, {
+        property: ctx.property,
+        checkIn,
+        checkOut,
+        guests: room.guests,
+        roomTypeId: String(room.roomTypeId),
+        ratePlanId: String(room.ratePlanId),
+        childAges: room.childAges,
+        language: convo.language,
+      });
+      if (!p.ok) return null;
+      extras.push({
+        roomTypeId: p.offer.roomTypeId ?? String(room.roomTypeId),
+        ratePlanId: p.offer.ratePlanId ?? String(room.ratePlanId),
+        roomType: p.offer.roomType,
+        guests: room.guests,
+        childAges: room.childAges,
+        totalPrice: p.offer.totalPrice,
+      });
+      extrasTotal += p.offer.totalPrice ?? 0;
+    }
+
     try {
       return make({
         property: ctx.property,
@@ -820,7 +849,8 @@ export class Engine {
         roomTypeId: offer.roomTypeId ?? String(roomTypeId),
         ratePlanId: offer.ratePlanId ?? String(ratePlanId),
         ratePlanName: offer.ratePlanName,
-        totalPrice: offer.totalPrice,
+        // Итог по ВСЕМ номерам заказа: гость видит сумму, которую действительно заплатит.
+        totalPrice: (offer.totalPrice ?? 0) + extrasTotal || offer.totalPrice,
         currency: offer.currency,
         guestFirstName: input.guestFirstName,
         guestLastName: input.guestLastName ?? '',
@@ -831,6 +861,7 @@ export class Engine {
         conversationId: convo.id,
         bookingFormLink: prepared.bookingFormLink,
         freeCancellationUntil: offer.cancellationPolicy?.freeCancellationDeadline ?? null,
+        extraRooms: extras.length ? extras : null,
       });
     } catch {
       // Не смогли записать заявку — это не повод срывать бронирование.
@@ -964,9 +995,11 @@ export class Engine {
                 instruction:
                   `Номера на эти даты СВОБОДНЫ, но ни один не вмещает ${party} чел. — в этом и причина. ` +
                   'НЕ говори «мест нет» и не предлагай другие даты: даты ни при чём. Скажи прямо, что ' +
-                  'такую компанию в один номер не разместить, и предложи два номера рядом. Оформить два ' +
-                  'номера сразу ты не можешь — запиши заявку и передай менеджеру, честно сказав об этом. ' +
-                  'Цены отдельных номеров называй только те, что вернул инструмент.',
+                  'такую компанию в один номер не разместить, и предложи РАЗМЕСТИТЬ ЕЁ В ДВУХ НОМЕРАХ. ' +
+                  'Сразу вызови check_availability на те же даты на меньший состав (например на 2 гостей), ' +
+                  'покажи варианты с ценами и предложи разбивку — скажем, трое в одном номере и двое в другом. ' +
+                  'Оформить это ты МОЖЕШЬ одной бронью: в create_booking опиши первый номер обычными полями, ' +
+                  'а второй передай в extraRooms. Цены называй только те, что вернул инструмент.',
               };
             }
           }
@@ -1072,6 +1105,7 @@ export class Engine {
           guestPhone: input.guestPhone,
           guestEmail: input.guestEmail,
           comment: input.comment,
+          extraRooms: input.extraRooms,
           upsellAccepted: input.upsellAccepted,
           childAges: input.childAges,
           // The booking form must open in the guest's language, not Russian.
