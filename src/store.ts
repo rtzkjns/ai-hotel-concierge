@@ -810,6 +810,29 @@ export class Store {
     return res.changes > 0;
   }
 
+  /**
+   * Запоминает сумму, которую назвал движок при оформлении.
+   * Без этого страница показывала одну сумму сразу после нажатия и другую при
+   * обновлении: подготовленная цена живёт до суток и успевает устареть.
+   */
+  updateConfirmationTotal(token: string, total: number, currency?: string): void {
+    const row = this.db
+      .prepare('SELECT data FROM confirmations WHERE token = ?')
+      .get(token) as { data: string } | undefined;
+    if (!row) return;
+    let data: Record<string, unknown>;
+    try {
+      data = JSON.parse(row.data) as Record<string, unknown>;
+    } catch {
+      return;
+    }
+    data.totalPrice = total;
+    if (currency) data.currency = currency;
+    this.db
+      .prepare('UPDATE confirmations SET data = ? WHERE token = ?')
+      .run(JSON.stringify(data), token);
+  }
+
   /** Снимает метку «оформляем», если оформление сорвалось до записи итога. */
   releaseConfirmation(token: string, from: string): void {
     this.db

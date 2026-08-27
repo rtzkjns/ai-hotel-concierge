@@ -70,6 +70,8 @@ export interface ConfirmStore {
   settleConfirmation(token: string, bookingNumber: string, from: string): boolean;
   /** Снимает метку «оформляем», если оформление сорвалось. */
   releaseConfirmation(token: string, from: string): void;
+  /** Запоминает сумму от движка, чтобы она не разошлась с показанной при обновлении. */
+  updateConfirmationTotal?(token: string, total: number, currency?: string): void;
   recordEvent(
     type: string,
     data?: { conversationId?: string; property?: string; payload?: unknown },
@@ -559,6 +561,11 @@ function registerRoutes(app: FastifyInstance, deps: ConfirmDeps): void {
     // Бронь создана и прочитана обратно из системы отеля. Записываем номер поверх метки
     // «оформляем» — гонку двух вкладок мы закрыли раньше, до обращения к движку.
     store.settleConfirmation(token, booked.hotelNumber || booked.number, IN_PROGRESS);
+    // Сумму от движка запоминаем: иначе обновление страницы покажет подготовленную цену,
+    // которой может быть уже сутки, и гость увидит два разных числа за один заказ.
+    if (booked.total && booked.total > 0) {
+      store.updateConfirmationTotal?.(token, booked.total, booked.currency ?? undefined);
+    }
     store.recordEvent('booking_confirmed', {
       conversationId: d.conversationId,
       property: d.property,

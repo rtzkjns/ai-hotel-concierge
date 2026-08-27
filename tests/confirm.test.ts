@@ -463,3 +463,38 @@ describe('двойное нажатие «Подтвердить»', () => {
     expect(store.events.some((e) => e.type === 'confirmation_crashed')).toBe(true);
   });
 });
+
+// Подготовленная цена живёт до суток и успевает устареть. Раньше сразу после нажатия
+// страница показывала сумму от движка, а при обновлении — старую подготовленную,
+// и гость видел два разных числа за один и тот же заказ.
+describe('сумма не расходится между нажатием и обновлением', () => {
+  it('после оформления страница показывает сумму от движка и при обновлении тоже', async () => {
+    const store = memoryStore();
+    const withTotal = { ...store, updateConfirmationTotal(token: string, total: number) {
+      const r = store.rows.get(token);
+      if (r) r.data = { ...(r.data as object), totalPrice: total };
+    } };
+    const app = Fastify();
+    registerConfirmRoutes(app, {
+      store: withTotal,
+      createBooking: vi.fn(async () => ({ ...CONFIRMED, total: 71000 })),
+      saveRequest: vi.fn(),
+      notifyStaff: vi.fn(async () => undefined),
+    });
+    const token = newConfirmationToken();
+    withTotal.saveConfirmation({
+      token,
+      data: DATA, // подготовленная сумма 59 500
+      expiresAt: new Date(Date.now() + CONFIRMATION_TTL_MS).toISOString(),
+    });
+
+    const posted = await app.inject({ method: 'POST', url: `/b/${token}/confirm` });
+    const reopened = await app.inject({ method: 'GET', url: `/b/${token}` });
+
+    const engineSum = (71000).toLocaleString('ru-RU');
+    const staleSum = (59500).toLocaleString('ru-RU');
+    expect(posted.body).toContain(engineSum);
+    expect(reopened.body).toContain(engineSum);
+    expect(reopened.body).not.toContain(staleSum);
+  });
+});
