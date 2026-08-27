@@ -305,8 +305,14 @@ function bookedPage(d: ConfirmationData, total?: number | null): string {
         ? `<div class="total"><span class="k">К оплате при заселении</span>` +
           `<span class="v">${esc(money(total ?? d.totalPrice, d.currency))}</span></div>`
         : '') +
-      `<p class="note">Номер за вами, оплата — при заселении. Подтверждение с номером брони ` +
-      `отель отправил вам на почту. Если планы изменятся — напишите нам в чат.</p>`,
+      // Про письмо говорим ТОЛЬКО когда почта есть. Раньше обещание стояло безусловно —
+      // и гостю без адреса (или с опечаткой в нём) обещали письмо, которого не будет,
+      // при том что номер брони мы намеренно не показываем. Гость оставался ни с чем.
+      `<p class="note">Номер за вами, оплата — при заселении.` +
+      (d.guestEmail
+        ? ` Подтверждение с номером брони отель отправит на ${esc(d.guestEmail)}.`
+        : ' Номер брони уточните у нас в чате — отправим сразу.') +
+      ` Если планы изменятся — напишите нам в чат.</p>`,
   );
 }
 
@@ -493,8 +499,12 @@ function registerRoutes(app: FastifyInstance, deps: ConfirmDeps): void {
       // Номер мог уйти, пока гость думал, или движок недоступен. Врать нельзя: говорим как
       // есть, отдаём заявку людям и оставляем форму отеля как рабочий путь.
       const code = requestCode();
-      store.settleConfirmation(token, code, IN_PROGRESS);
-      deps.saveRequest({
+      // Сначала СОХРАНЯЕМ заявку, только потом объявляем её гостю. При обратном порядке
+      // упавшая запись оставляла гостя с обещанием «заявка у отдела бронирования»,
+      // которой ни у кого не было.
+      let saved = true;
+      try {
+        deps.saveRequest({
         conversationId: d.conversationId,
         kind: 'booking',
         checkIn: d.checkIn,
@@ -512,8 +522,20 @@ function registerRoutes(app: FastifyInstance, deps: ConfirmDeps): void {
         ]
           .filter((x): x is string => x !== null)
           .join('; '),
-        createdAt: new Date().toISOString(),
-      });
+          createdAt: new Date().toISOString(),
+        });
+      } catch {
+        saved = false;
+      }
+      // Метка снимается в любом случае: токен не должен остаться мёртвым.
+      store.settleConfirmation(token, code, IN_PROGRESS);
+      if (!saved) {
+        store.recordEvent('request_save_failed', {
+          conversationId: d.conversationId,
+          property: d.property,
+          payload: { code, reason: booked.reason },
+        });
+      }
       store.recordEvent('confirmation_failed', {
         conversationId: d.conversationId,
         property: d.property,

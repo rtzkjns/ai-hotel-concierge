@@ -158,7 +158,10 @@ export function buildIbeBooking(
     // на двоих. Если вместимость неизвестна (путь Exely Search, символьные коды) — прежнее
     // поведение: либо по гостю на место, либо все в первое.
     const capacities = rs.roomType.placements.map((p) => p.capacity);
-    const byCapacity = capacities.every((c) => typeof c === 'number' && c > 0);
+    // Пустой список мест проходил every() вырожденно, раскладка выходила пустой, и движок
+    // получал бронь без единого гостя. Требуем, чтобы места вообще были.
+    const byCapacity =
+      capacities.length > 0 && capacities.every((c) => typeof c === 'number' && c > 0);
 
     let guestCounts: Array<{
       age_qualifying_code: string;
@@ -175,7 +178,9 @@ export function buildIbeBooking(
     if (rs.seats?.length) {
       const merged = new Map<string, (typeof guestCounts)[number]>();
       for (const seat of rs.seats) {
-        const isChild = typeof seat.age === 'number';
+        // Именно isFinite, а не typeof: NaN — тоже number, и с ним ребёнок уезжал
+        // в движок как «child» с возрастом null.
+        const isChild = Number.isFinite(seat.age);
         const key = `${seat.index}|${isChild ? 'child' : 'adult'}|${seat.age ?? ''}|${seat.ageGroup ?? ''}`;
         const hit = merged.get(key);
         if (hit) {

@@ -267,6 +267,11 @@ export class BookingService {
             bk.checkIn === args.checkIn &&
             bk.checkOut === args.checkOut &&
             bk.roomType === offer.roomType &&
+            // Число гостей и тариф — часть того, ЧТО именно забронировано. Без них
+            // существующая бронь на двоих выдавалась за подтверждение новой на троих,
+            // и гость видел «оформлено» на условиях, которых не просил.
+            bk.guests === Math.max(1, args.guests) &&
+            (bk.ratePlanId === undefined || bk.ratePlanId === String(args.ratePlanId)) &&
             bk.status !== 'cancelled' &&
             !!bk.exelyNumber,
         );

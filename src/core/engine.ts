@@ -785,7 +785,12 @@ export class Engine {
     if (!checkIn || !checkOut || roomTypeId === undefined || ratePlanId === undefined) return null;
     if (!input.guestFirstName || !input.guestPhone) return null;
 
-    const guests = ctx.guests ?? 2;
+    // Число гостей НЕ додумываем. Раньше здесь стояло «?? 2», и если модель не назвала
+    // количество, страница подтверждения показывала «2 гостя» и цену на двоих как факт —
+    // а бронь оформлялась на двоих. Гость приезжал втроём. Нет числа — нет ссылки:
+    // пусть бот переспросит, это дешевле неверной брони.
+    const guests = ctx.guests;
+    if (guests === undefined || !Number.isInteger(guests) || guests < 1) return null;
     const prepared = await prepare.call(this.deps.bookingService, {
       property: ctx.property,
       checkIn,
