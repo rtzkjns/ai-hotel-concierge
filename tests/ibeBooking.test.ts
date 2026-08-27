@@ -113,6 +113,75 @@ describe('сборка запроса к движку', () => {
     ]);
   });
 
+  // Бронь гостьи Камиллы (WhatsApp, 2026-08-27) упала с «Invalid adult placement #10017731».
+  // Причина: Family room отдаёт ДВА разных места — основное на двоих (kind adult, capacity 2)
+  // и дополнительное на одного (kind extra_adult, capacity 1). Мы объявляли оба «adult»,
+  // и движок отвергал второе. Вид места приходит от движка, выдумывать его нельзя.
+  it('дополнительное место объявляется своим видом, а не «adult»', () => {
+    const stay = stayOf(
+      buildIbeBooking(
+        '801',
+        rq({
+          roomType: {
+            id: '142471',
+            placements: [
+              { code: '324362', index: 1, kind: 'adult', capacity: 2 },
+              { code: '10017731', index: 2, kind: 'extra_adult', capacity: 1 },
+            ],
+          },
+          guestCount: { adultCount: 3 },
+        }),
+        'ru-ru',
+      ),
+    );
+    expect(stay.room_types[0].placements).toEqual([
+      { code: '324362', index: 1, kind: 'adult' },
+      { code: '10017731', index: 2, kind: 'extra_adult' },
+    ]);
+  });
+
+  it('троих взрослых раскладывает по вместимости: 2 в основное, 1 в дополнительное', () => {
+    const stay = stayOf(
+      buildIbeBooking(
+        '801',
+        rq({
+          roomType: {
+            id: '142471',
+            placements: [
+              { code: '324362', index: 1, kind: 'adult', capacity: 2 },
+              { code: '10017731', index: 2, kind: 'extra_adult', capacity: 1 },
+            ],
+          },
+          guestCount: { adultCount: 3 },
+        }),
+        'ru-ru',
+      ),
+    );
+    expect(stay.guest_count_info.guest_counts).toEqual([
+      { age_qualifying_code: 'adult', count: 2, index: 1, placement_index: 1 },
+      { age_qualifying_code: 'adult', count: 1, index: 2, placement_index: 2 },
+    ]);
+  });
+
+  it('не сажает в место больше, чем оно вмещает', () => {
+    const stay = stayOf(
+      buildIbeBooking(
+        '801',
+        rq({
+          roomType: { id: '6154', placements: [{ code: '36257', index: 1, kind: 'adult', capacity: 2 }] },
+          guestCount: { adultCount: 2 },
+        }),
+        'ru-ru',
+      ),
+    );
+    const total = stay.guest_count_info.guest_counts.reduce(
+      (n: number, g: { count: number }) => n + g.count,
+      0,
+    );
+    expect(total).toBe(2);
+    expect(stay.guest_count_info.guest_counts[0].count).toBeLessThanOrEqual(2);
+  });
+
   it('переносит имя, телефон и почту гостя — ради этого всё и затевалось', () => {
     const body = buildIbeBooking('801', rq(), 'ru-ru');
     expect(res(body).customer.first_name).toBe('Асель');

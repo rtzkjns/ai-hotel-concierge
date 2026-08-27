@@ -73,7 +73,15 @@ interface IbeReservationBody {
 }
 
 interface IbeRoomStay {
-  room_types?: Array<{ code?: string; placements?: Array<{ code?: string | number }> }>;
+  room_types?: Array<{
+    code?: string;
+    placements?: Array<{
+      code?: string | number;
+      index?: number;
+      kind?: string;
+      capacity?: number;
+    }>;
+  }>;
   rate_plans?: Array<{ code?: string }>;
 }
 
@@ -129,29 +137,71 @@ export function buildIbeBooking(
   opts: { guarantee?: GuaranteeOption; integrationKey?: string } = {},
 ): Record<string, unknown> {
   const roomStays = b.roomStays.map((rs) => {
+    // Вид места приходит от движка и выдумывать его нельзя. Family room отдаёт основное
+    // место (kind adult, вместимость 2) и дополнительное (kind extra_adult, вместимость 1);
+    // объявив второе «adult», мы получали «Invalid adult placement #10017731» и теряли бронь.
     const placements = rs.roomType.placements.map((p, i) => ({
       code: String(p.code),
-      index: i + 1,
-      kind: 'adult',
+      index: p.index ?? i + 1,
+      kind: p.kind ?? 'adult',
     }));
     const adults = Math.max(1, rs.guestCount.adultCount);
 
-    const guestCounts =
-      placements.length >= adults
-        ? placements.slice(0, adults).map((p, i) => ({
-            age_qualifying_code: 'adult',
-            count: 1,
-            index: i + 1,
-            placement_index: p.index,
-          }))
-        : [
-            {
+    // Раскладка по вместимости — тоже со слов движка. Без неё троих взрослых сажало в место
+    // на двоих. Если вместимость неизвестна (путь Exely Search, символьные коды) — прежнее
+    // поведение: либо по гостю на место, либо все в первое.
+    const capacities = rs.roomType.placements.map((p) => p.capacity);
+    const byCapacity = capacities.every((c) => typeof c === 'number' && c > 0);
+
+    let guestCounts: Array<{
+      age_qualifying_code: string;
+      count: number;
+      index: number;
+      placement_index: number;
+    }>;
+
+    if (byCapacity) {
+      guestCounts = [];
+      let left = adults;
+      for (const [i, p] of placements.entries()) {
+        if (left <= 0) break;
+        const take = Math.min(left, capacities[i] as number);
+        guestCounts.push({
+          age_qualifying_code: 'adult',
+          count: take,
+          index: guestCounts.length + 1,
+          placement_index: p.index,
+        });
+        left -= take;
+      }
+      // Мест не хватило на всех — движок откажет честнее, чем мы молча потеряем гостя.
+      if (left > 0 && guestCounts.length > 0) {
+        guestCounts[guestCounts.length - 1].count += left;
+      }
+    } else {
+      guestCounts =
+        placements.length >= adults
+          ? placements.slice(0, adults).map((p, i) => ({
               age_qualifying_code: 'adult',
-              count: adults,
-              index: 1,
-              placement_index: placements[0]?.index ?? 1,
-            },
-          ];
+              count: 1,
+              index: i + 1,
+              placement_index: p.index,
+            }))
+          : [
+              {
+                age_qualifying_code: 'adult',
+                count: adults,
+                index: 1,
+                placement_index: placements[0]?.index ?? 1,
+              },
+            ];
+    }
+
+    // Гостя надо посадить в то же место, в которое мы его посчитали.
+    const seatByGuest: number[] = [];
+    for (const g of guestCounts) {
+      for (let n = 0; n < g.count; n += 1) seatByGuest.push(g.placement_index);
+    }
 
     return {
       advanced_services: [],
@@ -168,7 +218,10 @@ export function buildIbeBooking(
         first_name: g.firstName,
         last_name: g.lastName,
         middle_name: '',
-        placement: { index: placements[Math.min(i, placements.length - 1)]?.index ?? 1 },
+        placement: {
+          index:
+            seatByGuest[i] ?? placements[Math.min(i, placements.length - 1)]?.index ?? 1,
+        },
       })),
     };
   });
@@ -290,7 +343,7 @@ export class IbeReservation implements ReservationClient {
   async placementsFor(
     propertyId: string,
     stay: BookingRq['roomStays'][number],
-  ): Promise<string[] | null> {
+  ): Promise<BookingRq['roomStays'][number]['roomType']['placements'] | null> {
     const res = await this.call('hotel_availability', {
       language: this.language,
       currency: 'KZT',
@@ -312,10 +365,17 @@ export class IbeReservation implements ReservationClient {
     const match =
       stays.find((s) => sameRoom(s) && s.rate_plans?.[0]?.code === stay.ratePlan.id) ??
       stays.find(sameRoom);
-    const codes = match?.room_types?.[0]?.placements
-      ?.map((p) => String(p.code ?? ''))
-      .filter((c) => c !== '');
-    return codes?.length ? codes : null;
+    // Отдаём место целиком, а не один код: без вида (kind) движок отвергает дополнительные
+    // места, без вместимости мы сажаем в них лишних гостей.
+    const found = match?.room_types?.[0]?.placements
+      ?.map((p, i) => ({
+        code: String(p.code ?? ''),
+        index: p.index ?? i + 1,
+        kind: p.kind ?? 'adult',
+        capacity: p.capacity,
+      }))
+      .filter((p) => p.code !== '');
+    return found?.length ? found : null;
   }
 
   /**
@@ -370,13 +430,13 @@ export class IbeReservation implements ReservationClient {
       const propertyId = b.propertyId || this.propertyId;
 
       // Места движка вместо символьных из поиска Exely — иначе «code is invalid».
-      const roomStays = [];
+      const roomStays: BookingRq['roomStays'] = [];
       for (const stay of b.roomStays) {
         const placements = await this.placementsFor(propertyId, stay);
         if (!placements) return { ok: false, error: 'ibe: номер недоступен на эти даты' };
         roomStays.push({
           ...stay,
-          roomType: { ...stay.roomType, placements: placements.map((code) => ({ code })) },
+          roomType: { ...stay.roomType, placements },
         });
       }
       const resolved: BookingRq = { ...b, roomStays };

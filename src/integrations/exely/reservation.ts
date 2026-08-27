@@ -27,7 +27,13 @@ export interface BookingRq {
   roomStays: Array<{
     stayDates: { arrivalDateTime: string; departureDateTime: string };
     ratePlan: { id: string };
-    roomType: { id: string; placements: Array<{ code: string }> };
+    roomType: {
+      id: string;
+      // index/kind/capacity приходят от движка (hotel_availability) и обязательны для
+      // дополнительных мест: extra_adult нельзя объявлять «adult». У пути Exely Search
+      // их нет — тогда работает прежняя раскладка.
+      placements: Array<{ code: string; index?: number; kind?: string; capacity?: number }>;
+    };
     guests: Array<{ firstName: string; lastName: string }>;
     guestCount: { adultCount: number; childCount?: number };
     checksum: string;
