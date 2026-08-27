@@ -783,7 +783,10 @@ export class Engine {
     if (!make || !prepare) return null;
     const { checkIn, checkOut, roomTypeId, ratePlanId } = ctx;
     if (!checkIn || !checkOut || roomTypeId === undefined || ratePlanId === undefined) return null;
-    if (!input.guestFirstName || !input.guestPhone) return null;
+    // Почта движку ОБЯЗАТЕЛЬНА: без неё бронь отвергается «emails is empty» — проверено
+    // на всех трёх отелях. Раньше ссылка выдавалась и без адреса, гость доходил до кнопки
+    // и упирался в отказ. Нет почты — нет ссылки, пусть бот попросит адрес.
+    if (!input.guestFirstName || !input.guestPhone || !input.guestEmail?.trim()) return null;
 
     // Число гостей НЕ додумываем. Раньше здесь стояло «?? 2», и если модель не назвала
     // количество, страница подтверждения показывала «2 гостя» и цену на двоих как факт —

@@ -7,6 +7,14 @@
 // (not enabled hotel-side) — place()/cancel() degrade to ok:false, never throw.
 import type { RoomOffer } from './types';
 
+/** Верхняя граница поля гостя: длиннее в PMS отеля всё равно не нужно. */
+const GUEST_FIELD_MAX = 120;
+
+/** Убирает лишние пробелы и режет длину. Имя из одних пробелов движок отвергает. */
+function trimField(v: string): string {
+  return v.replace(/\s+/g, ' ').trim().slice(0, GUEST_FIELD_MAX);
+}
+
 export const COMMENT_MAX_CHARS = 500;
 
 /** The subset of ExelyHttp the Reservation API needs (structural, for easy faking). */
@@ -127,7 +135,7 @@ export function buildBooking(
           id: offer.roomTypeId ?? '',
           placements: offer.placements.map((code) => ({ code })),
         },
-        guests: [{ firstName: guest.first, lastName: guest.last }],
+        guests: [{ firstName: trimField(guest.first), lastName: trimField(guest.last) }],
         guestCount:
           childCount > 0
             ? { adultCount: Math.max(1, adults), childCount, childAges }
@@ -136,11 +144,13 @@ export function buildBooking(
       },
     ],
     customer: {
-      firstName: guest.first,
-      lastName: guest.last,
+      // Обрезаем и ограничиваем: в PMS отеля не должен доезжать мусор с лишними
+      // пробелами и полем на триста знаков, а имя из одних пробелов движок отвергает.
+      firstName: trimField(guest.first),
+      lastName: trimField(guest.last),
       contacts: {
-        phones: [{ phoneNumber: guest.phone }],
-        emails: [{ emailAddress: guest.email ?? '' }],
+        phones: [{ phoneNumber: trimField(guest.phone) }],
+        emails: [{ emailAddress: trimField(guest.email ?? '') }],
       },
       comment: comment.slice(0, COMMENT_MAX_CHARS),
     },

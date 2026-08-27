@@ -146,3 +146,36 @@ describe('ExelyReservation cancel/get', () => {
     expect(result).toEqual({ booking: { number: 'KZ-77', status: 'confirmed' } });
   });
 });
+
+// Мусор не должен доезжать до PMS отеля: движок отвергает имя из одних пробелов,
+// а поле в триста знаков сотруднику отеля не нужно.
+describe('нормализация данных гостя', () => {
+  const offer = {
+    roomTypeId: '6154', ratePlanId: '349868', checksum: 'abc',
+    placements: ['36257'], totalPrice: 1, currency: 'KZT',
+  } as never;
+  const make = (g: { first: string; last: string; phone: string; email?: string }) =>
+    buildBooking('801', offer, '2026-10-05T15:00:00', '2026-10-07T12:00:00', 2, g);
+
+  it('срезает лишние пробелы в имени, телефоне и почте', () => {
+    const b = make({ first: '  Асель  ', last: ' Нурланова ', phone: ' +7 701 555 44 33 ', email: '  a@b.kz ' });
+    expect(b.customer.firstName).toBe('Асель');
+    expect(b.customer.lastName).toBe('Нурланова');
+    expect(b.customer.contacts.phones[0].phoneNumber).toBe('+7 701 555 44 33');
+    expect(b.customer.contacts.emails[0].emailAddress).toBe('a@b.kz');
+  });
+
+  it('имя из одних пробелов превращается в пустое, а не едет в отель', () => {
+    expect(make({ first: '   ', last: '  ', phone: '+77010000000' }).customer.firstName).toBe('');
+  });
+
+  it('ограничивает длину поля', () => {
+    const b = make({ first: 'А'.repeat(300), last: 'Б', phone: '+77010000000' });
+    expect(b.customer.firstName.length).toBeLessThanOrEqual(120);
+  });
+
+  it('нормализует и гостя в номере, не только плательщика', () => {
+    const b = make({ first: '  Иван ', last: ' Ким  ', phone: '+77010000000' });
+    expect(b.roomStays[0].guests[0]).toEqual({ firstName: 'Иван', lastName: 'Ким' });
+  });
+});
