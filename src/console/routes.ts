@@ -106,6 +106,7 @@ export interface ConsoleStore extends SessionStore {
     data?: { conversationId?: string; property?: string; channel?: string; payload?: unknown },
   ): void;
   listEvents(sinceIso: string): StoredEvent[];
+  listEventsOfType?(type: string, sinceIso: string): StoredEvent[];
   listContentForAdmin(property?: string): HotelContent[];
   addContent(c: {
     property: string;
@@ -192,6 +193,40 @@ function visibleConversations(store: ConsoleStore, staff: AuthedStaff): Conversa
 /** Диалоги, которые бот передал человеку и которые ещё никто не взял. */
 function waitingFor(store: ConsoleStore, staff: AuthedStaff): Conversation[] {
   return visibleConversations(store, staff).filter((c) => c.status === 'handed_off' && !c.takenBy);
+}
+
+/** Держим необработанную «просьбу о менеджере» видимой столько же, сколько хранятся события. */
+const ESCALATION_LOOKBACK_DAYS = 90;
+
+/**
+ * Диалоги, где гость попросил живого человека — по durable-событиям escalation, а НЕ по статусу.
+ * Поэтому баг авто-возобновления (handed_off→active после двух сообщений гостя) не прячет заявку.
+ * Ключ — id диалога, значение — последнее событие escalation по нему.
+ */
+function openEscalations(store: ConsoleStore): Map<string, StoredEvent> {
+  const since = new Date(Date.now() - ESCALATION_LOOKBACK_DAYS * 24 * 3600_000).toISOString();
+  const of = (type: string): StoredEvent[] =>
+    store.listEventsOfType
+      ? store.listEventsOfType(type, since)
+      : store.listEvents(since).filter((e) => e.type === type);
+
+  // Заявка «закрыта», если человек занялся ею ПОСЛЕ просьбы: взял диалог (takeover)
+  // или вернул боту (release). Иначе освобождённый диалог висел бы «на менеджера» 90 дней.
+  const resolvedAt = new Map<string, string>();
+  for (const e of [...of('takeover'), ...of('release')]) {
+    if (!e.conversationId) continue;
+    const prev = resolvedAt.get(e.conversationId);
+    if (!prev || prev < e.createdAt) resolvedAt.set(e.conversationId, e.createdAt);
+  }
+
+  const byConvo = new Map<string, StoredEvent>();
+  for (const e of of('escalation')) {
+    if (!e.conversationId) continue;
+    const resolved = resolvedAt.get(e.conversationId);
+    if (resolved && resolved >= e.createdAt) continue; // заявку уже обработали
+    byConvo.set(e.conversationId, e); // последняя НЕзакрытая просьба по диалогу
+  }
+  return byConvo;
 }
 
 /** Момент последнего сообщения гостя — от него считается, сколько человек ждёт. */
@@ -680,10 +715,19 @@ export async function registerConsoleRoutes(
         );
         return null;
       }
-      const notOwn =
-        convo.status !== 'handed_off' ||
-        (convo.takenBy !== null && convo.takenBy !== req.staff!.login);
-      if (req.staff!.role !== 'admin' && notOwn) {
+      // Гостя, который попросил менеджера, сотрудник должен мочь открыть и взять — даже если
+      // бот из-за авто-возобновления вернул статус в active. Иначе карточка «На менеджера»
+      // ведёт в 403 и её нельзя закрыть. Приватность сохраняется: доступ открываем ТОЛЬКО при
+      // реальной незакрытой заявке на человека, а не на любой активный диалог с ботом.
+      const takenByOther = convo.takenBy !== null && convo.takenBy !== req.staff!.login;
+      const isAdmin = req.staff!.role === 'admin';
+      // openEscalations() зовём лениво — только когда это реально может изменить решение
+      // (не админ, не занят другим, статус уже не handed_off).
+      const blocked =
+        !isAdmin &&
+        (takenByOther ||
+          (convo.status !== 'handed_off' && !openEscalations(store).has(convo.id)));
+      if (blocked) {
         await reply.code(403).type('text/html; charset=utf-8').send(FORBIDDEN_HTML);
         return null;
       }
@@ -948,6 +992,7 @@ export async function registerConsoleRoutes(
         saved?: string;
         readerr?: string;
         read?: string;
+        deleted?: string;
       };
       const kind = kbKindOf(q.kind);
       // Сотрудник, привязанный к отелю, всегда смотрит на свой — выбор ему не предлагается.
@@ -1012,6 +1057,8 @@ export async function registerConsoleRoutes(
         ? banner('ok', 'Страница прочитана. Бот будет пользоваться ею со следующего сообщения гостя и перечитает её сам, когда она изменится.')
         : q.readerr
         ? banner('err', `Страницу прочитать не удалось: ${escapeHtml(q.readerr)}`)
+        : q.deleted
+        ? banner('ok', 'Запись удалена навсегда. Бот перестал ею пользоваться.')
         : q.saved
           ? banner('ok', 'Изменения сохранены. Бот применит их со следующего сообщения гостя.')
           : '';
@@ -1325,8 +1372,24 @@ export async function registerConsoleRoutes(
           ? ''
           : `<form method="post" action="/console/kb/${entry.id}/archive" style="margin-top:16px">` +
             `<input type="hidden" name="_csrf" value="${escapeHtml(csrf)}">` +
-            btn('В архив', { variant: 'danger' }) +
+            btn('В архив', { variant: 'secondary' }) +
             `<p class="note">Запись перестанет влиять на ответы, но её можно вернуть.</p></form>`) +
+        (isNew
+          ? ''
+          : `<form method="post" action="/console/kb/delete" style="margin-top:16px">` +
+            `<input type="hidden" name="_csrf" value="${escapeHtml(csrf)}">` +
+            `<input type="hidden" name="id" value="${entry.id}">` +
+            `<input type="hidden" name="kind" value="${entry.kind}">` +
+            btn('Удалить навсегда', {
+              variant: 'danger',
+              attrs:
+                `onclick="return confirm('` +
+                (entry.kind === 'source'
+                  ? `Удалить источник и весь прочитанный ботом текст? Вернуть будет нельзя.`
+                  : `Удалить запись навсегда? Вернуть будет нельзя.`) +
+                `')"`,
+            }) +
+            `<p class="note">Полностью удаляет запись${entry.kind === 'source' ? ' и прочитанный ботом текст' : ''}. В отличие от «В архив», вернуть нельзя.</p></form>`) +
         `</div>`
       );
     };
@@ -1368,7 +1431,11 @@ export async function registerConsoleRoutes(
             `<form method="post" action="/console/kb/delete" class="inline">` +
             `<input type="hidden" name="_csrf" value="${escapeHtml(csrf)}">` +
             `<input type="hidden" name="id" value="${e.id}">` +
-            btn('Удалить навсегда', { variant: 'danger', sm: true }) +
+            btn('Удалить навсегда', {
+              variant: 'danger',
+              sm: true,
+              attrs: `onclick="return confirm('Удалить запись навсегда? Вернуть будет нельзя.')"`,
+            }) +
             `</form></div></div>`,
         )
         .join('');
@@ -1491,8 +1558,11 @@ export async function registerConsoleRoutes(
     });
 
     scope.post('/console/kb/delete', { preHandler: requireRole('admin') }, async (req, reply) => {
-      store.deleteKbEntry?.(Number((req.body as Record<string, string>).id));
-      return reply.redirect('/console/kb');
+      const b = req.body as Record<string, string>;
+      store.deleteKbEntry?.(Number(b.id));
+      // Возврат на ту же вкладку (источники/факты/тон), с которой удаляли, с честным баннером.
+      // Со страницы архива поле kind не приходит — тогда просто на /console/kb, как раньше.
+      return reply.redirect(b.kind ? `/console/kb?kind=${kbKindOf(b.kind)}&deleted=1` : '/console/kb');
     });
 
     scope.get('/console/requests', async (req, reply) => {
@@ -1501,21 +1571,71 @@ export async function registerConsoleRoutes(
       const csrfField = `<input type="hidden" name="_csrf" value="${escapeHtml(csrf)}">`;
       const q = req.query as { tab?: string };
       const admin = staff.role === 'admin';
-      // Ресепшен работает только с мероприятиями: показывать ему вкладку,
-      // которая всегда пуста, — это обещание данных, которых он не увидит.
-      const tab = !admin ? 'mice' : q.tab === 'bookings' ? 'bookings' : q.tab === 'mice' ? 'mice' : 'all';
+      // «На менеджера» и «Мероприятия» видят все (в т.ч. ресепшен) — это их работа.
+      // «Контакты» и «Брони» — только админ. По умолчанию открываем «На менеджера»:
+      // это самое срочное — гость ждёт живого человека.
+      const allowed = admin
+        ? ['manager', 'mice', 'all', 'bookings']
+        : ['manager', 'mice'];
+      const tab = allowed.includes(q.tab ?? '') ? (q.tab as string) : 'manager';
 
       const tel = (phone?: string | null): string =>
         phone ? `<a href="tel:${escapeHtml(phone.replace(/[^\d+]/g, ''))}">${escapeHtml(phone)}</a>` : '';
 
+      // Гости, попросившие человека и ещё никем не взятые (для вкладки и бейджа).
+      const managerItems = [...openEscalations(store).values()]
+        .map((e) => ({ e, convo: store.getConversation(e.conversationId!) }))
+        .filter(
+          (x): x is { e: StoredEvent; convo: Conversation } =>
+            !!x.convo && !x.convo.takenBy && canSee(staff, x.convo.property),
+        )
+        // Кто дольше всех ждёт — наверх: сначала самые старые незакрытые заявки.
+        .sort((a, b) =>
+          a.e.createdAt < b.e.createdAt ? -1 : a.e.createdAt > b.e.createdAt ? 1 : 0,
+        );
+
       const tabs = pills([
-        ...(admin ? [{ href: '/console/requests?tab=all', label: 'Все', active: tab === 'all' }] : []),
-        ...(admin ? [{ href: '/console/requests?tab=bookings', label: 'Брони', active: tab === 'bookings' }] : []),
+        {
+          href: '/console/requests?tab=manager',
+          label: `На менеджера${managerItems.length ? ` · ${managerItems.length}` : ''}`,
+          active: tab === 'manager',
+        },
         { href: '/console/requests?tab=mice', label: 'Мероприятия', active: tab === 'mice' },
+        ...(admin ? [{ href: '/console/requests?tab=all', label: 'Контакты', active: tab === 'all' }] : []),
+        ...(admin ? [{ href: '/console/requests?tab=bookings', label: 'Брони', active: tab === 'bookings' }] : []),
       ]);
 
+      // Короткое пояснение под вкладками — чтобы сотрудник понимал, что здесь.
+      const TAB_HINT: Record<string, string> = {
+        manager: 'Гости, которые попросили живого человека, но их ещё никто не взял. Откройте диалог и ответьте — карточка исчезнет.',
+        mice: 'Запросы на конференц-залы, банкеты и мероприятия.',
+        all: 'Контакты гостей, которые бот записал (интерес, вопрос) — это ещё не бронь.',
+        bookings: 'Подтверждённые брони гостей.',
+      };
+      const hint = `<p class="note" style="margin:-4px 0 16px">${escapeHtml(TAB_HINT[tab] ?? '')}</p>`;
+
       let table = '';
-      if (tab === 'bookings' && admin) {
+      if (tab === 'manager') {
+        const rows = managerItems
+          .map(({ e, convo }) => {
+            const reason = escalationReason((e.payload as { type?: string })?.type);
+            return (
+              `<tr><td data-label="Гость">${escapeHtml(humanId(convo))}</td>` +
+              (staff.property
+                ? ''
+                : `<td data-label="Отель">${escapeHtml(convo.property ? propertyLabel(convo.property) : 'Отель не выбран')}</td>`) +
+              `<td data-label="Причина">${escapeHtml(reason)}</td>` +
+              `<td data-label="Ждёт">${escapeHtml(ago(e.createdAt))}</td>` +
+              `<td data-label=""><a href="${chatUrl(convo.id)}">Открыть и ответить</a></td></tr>`
+            );
+          })
+          .join('');
+        table = rows
+          ? `<div class="tablewrap"><table><thead><tr><th>Гость</th>` +
+            (staff.property ? '' : '<th>Отель</th>') +
+            `<th>Причина</th><th>Ждёт</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
+          : emptyState('Никто не ждёт менеджера', 'Когда гость попросит живого человека, он появится здесь.');
+      } else if (tab === 'bookings' && admin) {
         const rows = store
           .listBookings()
           .filter((b) => canSee(staff, b.property))
@@ -1567,7 +1687,7 @@ export async function registerConsoleRoutes(
           .filter((l) => canSee(staff, store.getConversation(l.conversationId)?.property))
           .map(
             (l) =>
-              `<tr><td data-label="Что нужно">${escapeHtml(l.kind)} <span class="badge badge--off">ещё не бронь</span></td>` +
+              `<tr><td data-label="Что нужно">${escapeHtml(l.kind === 'generic' ? 'Интерес / вопрос' : l.kind)} <span class="badge badge--off">ещё не бронь</span></td>` +
               (staff.property
                 ? ''
                 : `<td data-label="Отель">${escapeHtml(propertyLabel(store.getConversation(l.conversationId)?.property ?? ''))}</td>`) +
@@ -1588,7 +1708,7 @@ export async function registerConsoleRoutes(
 
       return sendHtml(
         reply,
-        shell('Заявки', `<h1>Заявки</h1>${tabs}${table}`, {
+        shell('Заявки', `<h1>Заявки</h1>${tabs}${hint}${table}`, {
           staff,
           csrf,
           active: '/console/requests',

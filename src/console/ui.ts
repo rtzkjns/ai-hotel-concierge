@@ -340,14 +340,16 @@ export function humanId(convo: { id: string; channel: string; senderId: string }
   }
   if (convo.channel === 'telegram') return `Telegram #${sender.slice(-6)}`;
   if (convo.channel === 'instagram') return `Instagram #${sender.slice(-6)}`;
-  return `Гость с сайта #${sender.slice(-4)}`;
+  // Прочие каналы (внутренний веб-виджет «Спросить бота», неизвестный источник):
+  // не пишем «с сайта» — на сайт отеля бот не подключён, это путало сотрудников.
+  return `Гость #${sender.slice(-4)}`;
 }
 
 const CHANNEL_LABEL: Record<string, string> = {
   whatsapp: 'WhatsApp',
   telegram: 'Telegram',
   instagram: 'Instagram',
-  webwidget: 'сайт',
+  webwidget: 'Виджет',
 };
 export function channelLabel(channel: string): string {
   return CHANNEL_LABEL[channel] ?? channel;

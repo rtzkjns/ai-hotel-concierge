@@ -927,6 +927,22 @@ export class Store {
     }));
   }
 
+  /** События одного типа (напр. 'escalation') — по индексу (type, created_at), без скана всей таблицы. */
+  listEventsOfType(type: string, sinceIso: string): StoredEvent[] {
+    const rows = this.db
+      .prepare('SELECT * FROM events WHERE type = ? AND created_at >= ? ORDER BY id')
+      .all(type, sinceIso) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      id: r.id as number,
+      type: r.type as string,
+      conversationId: (r.conversation_id as string | null) ?? null,
+      property: (r.property as string | null) ?? null,
+      channel: (r.channel as string | null) ?? null,
+      payload: r.payload === null ? undefined : JSON.parse(r.payload as string),
+      createdAt: r.created_at as string,
+    }));
+  }
+
   countEvents(type: string, sinceIso: string): number {
     const row = this.db
       .prepare('SELECT COUNT(*) AS n FROM events WHERE type = ? AND created_at >= ?')

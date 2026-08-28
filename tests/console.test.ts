@@ -235,7 +235,7 @@ describe('console roles', () => {
     const list = await app.inject({ method: 'GET', url: '/console', headers: { cookie } });
     expect(list.statusCode).toBe(200);
     // Гость показан человеческим именем, а не машинным id диалога.
-    expect(list.body).toContain('Гость с сайта');
+    expect(list.body).toContain('Гость #');
     expect(list.body).toContain(`/console/chats/${encodeURIComponent(handed.id)}`);
     expect(list.body).not.toContain(`/console/chats/${encodeURIComponent(active.id)}`);
     expect(list.body).not.toContain('+77776665544'); // masked
@@ -1052,6 +1052,138 @@ describe('перебор пароля не запирает владельца',
       payload: 'login=admin&password=admin-pass',
     });
     expect(owner.statusCode).toBe(302);
+    await app.close();
+  });
+});
+
+describe('console fixes: escalations visible in Заявки + direct source delete', () => {
+  it('a guest asking for a human appears in the "На менеджера" tab, and survives auto-resume', async () => {
+    const { app, store } = await makeApp();
+    const convo = store.getOrCreateConversation('whatsapp', '77011234567');
+    store.appendMessage(convo.id, { role: 'user', content: 'позовите менеджера' });
+    store.recordEvent('escalation', {
+      conversationId: convo.id,
+      property: convo.property,
+      channel: convo.channel,
+      payload: { type: 'human_requested' },
+    });
+    // Баг авто-возобновления мог вернуть статус в active — заявка всё равно должна остаться видимой.
+    store.setStatus(convo.id, 'active');
+
+    const { cookie } = await login(app, 'admin', 'admin-pass');
+    const page = await app.inject({ method: 'GET', url: '/console/requests?tab=manager', headers: { cookie } });
+    expect(page.statusCode).toBe(200);
+    expect(page.body).toContain('На менеджера');
+    expect(page.body).toContain(`/console/chats/${encodeURIComponent(convo.id)}`);
+
+    // Как только менеджер взял диалог — карточка уходит из очереди.
+    store.setTakenBy(convo.id, 'admin');
+    const after = await app.inject({ method: 'GET', url: '/console/requests?tab=manager', headers: { cookie } });
+    expect(after.body).not.toContain(`/console/chats/${encodeURIComponent(convo.id)}`);
+    await app.close();
+  });
+
+  it('reception can SEE, OPEN and TAKE an auto-resumed escalation (the blocker the review caught)', async () => {
+    const { app, store } = await makeApp();
+    const convo = store.getOrCreateConversation('whatsapp', '77019998877');
+    store.appendMessage(convo.id, { role: 'user', content: 'нужен живой человек' });
+    store.recordEvent('escalation', {
+      conversationId: convo.id,
+      property: convo.property,
+      channel: convo.channel,
+      payload: { type: 'human_requested' },
+    });
+    // Авто-возобновление вернуло статус в active — раньше это давало 403 при клике.
+    store.setStatus(convo.id, 'active');
+
+    const { cookie, token } = await login(app, 'aigul', 'mice-pass');
+    const page = await app.inject({ method: 'GET', url: '/console/requests?tab=manager', headers: { cookie } });
+    expect(page.statusCode).toBe(200);
+    expect(page.body).toContain(`/console/chats/${encodeURIComponent(convo.id)}`);
+
+    // Клик по «Открыть и ответить» должен ОТКРЫТЬ диалог (200), а не 403.
+    const open = await app.inject({
+      method: 'GET',
+      url: `/console/chats/${encodeURIComponent(convo.id)}`,
+      headers: { cookie },
+    });
+    expect(open.statusCode).toBe(200);
+
+    // И ресепшен может взять диалог — после этого карточка уходит из очереди.
+    const take = await post(app, `/console/chats/${encodeURIComponent(convo.id)}/takeover`, cookie, csrfTokenFor(token!), {});
+    expect(take.statusCode).toBe(302);
+    expect(store.getConversation(convo.id)?.takenBy).toBe('aigul');
+    const after = await app.inject({ method: 'GET', url: '/console/requests?tab=manager', headers: { cookie } });
+    expect(after.body).not.toContain(`/console/chats/${encodeURIComponent(convo.id)}`);
+    await app.close();
+  });
+
+  it('reception still CANNOT open an ordinary active bot chat with no escalation (privacy preserved)', async () => {
+    const { app, store } = await makeApp();
+    const convo = store.getOrCreateConversation('whatsapp', '77010000000');
+    store.appendMessage(convo.id, { role: 'user', content: 'какие цены?' });
+    // Обычный активный диалог с ботом, без заявки на человека.
+    const { cookie } = await login(app, 'aigul', 'mice-pass');
+    const open = await app.inject({
+      method: 'GET',
+      url: `/console/chats/${encodeURIComponent(convo.id)}`,
+      headers: { cookie },
+    });
+    expect(open.statusCode).toBe(403);
+    await app.close();
+  });
+
+  it('a source can be permanently deleted; it disappears from the KB the bot reads', async () => {
+    const { app, store } = await makeApp();
+    const id = store.addKbEntry({
+      property: '',
+      kind: 'source',
+      title: 'Акции',
+      body: 'Скидка 20% осенью',
+      url: 'https://example.com/promo',
+      active: true,
+    });
+    expect(store.getKbEntry(id)).not.toBeNull();
+
+    const { cookie, token } = await login(app, 'admin', 'admin-pass');
+    const res = await post(app, '/console/kb/delete', cookie, csrfTokenFor(token!), {
+      id: String(id),
+      kind: 'source',
+    });
+    expect(res.statusCode).toBe(302);
+    expect(String(res.headers.location)).toContain('kind=source');
+    // Полностью удалено — ни в активных, ни в архиве; бот перечитывает KB каждый ход, значит источник ушёл.
+    expect(store.getKbEntry(id)).toBeNull();
+    expect(store.listKbEntries(undefined, undefined, true).some((e) => e.id === id)).toBe(false);
+    await app.close();
+  });
+
+  it('a handled-then-released escalation leaves the queue and re-locks access', async () => {
+    const { app, store } = await makeApp();
+    const convo = store.getOrCreateConversation('whatsapp', '77012223344');
+    store.recordEvent('escalation', {
+      conversationId: convo.id,
+      property: convo.property,
+      channel: convo.channel,
+      payload: { type: 'human_requested' },
+    });
+    // Менеджер взял диалог и вернул боту — заявка обработана.
+    store.recordEvent('takeover', { conversationId: convo.id });
+    store.recordEvent('release', { conversationId: convo.id });
+    store.setTakenBy(convo.id, null);
+    store.setStatus(convo.id, 'active');
+
+    const { cookie } = await login(app, 'aigul', 'mice-pass');
+    const page = await app.inject({ method: 'GET', url: '/console/requests?tab=manager', headers: { cookie } });
+    // Заявка больше не висит в очереди…
+    expect(page.body).not.toContain(`/console/chats/${encodeURIComponent(convo.id)}`);
+    // …и доступ ресепшена к уже обработанному диалогу снова закрыт (приватность).
+    const open = await app.inject({
+      method: 'GET',
+      url: `/console/chats/${encodeURIComponent(convo.id)}`,
+      headers: { cookie },
+    });
+    expect(open.statusCode).toBe(403);
     await app.close();
   });
 });
