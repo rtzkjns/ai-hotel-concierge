@@ -29,6 +29,7 @@ import {
   banner,
   btn,
   channelLabel,
+  CHANNEL_ORDER,
   CSS,
   emptyState,
   escapeHtml,
@@ -573,21 +574,34 @@ export async function registerConsoleRoutes(
 
     scope.get('/console', async (req, reply) => {
       const staff = req.staff!;
-      const all = visibleConversations(store, staff);
+      const q = req.query as { channel?: string };
+      const everything = visibleConversations(store, staff);
+      // Разделение по каналам: WhatsApp / Instagram / … — вкладки над списком.
+      const channelsPresent = CHANNEL_ORDER.filter((ch) => everything.some((c) => c.channel === ch));
+      const channel = channelsPresent.includes(q.channel ?? '') ? (q.channel as string) : '';
+      const all = channel ? everything.filter((c) => c.channel === channel) : everything;
       const showProperty = new Set(all.map((c) => c.property)).size > 1;
+
+      // Вкладки каналов (показываем, только если каналов больше одного).
+      const channelTabs =
+        channelsPresent.length > 1
+          ? pills([
+              { href: '/console', label: 'Все', active: channel === '' },
+              ...channelsPresent.map((ch) => ({
+                href: `/console?channel=${encodeURIComponent(ch)}`,
+                label: channelLabel(ch),
+                active: channel === ch,
+              })),
+            ])
+          : '';
 
       const waiting = all
         .filter((c) => c.status === 'handed_off' && !c.takenBy)
         .sort((x, y) => minutesSince(lastGuestAt(y)) - minutesSince(lastGuestAt(x)));
       const mine = all.filter((c) => c.status === 'handed_off' && c.takenBy === staff.login);
-      // Диалоги, которые ведёт коллега, раньше не попадали никуда: владелец сети
-      // не видел работу менеджеров вообще.
-      // Только для владельца: ресепшену чужой диалог всё равно не открыть, а ссылка,
-      // ведущая в «не найдено», хуже её отсутствия.
-      const theirs =
-        staff.role === 'admin'
-          ? all.filter((c) => c.status === 'handed_off' && c.takenBy && c.takenBy !== staff.login)
-          : [];
+      // Диалоги коллег и «бот справляется» теперь видит любой менеджер (полный доступ),
+      // а не только владелец: менеджер в панели может открыть и вести любой чат отеля.
+      const theirs = all.filter((c) => c.status === 'handed_off' && c.takenBy && c.takenBy !== staff.login);
       const botHandled = all.filter((c) => c.status !== 'handed_off');
 
       // Красным красим только верхнюю карточку: если покрасить все, красный
@@ -642,7 +656,7 @@ export async function registerConsoleRoutes(
           ),
         );
       }
-      if (botHandled.length && staff.role === 'admin') {
+      if (botHandled.length) {
         const rows = botHandled
           .slice(0, 60)
           .map((c) => {
@@ -667,7 +681,7 @@ export async function registerConsoleRoutes(
       const title = waiting.length ? `(${waiting.length}) Входящие` : 'Входящие';
       return sendHtml(
         reply,
-        shell(title, `<div id="live">${bands.join('')}</div>`, {
+        shell(title, `${channelTabs}<div id="live">${bands.join('')}</div>`, {
           heading: 'Входящие',
           staff,
           csrf: csrfTokenFor(req.sessionToken!),
@@ -719,18 +733,10 @@ export async function registerConsoleRoutes(
       // бот из-за авто-возобновления вернул статус в active. Иначе карточка «На менеджера»
       // ведёт в 403 и её нельзя закрыть. Приватность сохраняется: доступ открываем ТОЛЬКО при
       // реальной незакрытой заявке на человека, а не на любой активный диалог с ботом.
-      const takenByOther = convo.takenBy !== null && convo.takenBy !== req.staff!.login;
-      const isAdmin = req.staff!.role === 'admin';
-      // openEscalations() зовём лениво — только когда это реально может изменить решение
-      // (не админ, не занят другим, статус уже не handed_off).
-      const blocked =
-        !isAdmin &&
-        (takenByOther ||
-          (convo.status !== 'handed_off' && !openEscalations(store).has(convo.id)));
-      if (blocked) {
-        await reply.code(403).type('text/html; charset=utf-8').send(FORBIDDEN_HTML);
-        return null;
-      }
+      // Менеджер, работающий в панели, открывает ЛЮБОЙ чат своего отеля — просмотр и
+      // ответ, как у владельца. Единственное ограничение — отель (canSee выше): переписку
+      // другого отеля сети видеть нельзя. Кто «ведёт» диалог и передача боту — на самой
+      // странице чата, доступ на чтение это не ограничивает.
       return convo;
     };
 

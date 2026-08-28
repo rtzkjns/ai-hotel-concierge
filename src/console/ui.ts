@@ -354,6 +354,8 @@ const CHANNEL_LABEL: Record<string, string> = {
 export function channelLabel(channel: string): string {
   return CHANNEL_LABEL[channel] ?? channel;
 }
+/** Порядок каналов во вкладках входящих (WhatsApp и Instagram — первыми). */
+export const CHANNEL_ORDER: readonly string[] = ['whatsapp', 'instagram', 'telegram', 'webwidget'];
 
 const PROPERTY_LABEL: Record<string, string> = {
   almaty: 'Kazzhol Алматы',

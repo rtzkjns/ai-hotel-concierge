@@ -11,6 +11,8 @@ import { metricsSummary } from '/Users/abzalm/kazzhol-ai/src/core/events';
 const store = new Store(':memory:');
 store.createStaff('admin', hashPassword('p'), 'admin');
 store.createStaff('astana-desk', hashPassword('p'), 'mice_manager', 'astana');
+// Сетевой менеджер (без привязки к отелю): видит все каналы и любые чаты — для проверки полного доступа.
+store.createStaff('manager', hashPassword('p'), 'mice_manager');
 
 const mk = (ch: any, sid: string, prop: string, msgs: Array<[string, string]>, handed = false, taken?: string) => {
   const c = store.getOrCreateConversation(ch, sid);

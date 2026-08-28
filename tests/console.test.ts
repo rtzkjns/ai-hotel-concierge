@@ -223,7 +223,7 @@ describe('console roles', () => {
     await app.close();
   });
 
-  it('mice_manager only sees handed_off chats, with PII masked', async () => {
+  it('a manager sees and can open ANY chat, with guest PII masked on shared screens', async () => {
     const { app, store } = await makeApp();
     const active = store.getOrCreateConversation('webwidget', 'guest-active');
     store.appendMessage(active.id, { role: 'user', content: 'мой номер +77014126353' });
@@ -236,17 +236,18 @@ describe('console roles', () => {
     expect(list.statusCode).toBe(200);
     // Гость показан человеческим именем, а не машинным id диалога.
     expect(list.body).toContain('Гость #');
+    // Полный доступ: менеджер видит и переданный диалог, и тот, что ведёт бот.
     expect(list.body).toContain(`/console/chats/${encodeURIComponent(handed.id)}`);
-    expect(list.body).not.toContain(`/console/chats/${encodeURIComponent(active.id)}`);
+    expect(list.body).toContain(`/console/chats/${encodeURIComponent(active.id)}`);
     expect(list.body).not.toContain('+77776665544'); // masked
 
-    // Detail of an active chat is off-limits for mice_manager.
+    // И может открыть любой из них (просмотр + возможность ответить).
     const detail = await app.inject({
       method: 'GET',
       url: `/console/chats/${encodeURIComponent(active.id)}`,
       headers: { cookie },
     });
-    expect(detail.statusCode).toBe(403);
+    expect(detail.statusCode).toBe(200);
     await app.close();
   });
 
@@ -271,7 +272,7 @@ describe('console roles', () => {
     await app.close();
   });
 
-  it('mice_manager cannot open a handed_off chat taken by ANOTHER manager', async () => {
+  it('a manager can open any chat, including one a colleague is leading (read view)', async () => {
     const { app, store } = await makeApp();
     const taken = store.getOrCreateConversation('webwidget', 'guest-taken');
     store.setStatus(taken.id, 'handed_off');
@@ -282,14 +283,17 @@ describe('console roles', () => {
     const { cookie } = await login(app, 'aigul', 'mice-pass');
     const list = await app.inject({ method: 'GET', url: '/console', headers: { cookie } });
     expect(list.body).toContain(`/console/chats/${encodeURIComponent(unclaimed.id)}`);
-    expect(list.body).not.toContain(`/console/chats/${encodeURIComponent(taken.id)}`);
+    // Полный доступ: диалог коллеги теперь тоже виден в списке.
+    expect(list.body).toContain(`/console/chats/${encodeURIComponent(taken.id)}`);
 
     const detail = await app.inject({
       method: 'GET',
       url: `/console/chats/${encodeURIComponent(taken.id)}`,
       headers: { cookie },
     });
-    expect(detail.statusCode).toBe(403);
+    // Открыть и прочитать можно, но перехватывать чужой диалог не предлагаем.
+    expect(detail.statusCode).toBe(200);
+    expect(detail.body).toContain('someone-else');
     await app.close();
   });
 
@@ -1118,18 +1122,20 @@ describe('console fixes: escalations visible in Заявки + direct source del
     await app.close();
   });
 
-  it('reception still CANNOT open an ordinary active bot chat with no escalation (privacy preserved)', async () => {
+  it('a manager can open ANY active bot chat (full access from the panel)', async () => {
     const { app, store } = await makeApp();
     const convo = store.getOrCreateConversation('whatsapp', '77010000000');
     store.appendMessage(convo.id, { role: 'user', content: 'какие цены?' });
-    // Обычный активный диалог с ботом, без заявки на человека.
+    // Обычный активный диалог с ботом — менеджер должен мочь открыть и ответить.
     const { cookie } = await login(app, 'aigul', 'mice-pass');
     const open = await app.inject({
       method: 'GET',
       url: `/console/chats/${encodeURIComponent(convo.id)}`,
       headers: { cookie },
     });
-    expect(open.statusCode).toBe(403);
+    expect(open.statusCode).toBe(200);
+    // На странице есть кнопка перехватить у бота и ответить.
+    expect(open.body).toContain('/takeover');
     await app.close();
   });
 
@@ -1158,7 +1164,7 @@ describe('console fixes: escalations visible in Заявки + direct source del
     await app.close();
   });
 
-  it('a handled-then-released escalation leaves the queue and re-locks access', async () => {
+  it('a handled-then-released escalation leaves the "На менеджера" queue', async () => {
     const { app, store } = await makeApp();
     const convo = store.getOrCreateConversation('whatsapp', '77012223344');
     store.recordEvent('escalation', {
@@ -1175,15 +1181,8 @@ describe('console fixes: escalations visible in Заявки + direct source del
 
     const { cookie } = await login(app, 'aigul', 'mice-pass');
     const page = await app.inject({ method: 'GET', url: '/console/requests?tab=manager', headers: { cookie } });
-    // Заявка больше не висит в очереди…
+    // Обработанная заявка больше не висит в очереди «На менеджера».
     expect(page.body).not.toContain(`/console/chats/${encodeURIComponent(convo.id)}`);
-    // …и доступ ресепшена к уже обработанному диалогу снова закрыт (приватность).
-    const open = await app.inject({
-      method: 'GET',
-      url: `/console/chats/${encodeURIComponent(convo.id)}`,
-      headers: { cookie },
-    });
-    expect(open.statusCode).toBe(403);
     await app.close();
   });
 });
