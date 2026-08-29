@@ -20,6 +20,7 @@ import type { AvailabilityProvider } from '../integrations/exely/provider';
 import type { PaymentGateway } from '../integrations/payments';
 import type { Transcriber } from '../integrations/transcribe';
 import { properties, propertyList } from '../knowledge';
+import { activeTenant } from '../tenant';
 import { guardInventedPrices } from '../style/prices';
 import {
   dropRepeatedGreeting,
@@ -344,6 +345,7 @@ export class Engine {
                 bookable: s.bookable,
               })),
             styleGuide: this.deps.styleGuide,
+            tenant: activeTenant,
           },
         ),
       ]),
@@ -601,6 +603,7 @@ export class Engine {
         // ради которого написана.
         (result.toolsUsed ?? []).some((t) => t !== 'check_availability' && PRICE_TOOLS.includes(t)) ||
           turn.livePrices,
+        activeTenant.currency.scrubPattern,
       );
       if (priced.invented.length) {
         track(store, 'invented_price_blocked', {

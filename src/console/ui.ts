@@ -14,6 +14,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { activeTenant } from '../tenant';
 
 export function escapeHtml(value: unknown): string {
   return String(value ?? '')
@@ -545,10 +546,10 @@ export function shell(title: string, body: string, opts: ShellOpts = {}): string
       : escapeHtml(i.label);
 
   const topbar =
-    `<header class="topbar"><a class="topbar__brand" href="/console">Kazzhol` +
-    // Сотрудники говорят про бота «София» — так его назвал отель. В панели он подписан
+    `<header class="topbar"><a class="topbar__brand" href="/console">${escapeHtml(activeTenant.brand.displayName)}` +
+    // Сотрудники говорят про бота по имени — так его назвал отель. В панели он подписан
     // так же, иначе менеджеры не понимают, чьи это диалоги и чьи заявки.
-    `<span>София · персональный менеджер</span></a>` +
+    `<span>${escapeHtml(activeTenant.persona.name)} · персональный менеджер</span></a>` +
     `<nav>` +
     items
       .map(
