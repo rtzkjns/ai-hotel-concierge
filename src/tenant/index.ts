@@ -1,6 +1,8 @@
 export * from './types';
 export { kazzholTenant } from './kazzhol';
 
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { TenantConfig } from './types';
 import type { Property } from '../knowledge';
 import { kazzholTenant } from './kazzhol';
@@ -33,6 +35,70 @@ export function assertValidTenant(t: TenantConfig): void {
         'the invented-price guard would be silently disabled.',
     );
   }
+}
+
+/** A JSON tenant file isn't compile-checked like a TS literal, so validate its shape at load. */
+function validateTenantShape(t: unknown, src: string): asserts t is TenantConfig {
+  const bad = (m: string): never => {
+    throw new Error(`Tenant file ${src}: ${m}`);
+  };
+  const o = t as Record<string, unknown>;
+  if (!o || typeof o !== 'object') bad('not a JSON object');
+  if (typeof o.id !== 'string' || !o.id) bad('missing "id"');
+  const brand = o.brand as Record<string, unknown> | undefined;
+  if (!brand || typeof brand.displayName !== 'string' || typeof brand.website !== 'string')
+    bad('bad "brand" (need displayName, website)');
+  const persona = o.persona as Record<string, unknown> | undefined;
+  if (
+    !persona ||
+    typeof persona.name !== 'string' ||
+    !['female', 'male', 'neutral'].includes(persona.gender as string)
+  )
+    bad('bad "persona" (need name, gender)');
+  const currency = o.currency as Record<string, unknown> | undefined;
+  if (
+    !currency ||
+    typeof currency.code !== 'string' ||
+    typeof currency.symbol !== 'string' ||
+    typeof currency.scrubPattern !== 'string'
+  )
+    bad('bad "currency" (need code, symbol, scrubPattern)');
+  if (!Array.isArray(o.languages) || o.languages.length === 0) bad('bad "languages"');
+  if (!Array.isArray(o.properties) || o.properties.length === 0)
+    bad('"properties" must be a non-empty array');
+  for (const p of o.properties as Array<Record<string, unknown>>) {
+    if (typeof p?.key !== 'string' || typeof p?.name !== 'string' || typeof p?.knowledge !== 'string')
+      bad('every property needs string key, name, knowledge');
+  }
+}
+
+/**
+ * Load every tenants/<id>.json in a directory into TenantConfig objects. Pure (no global mutation).
+ * JSON, not JS: it must finish SYNCHRONOUSLY before activeTenant resolves below (dynamic import()
+ * is async and would be too late), and a tenant file is ops data, not code — JSON stays inert.
+ */
+export function loadTenantsFromDir(dir: string): TenantConfig[] {
+  let files: string[];
+  try {
+    files = readdirSync(dir).filter((f) => f.endsWith('.json'));
+  } catch {
+    return []; // no dir → Kazzhol-only, unchanged
+  }
+  return files.sort().map((f) => {
+    const parsed = JSON.parse(readFileSync(join(dir, f), 'utf8')) as unknown;
+    validateTenantShape(parsed, f);
+    return parsed;
+  });
+}
+
+// Register file-defined tenants at boot, BEFORE activeTenant resolves. Kazzhol is code-defined and
+// can NEVER be overridden by a file (collision guard) — it stays the byte-identical golden tenant.
+for (const t of loadTenantsFromDir(process.env.TENANTS_DIR ?? './tenants')) {
+  if (t.id === 'kazzhol' || tenants[t.id]) {
+    throw new Error(`Tenant "${t.id}" collides with a built-in or already-loaded tenant`);
+  }
+  assertValidTenant(t);
+  tenants[t.id] = t;
 }
 
 export const activeTenant: TenantConfig = tenants[process.env.TENANT ?? 'kazzhol'] ?? kazzholTenant;
