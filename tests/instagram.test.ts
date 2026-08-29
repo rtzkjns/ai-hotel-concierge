@@ -239,17 +239,18 @@ describe('Instagram webhook round-trip', () => {
   });
 
   it('malformed JSON → 200 and no crash', async () => {
-    const { app, engine } = await makeServer();
+    const { app, engine } = await makeServer({ appSecret: 's3cret' });
     const res = await app.inject({
       method: 'POST',
       url: '/webhooks/instagram',
       payload: 'not json {',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', 'x-hub-signature-256': sign('not json {', 's3cret') },
     });
     expect(res.statusCode).toBe(200);
     expect(engine.handle).not.toHaveBeenCalled();
     await app.close();
   });
+
 });
 
 /** Жалоба менеджеров 2026-08-16: гости кидают сторис с отзывами, бот отвечал «не могу открыть». */
