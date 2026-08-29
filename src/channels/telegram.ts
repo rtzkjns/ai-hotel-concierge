@@ -3,7 +3,7 @@
 import { Markup, Telegraf } from 'telegraf';
 import { message } from 'telegraf/filters';
 import { HOTEL_SELECTOR_MESSAGE } from '../core/engine';
-import { properties, propertyList } from '../knowledge';
+import { activeProperties as properties, activePropertyList as propertyList } from '../tenant';
 import type { Channel, Conversation } from '../types';
 import type { InboundMessage, OutboundPart } from './types';
 

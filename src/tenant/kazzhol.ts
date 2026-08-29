@@ -24,12 +24,7 @@ export const kazzholTenant: TenantConfig = {
     scrubPattern: '₸|тг\\b|тенге\\b|KZT\\b',
   },
   languages: ['ru', 'kk', 'en', 'zh'],
-  // The roster is projected from the Kazzhol knowledge base (single source of property truth),
-  // minus the large knowledge blobs — those stay in src/knowledge keyed by property.
-  properties: propertyList.map((p) => ({
-    key: p.key,
-    name: p.name,
-    city: p.city,
-    bookable: p.bookable,
-  })),
+  // The roster IS the Kazzhol knowledge base (full Property objects, knowledge blobs included).
+  // src/knowledge holds Kazzhol's hotel data; the tenant owns it. A second tenant supplies its own.
+  properties: propertyList,
 };

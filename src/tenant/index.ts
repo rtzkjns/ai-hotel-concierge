@@ -2,6 +2,7 @@ export * from './types';
 export { kazzholTenant } from './kazzhol';
 
 import type { TenantConfig } from './types';
+import type { Property } from '../knowledge';
 import { kazzholTenant } from './kazzhol';
 
 /** Every tenant this codebase can serve. A new hotel brand is registered here (later: DB-backed). */
@@ -15,3 +16,11 @@ export const tenants: Record<string, TenantConfig> = {
  * we pool tenants. An unknown TENANT falls back to Kazzhol rather than crashing the process.
  */
 export const activeTenant: TenantConfig = tenants[process.env.TENANT ?? 'kazzhol'] ?? kazzholTenant;
+
+/** The active tenant's hotels, in roster order — the roster the engine and channels read. */
+export const activePropertyList: Property[] = activeTenant.properties;
+
+/** The active tenant's hotels keyed by property key, for O(1) lookup. */
+export const activeProperties: Record<string, Property> = Object.fromEntries(
+  activeTenant.properties.map((p) => [p.key, p]),
+);

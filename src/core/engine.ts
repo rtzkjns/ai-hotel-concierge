@@ -19,8 +19,11 @@ import type { AmoCrmClient } from '../integrations/amocrm';
 import type { AvailabilityProvider } from '../integrations/exely/provider';
 import type { PaymentGateway } from '../integrations/payments';
 import type { Transcriber } from '../integrations/transcribe';
-import { properties, propertyList } from '../knowledge';
-import { activeTenant } from '../tenant';
+import {
+  activeTenant,
+  activeProperties as properties,
+  activePropertyList as propertyList,
+} from '../tenant';
 import { guardInventedPrices } from '../style/prices';
 import {
   dropRepeatedGreeting,

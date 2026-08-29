@@ -41,16 +41,14 @@ export interface TenantBrand {
   website: string;
 }
 
-export interface TenantProperty {
-  /** Stable slug, unique within the tenant, e.g. 'almaty'. */
-  key: string;
-  /** Guest-facing hotel name, e.g. 'Hotel Kazzhol Almaty'. */
-  name: string;
-  /** City slug — a substitute hotel is offered only within the same city. */
-  city?: string;
-  /** false for a pre-opening hotel: still routed & described, but never offered as bookable. */
-  bookable?: boolean;
-}
+import type { Property } from '../knowledge';
+
+/**
+ * A hotel in a tenant's roster. This IS the knowledge-base Property shape (key/name/city/
+ * bookable/knowledge/…), reused so the roster carries everything the engine needs — the tenant is
+ * the single source of its hotels, not a hardcoded module.
+ */
+export type TenantProperty = Property;
 
 export interface TenantConfig {
   /** Stable slug, unique across tenants, e.g. 'kazzhol'. */
@@ -60,7 +58,7 @@ export interface TenantConfig {
   currency: TenantCurrency;
   /** Languages the assistant detects and replies in; first is the fallback when ambiguous. */
   languages: LangCode[];
-  /** The hotels this tenant runs — the roster that drives the tool enum and hotel selector. */
+  /** The hotels this tenant runs — the roster that drives prompts, the tool enum and the selector. */
   properties: TenantProperty[];
 }
 

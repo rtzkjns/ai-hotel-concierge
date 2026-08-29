@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import websocket from '@fastify/websocket';
 import type { FastifyInstance } from 'fastify';
-import { properties } from '../knowledge';
+import { activeProperties as properties } from '../tenant';
 import type { Channel, Conversation } from '../types';
 import type { InboundMessage, OutboundPart } from './types';
 
