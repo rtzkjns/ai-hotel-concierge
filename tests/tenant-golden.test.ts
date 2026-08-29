@@ -99,6 +99,29 @@ describe('tenant golden — price scrubber recognises KZT tokens exactly as toda
     expect(r.reply).toContain('99 999 ₸');
   });
 
+  // B2B hardening: a room price that only COINCIDES with a fitness figure in the KB must still be
+  // caught — room prices are never static, they come only from live Exely.
+  const fitnessKb = 'Фитнес: абонемент 8 посещений — 25 000 ₸ взрослый.\nPRICES: never state a room price.';
+
+  it('drops a room price that only coincides with a fitness figure in the KB (the closed hole)', () => {
+    const r = guardInventedPrices('Стандартный номер стоит 25 000 ₸ за ночь.', fitnessKb, false);
+    expect(r.invented).toContain('25000');
+    expect(r.reply).not.toContain('25 000');
+  });
+
+  it('keeps that same figure when quoted as the fitness price it actually is', () => {
+    const r = guardInventedPrices('Абонемент на 8 посещений — 25 000 ₸.', fitnessKb, false);
+    expect(r.invented).toHaveLength(0);
+    expect(r.reply).toContain('25 000 ₸');
+  });
+
+  it('a room price the KB DOES list statically survives (tenant with static room rates)', () => {
+    const staticKb = 'Номер «Стандарт» — 30 000 ₸ за ночь.';
+    const r = guardInventedPrices('Стандарт стоит 30 000 ₸ за ночь.', staticKb, false);
+    expect(r.invented).toHaveLength(0);
+    expect(r.reply).toContain('30 000 ₸');
+  });
+
   it('recognises ₸ and KZT tokens exactly as the current MONEY_RE does', () => {
     // NB: the live regex uses ASCII \b, so «тг»/«тенге» before a period/space do NOT match —
     // only ₸ and KZT (word-boundary) reliably scrub. The refactor must preserve this quirk.

@@ -29,6 +29,26 @@ function moneyRe(scrubPattern: string): RegExp {
 /** Только цифры: «55 250» и «55250» — одна и та же сумма. */
 const digitsOf = (s: string): string => s.replace(/\D/g, '');
 
+/**
+ * Слова, выдающие, что сумма названа ЗА НОМЕР. Номерная цена — единственная, которой в
+ * статической базе нет и быть не должно: она приходит ТОЛЬКО из живого Exely. Поэтому рядом
+ * с такой суммой планка «выдумки» строже — совпадения значения с любым числом базы (цена
+ * абонемента, аренда зала) уже недостаточно. RU/EN/KK/ZH — бот отвечает на всех четырёх.
+ */
+const ROOM_CONTEXT_RE =
+  /номер|ноч[ьи]|за ночь|сутк|суток|\broom\b|\bnight|\bstay\b|бөлме|тәулік|түн|房间|每晚|一晚/i;
+
+/** Узкое окно вокруг суммы: «абонемент для проживающих — 25 000 ₸» не должно стать номерным. */
+const ROOM_CTX_WINDOW = 24;
+
+function roomPriced(text: string, at: number, len: number): boolean {
+  const around =
+    text.slice(Math.max(0, at - ROOM_CTX_WINDOW), at) +
+    ' ' +
+    text.slice(at + len, at + len + ROOM_CTX_WINDOW);
+  return ROOM_CONTEXT_RE.test(around);
+}
+
 /** Предложения целиком — чтобы убрать ровно то, где стоит выдуманная цифра. */
 function sentences(text: string): string[] {
   return text.split(/(?<=[.!?…])\s+/).filter((s) => s.trim() !== '');
@@ -56,18 +76,36 @@ export function guardInventedPrices(
   if (usedLiveData || !reply.trim()) return { reply, invented: [] };
 
   const money = moneyRe(scrubPattern);
-  const known = new Set((knowledge.match(money) ?? []).map(digitsOf));
-  // В знаниях цены встречаются и без валюты рядом («завтрак 5000, обед 11500»), поэтому
-  // добираем все длинные числа: пропустить лишнее безопаснее, чем срезать верный ответ.
+  // Лёгкая планка для НЕ-номерных сумм (фитнес, рестораны, залы): любое длинное число базы.
+  // Валюта рядом не требуется — в базе цены пишут и без неё («завтрак 5000, обед 11500»);
+  // пропустить лишнее безопаснее, чем срезать верный ответ. Широкий свип — надмножество
+  // валюто-помеченных совпадений, поэтому отдельно их добирать не нужно.
+  const known = new Set<string>();
   for (const n of knowledge.match(/\d[\d\s ]{2,}/g) ?? []) known.add(digitsOf(n));
+
+  // Строгая планка для НОМЕРНЫХ сумм: значение засчитывается, только если в базе оно стоит
+  // С ВАЛЮТОЙ и В НОМЕРНОМ контексте. У Kazzhol номерных цен в базе нет вовсе — значит любая
+  // сумма «за номер» без похода в Exely выдумана, даже если совпала с ценой абонемента.
+  // У тенанта со статическими тарифами такие цены попадут сюда из его же базы и уцелеют.
+  const knownRoomPrice = new Set<string>();
+  for (const m of knowledge.matchAll(money)) {
+    if (roomPriced(knowledge, m.index ?? 0, m[0].length)) knownRoomPrice.add(digitsOf(m[0]));
+  }
 
   const invented: string[] = [];
   const kept = sentences(reply).filter((s) => {
-    const sums = (s.match(money) ?? []).map(digitsOf).filter((d) => d.length >= 3);
-    const bad = sums.filter((d) => !known.has(d));
-    if (bad.length === 0) return true;
-    invented.push(...bad);
-    return false;
+    let bad = false;
+    for (const m of s.matchAll(money)) {
+      const d = digitsOf(m[0]);
+      if (d.length < 3) continue;
+      // Номерная сумма — строгая планка; всё прочее — прежняя лёгкая.
+      const ok = roomPriced(s, m.index ?? 0, m[0].length) ? knownRoomPrice.has(d) : known.has(d);
+      if (!ok) {
+        invented.push(d);
+        bad = true;
+      }
+    }
+    return !bad;
   });
 
   if (!invented.length) return { reply, invented: [] };
