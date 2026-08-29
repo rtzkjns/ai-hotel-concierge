@@ -119,7 +119,9 @@ export function buildConfig(env: NodeJS.ProcessEnv) {
   return {
     anthropicApiKey: required('ANTHROPIC_API_KEY'),
     anthropicModel: env.ANTHROPIC_MODEL ?? 'claude-sonnet-5',
-    dbPath: env.DB_PATH ?? './kazzhol.db',
+    // Default DB file is per-tenant so a second tenant never silently shares Kazzhol's DB.
+    // For the Kazzhol tenant this is './kazzhol.db' (unchanged); prod sets DB_PATH explicitly.
+    dbPath: env.DB_PATH ?? `./${activeTenant.id}.db`,
     telegram: {
       botToken: env.TELEGRAM_BOT_TOKEN,
       // Нужно, чтобы панель собирала ссылки-приглашения для менеджеров.

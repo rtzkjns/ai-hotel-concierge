@@ -7,7 +7,7 @@
 import { describe, it, expect } from 'vitest';
 import { buildSystemPrompt } from '../src/ai/systemPrompt';
 import { guardInventedPrices } from '../src/style/prices';
-import { bookablePropertyKeys, type TenantConfig } from '../src/tenant';
+import { bookablePropertyKeys, assertValidTenant, type TenantConfig } from '../src/tenant';
 
 const demo: TenantConfig = {
   id: 'demostay',
@@ -47,5 +47,13 @@ describe('a second tenant works with none of Kazzhol’s values (product is univ
     const r = guardInventedPrices('The room is 500 $ per night.', '', false, demo.currency.scrubPattern);
     expect(r.invented).toContain('500');
     expect(r.reply).not.toContain('500 $');
+  });
+
+  it('a valid tenant passes boot validation; a broken currency fails fast', () => {
+    expect(() => assertValidTenant(demo)).not.toThrow();
+    // Malformed regex → would throw on every turn.
+    expect(() => assertValidTenant({ ...demo, currency: { code: 'X', symbol: '¤', scrubPattern: '([' } })).toThrow();
+    // Compiles but does not match its own symbol → guard silently disabled.
+    expect(() => assertValidTenant({ ...demo, currency: { code: 'X', symbol: '¤', scrubPattern: 'USD' } })).toThrow();
   });
 });
