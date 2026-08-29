@@ -1,5 +1,9 @@
 import 'dotenv/config';
 import type { Channel } from './types';
+import { activeTenant } from './tenant';
+
+/** Property keys of the tenant this instance serves; env vars use the UPPERCASED key as prefix. */
+const tenantPropertyKeys = (): string[] => activeTenant.properties.map((p) => p.key);
 
 export interface ExelyCabinet {
   clientId: string;
@@ -22,11 +26,6 @@ export interface ExelyCabinet {
  * Only fully-specified cabinets (all three core vars) are included.
  */
 export function buildExelyCabinets(env: NodeJS.ProcessEnv): Record<string, ExelyCabinet> {
-  const map: Array<[string, string]> = [
-    ['ALMATY', 'almaty'],
-    ['ASTANA', 'astana'],
-    ['PARK_ALMATY', 'park_almaty'],
-  ];
   const authUrl = env.EXELY_AUTH_URL ?? 'https://connect.hopenapi.com/auth/token';
   const baseUrl = env.EXELY_BASE_URL ?? 'https://connect.hopenapi.com';
   const out: Record<string, ExelyCabinet> = {};
@@ -45,7 +44,10 @@ export function buildExelyCabinets(env: NodeJS.ProcessEnv): Record<string, Exely
     };
   }
 
-  for (const [envKey, propKey] of map) {
+  // One cabinet per tenant property whose full EXELY_<KEY>_* triple is present. A hotel with no
+  // cabinet simply isn't added (→ stub / manual). Env prefix = property key upper-cased.
+  for (const propKey of tenantPropertyKeys()) {
+    const envKey = propKey.toUpperCase();
     const clientId = env[`EXELY_${envKey}_CLIENT_ID`];
     const clientSecret = env[`EXELY_${envKey}_CLIENT_SECRET`];
     const propertyId = env[`EXELY_${envKey}_PROPERTY_ID`];
@@ -73,18 +75,21 @@ export function buildConfig(env: NodeJS.ProcessEnv) {
     return v;
   };
 
+  // All per-hotel credential maps below iterate the tenant roster; env prefix = KEY.toUpperCase().
+  // A hotel with no vars for a given channel is simply absent from that map (unchanged behaviour).
+  const keys = tenantPropertyKeys();
+
   const phoneNumberIds: Record<string, string> = {};
-  if (env.WHATSAPP_PHONE_ID_ALMATY) phoneNumberIds.almaty = env.WHATSAPP_PHONE_ID_ALMATY;
-  if (env.WHATSAPP_PHONE_ID_ASTANA) phoneNumberIds.astana = env.WHATSAPP_PHONE_ID_ASTANA;
-  if (env.WHATSAPP_PHONE_ID_PARK_ALMATY) {
-    phoneNumberIds.park_almaty = env.WHATSAPP_PHONE_ID_PARK_ALMATY;
+  for (const key of keys) {
+    const v = env[`WHATSAPP_PHONE_ID_${key.toUpperCase()}`];
+    if (v) phoneNumberIds[key] = v;
   }
 
   const instagramIgIds: Record<string, string> = {};
-  if (env.INSTAGRAM_IG_ID_ALMATY) instagramIgIds.almaty = env.INSTAGRAM_IG_ID_ALMATY;
-  if (env.INSTAGRAM_IG_ID_ASTANA) instagramIgIds.astana = env.INSTAGRAM_IG_ID_ASTANA;
-  if (env.INSTAGRAM_IG_ID_PARK_ALMATY) instagramIgIds.park_almaty = env.INSTAGRAM_IG_ID_PARK_ALMATY;
-  if (env.INSTAGRAM_IG_ID_SEVEN) instagramIgIds.seven = env.INSTAGRAM_IG_ID_SEVEN;
+  for (const key of keys) {
+    const v = env[`INSTAGRAM_IG_ID_${key.toUpperCase()}`];
+    if (v) instagramIgIds[key] = v;
+  }
   // Back-compat: a lone INSTAGRAM_IG_ID maps to Almaty when no per-hotel ids are set.
   if (Object.keys(instagramIgIds).length === 0 && env.INSTAGRAM_IG_ID) {
     instagramIgIds.almaty = env.INSTAGRAM_IG_ID;
@@ -92,24 +97,24 @@ export function buildConfig(env: NodeJS.ProcessEnv) {
 
   // Per-account access tokens — "Instagram API with Instagram Login" issues one token per account.
   const instagramTokens: Record<string, string> = {};
-  if (env.INSTAGRAM_TOKEN_ALMATY) instagramTokens.almaty = env.INSTAGRAM_TOKEN_ALMATY;
-  if (env.INSTAGRAM_TOKEN_ASTANA) instagramTokens.astana = env.INSTAGRAM_TOKEN_ASTANA;
-  if (env.INSTAGRAM_TOKEN_PARK_ALMATY) instagramTokens.park_almaty = env.INSTAGRAM_TOKEN_PARK_ALMATY;
-  if (env.INSTAGRAM_TOKEN_SEVEN) instagramTokens.seven = env.INSTAGRAM_TOKEN_SEVEN;
+  for (const key of keys) {
+    const v = env[`INSTAGRAM_TOKEN_${key.toUpperCase()}`];
+    if (v) instagramTokens[key] = v;
+  }
 
   // Chatfuel bridge (temporary IG tenant path while our own App Review is pending):
   // property key → that hotel's Chatfuel bot id + broadcasting token.
   const chatfuelBots: Record<string, { botId: string; token: string }> = {};
-  for (const [h, key] of [
-    ['ALMATY', 'almaty'],
-    ['ASTANA', 'astana'],
-    ['PARK_ALMATY', 'park_almaty'],
-    ['SEVEN', 'seven'],
-  ] as const) {
+  for (const key of keys) {
+    const h = key.toUpperCase();
     const botId = env[`CHATFUEL_BOT_ID_${h}`];
     const token = env[`CHATFUEL_TOKEN_${h}`];
     if (botId && token) chatfuelBots[key] = { botId, token };
   }
+
+  // Per-hotel staff Telegram chat; a hotel with none falls back to the shared staffGroupChatId.
+  const staffChatByProperty: Record<string, string | undefined> = {};
+  for (const key of keys) staffChatByProperty[key] = env[`STAFF_CHAT_ID_${key.toUpperCase()}`];
 
   return {
     anthropicApiKey: required('ANTHROPIC_API_KEY'),
@@ -122,12 +127,7 @@ export function buildConfig(env: NodeJS.ProcessEnv) {
       staffGroupChatId: env.STAFF_GROUP_CHAT_ID,
       // Отдельный Telegram-чат на каждый отель: STAFF_CHAT_ID_ALMATY и т.д.
       // Если для отеля чат не задан — уведомление уходит в общий staffGroupChatId.
-      staffChatByProperty: {
-        almaty: env.STAFF_CHAT_ID_ALMATY,
-        astana: env.STAFF_CHAT_ID_ASTANA,
-        park_almaty: env.STAFF_CHAT_ID_PARK_ALMATY,
-        seven: env.STAFF_CHAT_ID_SEVEN,
-      } as Record<string, string | undefined>,
+      staffChatByProperty,
     },
     whatsapp: {
       // Meta: system-user/Bearer token. 360dialog: the D360-API-KEY (set WHATSAPP_PROVIDER=d360).
