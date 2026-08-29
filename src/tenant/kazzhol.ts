@@ -27,4 +27,5 @@ export const kazzholTenant: TenantConfig = {
   // The roster IS the Kazzhol knowledge base (full Property objects, knowledge blobs included).
   // src/knowledge holds Kazzhol's hotel data; the tenant owns it. A second tenant supplies its own.
   properties: propertyList,
+  regionPack: 'kz-cis',
 };

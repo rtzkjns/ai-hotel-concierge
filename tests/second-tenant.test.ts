@@ -43,6 +43,20 @@ describe('a second tenant works with none of Kazzhol’s values (product is univ
     expect(bookablePropertyKeys(demo)).toEqual(['grand']);
   });
 
+  it('a non-CIS tenant (no regionPack) gets NONE of the Kazakh/CIS rule blocks', () => {
+    const prompt = buildSystemPrompt(
+      { key: 'grand', name: 'DemoStay Grand', knowledge: 'A demo hotel.', bookable: true },
+      { tenant: demo }, // demo has no regionPack → null
+    );
+    expect(prompt).not.toContain('суржик'); // code-switching block gone
+    expect(prompt).not.toContain('Kaspi'); // CIS money vocabulary gone
+    expect(prompt).not.toContain('в Казахстане так принято');
+    expect(prompt).not.toContain('«сіз»'); // Kazakh register line gone
+    // universal concierge logic still present:
+    expect(prompt).toContain('check_availability');
+    expect(prompt).toContain('MONEY, DOCUMENTS AND PAYMENT');
+  });
+
   it('price scrubber uses the demo currency ($/USD), catching an invented dollar price', () => {
     const r = guardInventedPrices('The room is 500 $ per night.', '', false, demo.currency.scrubPattern);
     expect(r.invented).toContain('500');

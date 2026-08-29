@@ -60,6 +60,12 @@ export interface TenantConfig {
   languages: LangCode[];
   /** The hotels this tenant runs — the roster that drives prompts, the tool enum and the selector. */
   properties: TenantProperty[];
+  /**
+   * Locale rule bundle: which region's guest-handling rules (code-switching / slang comprehension and
+   * business-document vocabulary) the prompt emits. 'kz-cis' = Kazakh суржик + CIS docs (ЭСФ/БИН/Kaspi).
+   * null/absent → a tenant outside a supported region gets none of it.
+   */
+  regionPack?: 'kz-cis' | null;
 }
 
 /** Property keys the assistant may act on (quote/book) — bookable ones, in roster order. */
