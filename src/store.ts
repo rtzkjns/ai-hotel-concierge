@@ -1210,6 +1210,13 @@ export class Store {
       .run(cutoff);
     // Abandoned console sessions must not accumulate forever.
     this.db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(nowIso());
+    // Durable-intake rows are transient: once done/dead, drop the old ones so the queue (and the
+    // DB) can't grow unbounded. In-flight rows (pending/processing) are kept for the sweep.
+    this.db
+      .prepare("DELETE FROM inbound_queue WHERE status IN ('done','dead') AND updated_at < ?")
+      .run(cutoff);
+    // Expired booking-confirmation tokens.
+    this.db.prepare('DELETE FROM confirmations WHERE expires_at < ?').run(nowIso());
   }
 
   /** Guest right-to-erasure: wipe history and mask names/phones tied to a conversation. */

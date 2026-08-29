@@ -29,6 +29,18 @@ until the blockers below are closed.
   message id) + at-most-once reply gate (`markReplying`) → no double-reply on replay. Affected
   Kazzhol prod too. 5 store tests.
 
+## Re-audit (2nd pass, after all fixes): 3 dimensions → GAPS, 3 still BLOCKER
+
+Security, Reliability, Scalability moved from blocker/gaps → **GAPS** (SSRF closed, primitives solid).
+Then closed the two confirmed ONBOARDING blockers (Exely integration key + RETURN_URL path are now
+per-cabinet env config) and the isolation gap (one-DB-per-tenant boot guard) + unbounded-growth
+(retention now purges inbound_queue/confirmations). **All code-controllable BLOCKERS are closed.**
+The sole remaining confirmed blocker is KZ data residency (below) — infra/legal, not code.
+
+Remaining GAPS (code-fixable, not blockers): webhook fail-closed on misconfig, a staff alert on LLM
+outage, read-back verification on the documented Exely path (Kazzhol uses the IBE path which already
+has it), CI activation (needs `workflow` scope), offsite backups, and fleet/onboarding tooling.
+
 ## Remaining — Category A: needs a FOUNDER decision (not code)
 
 - **KZ personal-data law.** Guest PII goes to Anthropic (US) and the DB sits on a VPS in DE/FI, never
