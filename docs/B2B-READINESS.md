@@ -5,19 +5,24 @@ The bot is production-grade for **Kazzhol** (one hotel chain). It is **not yet**
 paying second tenant as a B2B product. This file tracks the gap honestly — do not claim "B2B-ready"
 until the blockers below are closed.
 
-## Closed (this hardening pass — each verified, Kazzhol byte-identical, tests green)
+## Closed (each verified + ADVERSARIALLY RE-VERIFIED, Kazzhol byte-identical, tests green)
 
 - **Security — Telegram staff binding (was a live hole, affected Kazzhol today).** `?start=staff-<hotel>`
   enrolled anyone into a hotel's guest-handoff notifications (PII) with no auth. Now gated on the
-  owner bind code (`authorizeStaffDeepLink`, 7 regression tests). The channel had **zero** test
-  coverage before — that is why it survived.
-- **Guest-facing brand leak.** Confirmation page, `/privacy` + `/terms`, and a booking tool string
-  hardcoded `kazzhol.com` / KAZZHOL → now from `activeTenant.brand`.
+  owner bind code (`authorizeStaffDeepLink`, 7 regression tests). Re-verify: FIXED (every codeless
+  probe rejected). The channel had **zero** test coverage before — that is why it survived.
+- **Config-driven onboarding.** A tenant loads from `tenants/<id>.json` at boot (sync, JSON = inert
+  data). Registering tenant #2 is now data, not a code edit. Kazzhol un-overridable (collision guard).
+  Re-verify: FIXED (proved end-to-end: JSON file → selectable tenant, zero code change).
+- **Invented-price guard hardened.** Room prices held to a strict per-tenant bar at the SENTENCE
+  level (empty for Kazzhol → any offline room price dropped). Re-verify caught a window-too-narrow
+  bypass; fixed to sentence-level + English `accommodation`. Legit non-room KB prices survive.
+- **Guest-facing brand leak.** Confirmation page, `/privacy` + `/terms`, a booking tool string, AND
+  the Exely post-payment RETURN_URL (guest redirect) → now from `activeTenant.brand`. Re-verify found
+  the RETURN_URL still hardcoded; fixed. (Exely integration KEY per-cabinet is not guest-visible.)
 - **Privacy policy disclosure.** Now discloses cross-border AI processing (Anthropic, US) — was hidden.
-- **Per-tenant DB file.** `DB_PATH` defaults to `./<tenant>.db` so a second tenant can't silently
-  share Kazzhol's DB. Enforces the one-DB-per-tenant posture.
-- **Fail-fast tenant validation.** A malformed/mismatched currency `scrubPattern` now crashes at boot
-  instead of silently disabling the price guard or bricking the bot.
+- **Per-tenant DB file** + **fail-fast tenant validation** (+ ReDoS length cap on scrubPattern).
+  Re-verify: FIXED (kazzhol→./kazzhol.db unchanged, demo→./demo.db; invalid/mismatched regex crashes).
 - **CI defined** (`deploy/ci.yml`) — typecheck + tests on push/PR.
 
 ## Remaining — Category A: needs a FOUNDER decision (not code)
@@ -31,19 +36,25 @@ until the blockers below are closed.
 - **CI activation.** Move `deploy/ci.yml` → `.github/workflows/` (needs `gh auth refresh -s workflow`
   or the GitHub web UI once).
 
-## Remaining — Category B: code-fixable (in progress, autonomous)
+## Remaining — Category B: code-fixable (DESIGNED, implementation-ready, next focused pass)
 
-- **Invented-price guard is weak** — matches by value, not context; a plausible round price present
-  anywhere in the KB passes even when quoted for a room. Wrong price = most expensive defect.
+Both below have detailed, implementation-ready designs. They are deferred deliberately, not skipped:
+each touches a high-risk surface (the LIVE Kazzhol intake path / prompt byte-identity), so they get a
+dedicated pass rather than a rushed one — the "don't break Kazzhol" rule outranks speed.
+
 - **Message durability** — inbound is 200-ack-then-async in memory; a deploy/crash loses in-flight
-  guest messages. Needs a durable queue (SQLite) + idempotent replay.
-- **Region pack still baked in** — Kazakh суржик / CIS-doc rules apply to every tenant; a non-CIS
-  hotel needs them behind a tenant `regionPack`.
-- **Config-driven onboarding** — a new tenant is still registered in TypeScript (`src/tenant/tenants`).
-  v1 goal: load tenants from config files, no code edit.
+  guest messages. Design ready: an `inbound_queue` (SQLite) written BEFORE the ack, same-tick
+  dispatch (no latency change), boot + periodic replay, idempotent via the native message id +
+  a `markReplying` gate (at-most-once reply). ~1 table + 7 store methods + handler rewire + 8 tests.
+- **Region pack** — Kazakh суржик / CIS-doc rules apply to every tenant; a non-CIS hotel needs them
+  behind a tenant `regionPack`. Design ready: cut 4 verbatim spans from `systemPrompt.ts` into a
+  `kzCis` pack; Kazzhol stays byte-identical (golden snapshots are the gate). Low near-term value
+  (CIS beachhead first), high byte-identity risk → sequenced after durability.
+
+Also open (not yet designed):
 - **Eval battery runs on stub only** — never exercises real bookings, real prices, or a second tenant.
 - **Full tenant isolation** (tenant_id-scoped queries) — deferred until tenants are pooled into one DB;
-  the one-DB-per-tenant posture avoids it for now.
+  the one-DB-per-tenant posture (per-tenant DB file) avoids it for now.
 
 ## The rule
 Onboarding a second hotel today = TenantConfig + its Property[] roster + env creds + a separate
