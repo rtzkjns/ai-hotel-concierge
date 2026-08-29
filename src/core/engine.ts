@@ -691,6 +691,23 @@ export class Engine {
         channel: msg.channel,
         payload: { message: err instanceof Error ? err.message : String(err) },
       });
+      // A fallback line alone means nobody follows up on an outage. Capture a lead AND alert staff so
+      // a guest who hit an LLM/engine failure is picked up by a human, not silently abandoned.
+      store.saveLead({
+        conversationId: convo.id,
+        kind: 'generic',
+        specialRequests: `Сбой бота — гостю нужен ответ человека (${convo.channel})`,
+        createdAt: new Date().toISOString(),
+      });
+      await Promise.resolve(
+        this.deps.staffNotifier.notify(
+          maskPII(
+            `⚠️ Сбой бота — гость ждёт ответа: ${properties[convo.property]?.name ?? convo.property} ` +
+              `(${convo.id}). Последнее сообщение: ${text}`,
+          ),
+          convo.property,
+        ),
+      ).catch(() => {});
       return [{ text: ERROR_FALLBACK[convo.language ?? 'ru'], delayMs: 0 }];
     }
 
