@@ -21,6 +21,7 @@
 import { randomBytes } from 'node:crypto';
 import formbody from '@fastify/formbody';
 import type { FastifyInstance } from 'fastify';
+import { activeTenant } from '../tenant';
 import type { CreateBookingResult } from '../core/booking';
 import type { BookingLead, Language } from '../types';
 
@@ -261,7 +262,7 @@ function page(title: string, inner: string): string {
     `<meta name="viewport" content="width=device-width,initial-scale=1">` +
     `<meta name="robots" content="noindex,nofollow">` +
     `<title>${esc(title)}</title><style>${CSS}</style></head><body>` +
-    `<div class="card"><div class="brand">KAZZHOL</div>${inner}</div></body></html>`
+    `<div class="card"><div class="brand">${activeTenant.brand.displayName.toUpperCase()}</div>${inner}</div></body></html>`
   );
 }
 

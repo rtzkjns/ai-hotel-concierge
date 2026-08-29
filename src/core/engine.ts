@@ -1226,7 +1226,7 @@ export class Engine {
           instruction:
             'The Exely public API cannot validate promo codes, but the booking page (the ' +
             'personal link from check_availability/create_booking) has an «Ввести промокод» ' +
-            'button — verified on kazzhol.com. Tell the guest they can enter the code there when ' +
+            `button — verified on ${activeTenant.brand.website}. Tell the guest they can enter the code there when ` +
             'booking, and IF it is valid the discount shows up right on the page. Do NOT promise ' +
             'it will definitely apply («точно сработает») — you cannot verify it. Add that the ' +
             'team was notified and will confirm the code separately.',
