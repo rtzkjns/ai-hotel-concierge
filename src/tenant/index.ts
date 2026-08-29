@@ -23,6 +23,11 @@ export const tenants: Record<string, TenantConfig> = {
  * guard would do nothing for real prices (or a malformed pattern would throw on every turn).
  */
 export function assertValidTenant(t: TenantConfig): void {
+  // scrubPattern runs per guest message; bound it so an ops-authored tenant file can't ship a
+  // catastrophic-backtracking (ReDoS) regex that stalls the bot. Currency alternations are short.
+  if (t.currency.scrubPattern.length > 120) {
+    throw new Error(`Tenant "${t.id}": currency.scrubPattern too long (max 120 chars)`);
+  }
   let re: RegExp;
   try {
     re = new RegExp(t.currency.scrubPattern);
