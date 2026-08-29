@@ -345,6 +345,23 @@ export class Store {
         expires_at     TEXT NOT NULL,
         created_at     TEXT NOT NULL
       );
+      -- Crash-safe intake: every guest webhook message is journalled BEFORE the slow work
+      -- (LLM, media, delivery). A deploy/crash mid-processing leaves the row 'processing'; boot
+      -- replays it. idem_key (channel:nativeMessageId) makes replay AND Meta's retries a no-op,
+      -- and replied_at is the at-most-once gate so a replay never double-replies.
+      CREATE TABLE IF NOT EXISTS inbound_queue (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        idem_key   TEXT NOT NULL UNIQUE,
+        channel    TEXT NOT NULL,
+        sender_id  TEXT NOT NULL,
+        payload    TEXT NOT NULL,
+        status     TEXT NOT NULL DEFAULT 'pending',
+        attempts   INTEGER NOT NULL DEFAULT 0,
+        replied_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_inbound_queue_status ON inbound_queue(status, id);
     `);
   }
 
@@ -796,6 +813,93 @@ export class Store {
       .prepare('UPDATE confirmations SET booking_number = ? WHERE token = ? AND booking_number IS NULL')
       .run(bookingNumber, token);
     return res.changes > 0;
+  }
+
+  // --- Durable inbound intake (crash-safe guest messages) ---------------------------------
+
+  /** Journal one message. Returns its id, or null if idem_key was already enqueued (Meta retry
+   *  / duplicate) — the UNIQUE index makes dedup atomic. */
+  enqueueInbound(rec: { idemKey: string; channel: string; senderId: string; payload: unknown }): number | null {
+    const now = nowIso();
+    const res = this.db
+      .prepare(
+        `INSERT OR IGNORE INTO inbound_queue
+         (idem_key, channel, sender_id, payload, status, attempts, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'pending', 0, ?, ?)`,
+      )
+      .run(rec.idemKey, rec.channel, rec.senderId, JSON.stringify(rec.payload), now, now);
+    return res.changes > 0 ? Number(res.lastInsertRowid) : null;
+  }
+
+  /** Fresh-dispatch claim: pending → processing. One winner. */
+  claimInbound(id: number): boolean {
+    return (
+      this.db
+        .prepare(
+          `UPDATE inbound_queue SET status='processing', attempts=attempts+1, updated_at=?
+           WHERE id=? AND status='pending'`,
+        )
+        .run(nowIso(), id).changes > 0
+    );
+  }
+
+  /** Sweep claim: pending|processing → processing (grace already applied by the SELECT). */
+  reclaimInbound(id: number): boolean {
+    return (
+      this.db
+        .prepare(
+          `UPDATE inbound_queue SET status='processing', attempts=attempts+1, updated_at=?
+           WHERE id=? AND status IN ('pending','processing')`,
+        )
+        .run(nowIso(), id).changes > 0
+    );
+  }
+
+  /** At-most-once reply gate: stamp intent-to-reply, once, right BEFORE the external send.
+   *  false ⇒ a reply already went out for this message; do NOT re-send. */
+  markReplying(id: number): boolean {
+    const now = nowIso();
+    return (
+      this.db
+        .prepare(`UPDATE inbound_queue SET replied_at=?, updated_at=? WHERE id=? AND replied_at IS NULL`)
+        .run(now, now, id).changes > 0
+    );
+  }
+
+  markInboundDone(id: number): void {
+    this.db.prepare(`UPDATE inbound_queue SET status='done', updated_at=? WHERE id=?`).run(nowIso(), id);
+  }
+
+  markInboundDead(id: number): void {
+    this.db.prepare(`UPDATE inbound_queue SET status='dead', updated_at=? WHERE id=?`).run(nowIso(), id);
+  }
+
+  /** Rows a crash left mid-flight (older than the grace window), oldest first. */
+  reclaimStaleInbound(
+    olderThanMs: number,
+  ): Array<{ id: number; channel: string; senderId: string; payload: unknown; attempts: number; repliedAt: string | null }> {
+    const cutoff = new Date(Date.now() - olderThanMs).toISOString();
+    const rows = this.db
+      .prepare(
+        `SELECT id, channel, sender_id, payload, attempts, replied_at FROM inbound_queue
+         WHERE status IN ('pending','processing') AND updated_at < ? ORDER BY id`,
+      )
+      .all(cutoff) as Array<{
+      id: number;
+      channel: string;
+      sender_id: string;
+      payload: string;
+      attempts: number;
+      replied_at: string | null;
+    }>;
+    return rows.map((r) => ({
+      id: r.id,
+      channel: r.channel,
+      senderId: r.sender_id,
+      payload: JSON.parse(r.payload),
+      attempts: r.attempts,
+      repliedAt: r.replied_at ?? null,
+    }));
   }
 
   /**

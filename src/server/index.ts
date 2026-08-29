@@ -1,6 +1,7 @@
 // Fastify server: WhatsApp/Instagram webhooks, health check, and extension
 // points for the web widget and staff console (registered via extraRoutes).
 import Fastify, { type FastifyInstance } from 'fastify';
+import { createHash } from 'node:crypto';
 import type { InstagramAdapter } from '../channels/instagram';
 import type { InboundMessage, OutboundPart } from '../channels/types';
 import { signatureDebug, verifySignature, type WhatsAppAdapter } from '../channels/whatsapp';
@@ -127,6 +128,12 @@ export interface ServerDeps {
     } | null;
     appendMessage?(id: string, message: { role: 'user' | 'assistant'; content: string }): void;
     setStatus?(id: string, status: 'active' | 'handed_off' | 'closed'): void;
+    // Durable intake (crash-safe). Optional so minimal test stubs still satisfy the type; when
+    // absent the handlers fall back to direct in-memory processing (today's behaviour).
+    enqueueInbound?(rec: { idemKey: string; channel: string; senderId: string; payload: unknown }): number | null;
+    claimInbound?(id: number): boolean;
+    markReplying?(id: number): boolean;
+    markInboundDone?(id: number): void;
   };
   config: {
     whatsapp: {
@@ -271,6 +278,45 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
   return app;
 }
 
+/** Idempotency fallback when a webhook carries no native message id (rare). Same message within a
+ *  day → same key, so a retry still dedups. */
+function hashInbound(channel: string, senderId: string, text: string | undefined): string {
+  return createHash('sha256')
+    .update(`${channel}|${senderId}|${text ?? ''}|${new Date().toISOString().slice(0, 10)}`)
+    .digest('hex')
+    .slice(0, 24);
+}
+
+/** Process ONE WhatsApp message (media, typing, engine, delivery). When queueId is set, the reply
+ *  goes through the at-most-once gate and the row is marked done — so a boot replay never
+ *  double-replies. Extracted so the live path and the boot sweep share identical logic. */
+export async function handleWhatsAppItem(
+  deps: ServerDeps,
+  propertyByPhoneId: Record<string, string>,
+  adapter: WhatsAppAdapter,
+  item: ReturnType<WhatsAppAdapter['parseWebhook']>[number],
+  queueId: number | null,
+): Promise<void> {
+  const msg = item.inbound;
+  msg.propertyHint = propertyByPhoneId[item.phoneNumberId] ?? item.phoneNumberId;
+  if (item.audioMediaId) {
+    const data = await adapter.downloadMedia(item.audioMediaId);
+    // Download failed/refused → keep the message voice-shaped with empty audio:
+    // the transcriber returns null on it, so the guest gets the polite
+    // "couldn't listen, please type" fallback instead of dead silence.
+    msg.audio = { data: data ?? Buffer.alloc(0), mime: item.audioMime ?? 'audio/ogg' };
+  }
+  // Read receipt + typing must never block the actual reply.
+  await adapter.typing(msg.senderId, msg.inboundId).catch(() => {});
+  const parts = await deps.engine.handle(msg);
+  if (parts && parts.length > 0) {
+    // At-most-once: a replay after a crash-post-reply must not re-send. No queue (tests) → always send.
+    const mayReply = queueId == null || (deps.store.markReplying?.(queueId) ?? true);
+    if (mayReply) await deliver(deps, (id, p) => adapter.send(id, p), msg, parts);
+  }
+  if (queueId != null) deps.store.markInboundDone?.(queueId);
+}
+
 async function processWhatsApp(
   deps: ServerDeps,
   propertyByPhoneId: Record<string, string>,
@@ -288,24 +334,33 @@ async function processWhatsApp(
   }
 
   for (const item of adapter.parseWebhook(body)) {
+    // Journal BEFORE the slow work so a deploy/crash mid-processing replays on boot. When the store
+    // has no queue (minimal test stubs) queueId stays null → direct processing, today's behaviour.
+    let queueId: number | null = null;
+    if (deps.store.enqueueInbound) {
+      const idemKey = `whatsapp:${
+        item.inbound.inboundId || hashInbound('whatsapp', item.inbound.senderId, item.inbound.text)
+      }`;
+      const enq = deps.store.enqueueInbound({
+        idemKey,
+        channel: 'whatsapp',
+        senderId: item.inbound.senderId,
+        payload: {
+          inbound: item.inbound,
+          phoneNumberId: item.phoneNumberId,
+          audioMediaId: item.audioMediaId,
+          audioMime: item.audioMime,
+        },
+      });
+      if (enq === null) continue; // duplicate delivery (Meta retry) — already enqueued/handled
+      if (deps.store.claimInbound && !deps.store.claimInbound(enq)) continue;
+      queueId = enq;
+    }
     try {
-      const msg = item.inbound;
-      msg.propertyHint = propertyByPhoneId[item.phoneNumberId] ?? item.phoneNumberId;
-      if (item.audioMediaId) {
-        const data = await adapter.downloadMedia(item.audioMediaId);
-        // Download failed/refused → keep the message voice-shaped with empty audio:
-        // the transcriber returns null on it, so the guest gets the polite
-        // "couldn't listen, please type" fallback instead of dead silence.
-        msg.audio = { data: data ?? Buffer.alloc(0), mime: item.audioMime ?? 'audio/ogg' };
-      }
-      // Read receipt + typing must never block the actual reply.
-      await adapter.typing(msg.senderId, msg.inboundId).catch(() => {});
-      const parts = await deps.engine.handle(msg);
-      if (parts && parts.length > 0) {
-        await deliver(deps, (id, p) => adapter.send(id, p), msg, parts);
-      }
+      await handleWhatsAppItem(deps, propertyByPhoneId, adapter, item, queueId);
     } catch (err) {
       console.error('whatsapp message handling failed:', maskPII(errorMessage(err)));
+      // row stays 'processing' → the boot sweep retries it
     }
   }
 
@@ -372,16 +427,41 @@ async function processInstagram(deps: ServerDeps, rawBody: string): Promise<void
   }
 
   for (const msg of adapter.parseWebhook(body)) {
+    let queueId: number | null = null;
+    if (deps.store.enqueueInbound) {
+      const idemKey = `instagram:${msg.inboundId || hashInbound('instagram', msg.senderId, msg.text)}`;
+      const enq = deps.store.enqueueInbound({
+        idemKey,
+        channel: 'instagram',
+        senderId: msg.senderId,
+        payload: { inbound: msg },
+      });
+      if (enq === null) continue; // duplicate delivery — already enqueued/handled
+      if (deps.store.claimInbound && !deps.store.claimInbound(enq)) continue;
+      queueId = enq;
+    }
     try {
-      await adapter.typing?.(msg.senderId).catch(() => {});
-      const parts = await deps.engine.handle(msg);
-      if (parts && parts.length > 0) {
-        await deliver(deps, (id, p) => adapter.send(id, p), msg, parts);
-      }
+      await handleInstagramItem(deps, adapter, msg, queueId);
     } catch (err) {
       console.error('instagram message handling failed:', maskPII(errorMessage(err)));
     }
   }
+}
+
+/** Process ONE Instagram message with the same durable-queue semantics as WhatsApp. */
+export async function handleInstagramItem(
+  deps: ServerDeps,
+  adapter: InstagramAdapter,
+  msg: ReturnType<InstagramAdapter['parseWebhook']>[number],
+  queueId: number | null,
+): Promise<void> {
+  await adapter.typing?.(msg.senderId).catch(() => {});
+  const parts = await deps.engine.handle(msg);
+  if (parts && parts.length > 0) {
+    const mayReply = queueId == null || (deps.store.markReplying?.(queueId) ?? true);
+    if (mayReply) await deliver(deps, (id, p) => adapter.send(id, p), msg, parts);
+  }
+  if (queueId != null) deps.store.markInboundDone?.(queueId);
 }
 
 function errorMessage(err: unknown): string {

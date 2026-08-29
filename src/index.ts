@@ -25,7 +25,8 @@ import { extractText } from './knowledge/documents';
 import { SourceSync } from './knowledge/sourceSync';
 import { StubPaymentGateway } from './integrations/payments';
 import { createTranscriber } from './integrations/transcribe';
-import { buildServer } from './server';
+import { buildServer, handleWhatsAppItem, handleInstagramItem } from './server';
+import type { InboundMessage } from './channels/types';
 import {
   CONFIRMATION_TTL_MS,
   newConfirmationToken,
@@ -408,6 +409,60 @@ async function main(): Promise<void> {
   });
   await app.listen({ port: config.server.port, host: '0.0.0.0' });
   startRetention(store);
+
+  // Recover guest messages a previous crash/deploy left journalled but not finished (the durable
+  // intake gap). Replays each once; the markReplying gate means a message already answered before
+  // the crash is closed without re-sending. A message that keeps failing is parked 'dead' + flagged.
+  const INBOUND_GRACE_MS = 60_000;
+  const INBOUND_MAX_ATTEMPTS = 5;
+  const inboundDeps = { engine, adapters, store, config };
+  const sweepInbound = async (): Promise<void> => {
+    for (const row of store.reclaimStaleInbound(INBOUND_GRACE_MS)) {
+      if (row.attempts >= INBOUND_MAX_ATTEMPTS) {
+        store.markInboundDead(row.id);
+        void Promise.resolve(
+          staffNotifier.notify(`Входящее сообщение не удалось обработать (${row.channel}). Ответьте вручную.`),
+        ).catch(() => {});
+        continue;
+      }
+      if (!store.reclaimInbound(row.id)) continue;
+      if (row.repliedAt) {
+        store.markInboundDone(row.id); // answered before the crash → close, never re-send
+        continue;
+      }
+      const p = row.payload as {
+        inbound: InboundMessage;
+        phoneNumberId?: string;
+        audioMediaId?: string;
+        audioMime?: string;
+      };
+      try {
+        if (row.channel === 'whatsapp' && adapters.whatsapp) {
+          await handleWhatsAppItem(
+            inboundDeps,
+            phoneNumberIdToProperty,
+            adapters.whatsapp,
+            {
+              inbound: p.inbound,
+              phoneNumberId: p.phoneNumberId ?? '',
+              audioMediaId: p.audioMediaId,
+              audioMime: p.audioMime,
+            },
+            row.id,
+          );
+        } else if (row.channel === 'instagram' && adapters.instagram) {
+          await handleInstagramItem(inboundDeps, adapters.instagram, p.inbound, row.id);
+        } else {
+          store.markInboundDone(row.id); // that channel isn't configured on this instance
+        }
+      } catch {
+        // leave the row 'processing' → the next sweep retries it
+      }
+    }
+  };
+  await sweepInbound();
+  const inboundSweep = setInterval(() => void sweepInbound(), INBOUND_GRACE_MS);
+  inboundSweep.unref();
 
   // Twice-daily catalog refresh so room/service/policy changes made in Exely reach the bot with
   // no redeploy (staff can also force it from the console). unref() so it never holds the process up.
