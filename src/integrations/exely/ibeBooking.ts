@@ -49,8 +49,10 @@ export interface IbeDeps {
   baseUrl?: string;
   /** IBE locale, e.g. 'ru-ru'. Drives the language of the confirmation e-mail it sends. */
   language?: string;
-  /** Integration key without the property suffix. */
+  /** Integration key without the property suffix. Defaults to Kazzhol's when unset. */
   integrationKey?: string;
+  /** Post-payment guest redirect URL. Defaults to the tenant brand's /ru/booking when unset. */
+  returnUrl?: string;
   /** Паузы между попытками достать номер из ваучера. В тестах — [0], чтобы не спать. */
   voucherRetryDelaysMs?: number[];
 }
@@ -153,8 +155,9 @@ export function buildIbeBooking(
   propertyId: string,
   b: BookingRq,
   language: string,
-  opts: { guarantee?: GuaranteeOption; integrationKey?: string } = {},
+  opts: { guarantee?: GuaranteeOption; integrationKey?: string; returnUrl?: string } = {},
 ): Record<string, unknown> {
+  const returnUrl = opts.returnUrl ?? RETURN_URL;
   const roomStays = b.roomStays.map((rs) => {
     // Вид места приходит от движка и выдумывать его нельзя. Family room отдаёт основное
     // место (kind adult, вместимость 2) и дополнительное (kind extra_adult, вместимость 1);
@@ -304,8 +307,8 @@ export function buildIbeBooking(
   if (opts.guarantee?.code) {
     reservation.guarantee = {
       code: opts.guarantee.code,
-      success_url: RETURN_URL,
-      decline_url: RETURN_URL,
+      success_url: returnUrl,
+      decline_url: returnUrl,
     };
   }
 
@@ -315,7 +318,7 @@ export function buildIbeBooking(
     language,
     include_extra_stay_options: false,
     point_of_sale: key
-      ? { source_url: RETURN_URL, integration_key: `${key}.${propertyId}` }
+      ? { source_url: returnUrl, integration_key: `${key}.${propertyId}` }
       : {},
     hotel_reservations: [reservation],
   };
@@ -517,11 +520,12 @@ export class IbeReservation implements ReservationClient {
       }
       const resolved: BookingRq = { ...b, roomStays };
       const integrationKey = this.deps.integrationKey ?? DEFAULT_INTEGRATION_KEY;
+      const returnUrl = this.deps.returnUrl;
 
       // Какие способы оплаты допускает этот тариф — коды разные у каждого отеля,
       // поэтому спрашиваем, а не зашиваем.
       const verified = await this.call('verify_reservation', {
-        ...buildIbeBooking(propertyId, resolved, this.language, { integrationKey }),
+        ...buildIbeBooking(propertyId, resolved, this.language, { integrationKey, returnUrl }),
         include_guarantee_options: true,
       });
       const guarantee = pickGuarantee(verified.hotel_reservations?.[0]?.guarantee_options);
@@ -531,7 +535,7 @@ export class IbeReservation implements ReservationClient {
 
       const res = await this.call(
         'hotel_reservation_2',
-        buildIbeBooking(propertyId, resolved, this.language, { guarantee, integrationKey }),
+        buildIbeBooking(propertyId, resolved, this.language, { guarantee, integrationKey, returnUrl }),
       );
       const created = res.hotel_reservations?.[0];
       if (!created?.number || !created.cancellation_code) {

@@ -55,7 +55,11 @@ export function createCabinetProviders(
     byProperty[propertyKey] = {
       provider: new LiveAvailabilityProvider(http, resolver),
       reservation: cab.bookingEngine
-        ? new IbeReservation(cab.propertyId, { fetchImpl: fetchFn })
+        ? new IbeReservation(cab.propertyId, {
+            fetchImpl: fetchFn,
+            integrationKey: cab.integrationKey,
+            returnUrl: cab.bookingReturnUrl,
+          })
         : new ExelyReservation(http),
       // Движку write-scope не нужен, поэтому его включение и есть разрешение бронировать.
       bookingEnabled: cab.bookingEnabled || cab.bookingEngine,

@@ -17,6 +17,10 @@ export interface ExelyCabinet {
    * Reservation API нам закрыт (403), так что сегодня это единственный рабочий путь.
    */
   bookingEngine: boolean;
+  /** Exely integration key (без суффикса property). Не задан → дефолт Kazzhol. Для второго Exely-тенанта. */
+  integrationKey?: string;
+  /** Куда вернуть гостя после оплаты. Не задан → бренд тенанта /ru/booking. */
+  bookingReturnUrl?: string;
 }
 
 /**
@@ -41,6 +45,8 @@ export function buildExelyCabinets(env: NodeJS.ProcessEnv): Record<string, Exely
       baseUrl,
       bookingEnabled: env.EXELY_BOOKING_ENABLED === 'true',
       bookingEngine: env.EXELY_BOOKING_ENGINE === 'true',
+      integrationKey: env.EXELY_INTEGRATION_KEY,
+      bookingReturnUrl: env.EXELY_RETURN_URL,
     };
   }
 
@@ -61,6 +67,8 @@ export function buildExelyCabinets(env: NodeJS.ProcessEnv): Record<string, Exely
         bookingEnabled: env[`EXELY_${envKey}_BOOKING_ENABLED`] === 'true',
         bookingEngine:
           (env[`EXELY_${envKey}_BOOKING_ENGINE`] ?? env.EXELY_BOOKING_ENGINE) === 'true',
+        integrationKey: env[`EXELY_${envKey}_INTEGRATION_KEY`],
+        bookingReturnUrl: env[`EXELY_${envKey}_RETURN_URL`],
       };
     }
   }

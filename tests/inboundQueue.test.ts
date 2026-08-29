@@ -52,3 +52,12 @@ describe('inbound_queue', () => {
     expect(s.reclaimStaleInbound(-5000).find((r) => r.id === id)).toBeUndefined();
   });
 });
+
+describe('assertTenant — one-DB-per-tenant guard', () => {
+  it('binds the DB to the first tenant, then refuses a different one', () => {
+    const s = new Store(':memory:');
+    s.assertTenant('kazzhol'); // first boot binds
+    s.assertTenant('kazzhol'); // same tenant → fine
+    expect(() => s.assertTenant('demostay')).toThrow(/belongs to tenant "kazzhol"/);
+  });
+});

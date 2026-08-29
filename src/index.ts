@@ -27,6 +27,7 @@ import { StubPaymentGateway } from './integrations/payments';
 import { createTranscriber } from './integrations/transcribe';
 import { buildServer, handleWhatsAppItem, handleInstagramItem } from './server';
 import type { InboundMessage } from './channels/types';
+import { activeTenant } from './tenant';
 import {
   CONFIRMATION_TTL_MS,
   newConfirmationToken,
@@ -118,6 +119,9 @@ function loadStyleGuide(): string | undefined {
 
 async function main(): Promise<void> {
   const store = new Store(config.dbPath);
+  // Refuse to boot if this DB belongs to another tenant — enforces one-DB-per-tenant in code so a
+  // mis-set DB_PATH can't silently pool two brands' guest data.
+  store.assertTenant(activeTenant.id);
 
   // First boot: seed the console admin account from env, if configured.
   if (store.countStaff() === 0 && config.console.adminPassword) {

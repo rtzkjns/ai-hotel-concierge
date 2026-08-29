@@ -204,6 +204,32 @@ export class Store {
     return this.bindCode();
   }
 
+  /**
+   * Bind this DB file to a tenant on first boot; refuse if it already belongs to a DIFFERENT tenant.
+   * Enforces the one-DB-per-tenant posture in CODE — a mis-set DB_PATH pointing a second tenant at
+   * another brand's DB now crashes at boot instead of silently commingling two hotels' guest data.
+   */
+  assertTenant(tenantId: string): void {
+    const row = this.db
+      .prepare("SELECT body FROM kb_entries WHERE kind='tenant_marker' LIMIT 1")
+      .get() as { body: string } | undefined;
+    if (!row) {
+      this.db
+        .prepare(
+          `INSERT INTO kb_entries (property, kind, title, body, url, active, updated_at)
+           VALUES ('', 'tenant_marker', 'Tenant', ?, NULL, 1, ?)`,
+        )
+        .run(tenantId, nowIso());
+      return;
+    }
+    if (row.body !== tenantId) {
+      throw new Error(
+        `Refusing to boot: this DB belongs to tenant "${row.body}" but TENANT is "${tenantId}". ` +
+          'Two tenants must not share a DB — set a distinct DB_PATH per instance.',
+      );
+    }
+  }
+
   /** Совместимость: первый получатель отеля. */
   staffChatFor(property: string): string | undefined {
     return this.staffChatsFor(property)[0]?.chatId;
