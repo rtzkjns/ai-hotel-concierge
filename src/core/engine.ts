@@ -910,12 +910,13 @@ export class Engine {
           guests: input.guests,
           childAges: input.childAges,
         });
-        // SAFETY GUARD: a hotel with no live Exely cabinet returns source==='stub'
-        // with round PLACEHOLDER prices. Never surface those to a guest — strip the
-        // numbers, capture a lead + alert staff, and tell the model to hand the dates
-        // off instead of quoting a fake rate or a fake "available". (Astana/Park until
-        // their live cabinets are wired; also guards any future cabinet outage.)
-        if (result.source === 'stub') {
+        // SAFETY GUARD: a hotel with no live availability returns source==='stub' (round
+        // PLACEHOLDER prices) or source==='manual' (a hotel with no PMS API, empty offers).
+        // In both cases there is NO live price/availability — never surface it to a guest:
+        // strip the numbers, capture a lead + alert staff, and tell the model to hand the
+        // dates off instead of quoting a fake rate or a fake "available". (Astana/Park until
+        // their live cabinets are wired; manual hotels always; also guards a cabinet outage.)
+        if (result.source === 'stub' || result.source === 'manual') {
           store.saveLead({
             conversationId: convo.id,
             kind: 'generic',
@@ -990,7 +991,7 @@ export class Engine {
                 guests: 2,
               })
               .catch(() => null);
-            if (forTwo && forTwo.source !== 'stub' && forTwo.offers.length > 0) {
+            if (forTwo && forTwo.source === 'exely' && forTwo.offers.length > 0) {
               return {
                 ...(result as object),
                 soldOut: false,

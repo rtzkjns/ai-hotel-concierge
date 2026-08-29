@@ -42,7 +42,9 @@ export interface AvailabilityResult {
   checkIn: string;
   checkOut: string;
   offers: RoomOffer[];
-  source: 'stub' | 'exely'; // provenance; never present 'stub' as live truth
+  // provenance; never present 'stub'/'manual' as live truth.
+  // 'manual' = a hotel with no availability API — offers is empty, staff confirm by hand.
+  source: 'stub' | 'exely' | 'manual';
   /** Set when the query could not even reach Exely (e.g. hotel not wired to the API). */
   unavailableReason?: 'property_not_wired';
   /** Non-fatal warnings passed through from the Exely Search response. */

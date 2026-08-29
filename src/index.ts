@@ -18,7 +18,7 @@ import { Engine } from './core/engine';
 import { RateLimiter } from './core/rateLimit';
 import { startRetention } from './core/retention';
 import { StubAmoCrm } from './integrations/amocrm';
-import { createCabinetProviders } from './integrations/exely';
+import { createProviders } from './integrations/registry';
 import { fetchVoucherNumber } from './integrations/exely/ibeBooking';
 import { ExelyContentSync } from './knowledge/contentSync';
 import { extractText } from './knowledge/documents';
@@ -126,9 +126,15 @@ async function main(): Promise<void> {
 
   const anthropic = new Anthropic({ apiKey: config.anthropicApiKey });
 
-  // Each hotel routes to its OWN Exely cabinet (Astana & Park Almaty are separate
-  // accounts). A hotel with no cabinet configured falls back to stub availability.
-  const cabinets = createCabinetProviders(config.exelyByProperty);
+  // Each hotel routes to its OWN Exely cabinet (Astana & Park Almaty are separate accounts).
+  // A hotel with no cabinet falls back to stub; a hotel listed in MANUAL_PROPERTIES (no PMS API)
+  // is served by the manual/handoff provider — that is what lets a non-Exely hotel onboard.
+  const cabinets = createProviders(config.exelyByProperty, {
+    manualProperties: (process.env.MANUAL_PROPERTIES ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
+  });
   const availabilityProvider = cabinets.availability;
 
   // Keep the bot's hotel knowledge (rooms, services, policies) fresh from Exely's Content API —
