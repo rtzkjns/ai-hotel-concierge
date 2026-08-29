@@ -1,0 +1,32 @@
+# CI definition (kept here, not in .github/workflows/, because the current gh OAuth token lacks
+# the `workflow` scope and GitHub refuses to push workflow files without it).
+#
+# TO ACTIVATE (one-time, choose either):
+#   A) Grant the scope, then move the file:
+#        gh auth refresh -s workflow
+#        mkdir -p .github/workflows && git mv deploy/ci.yml .github/workflows/ci.yml
+#        git commit -m "Activate CI" && git push
+#   B) Or add it via the GitHub web UI: repo → Add file → create .github/workflows/ci.yml
+#        and paste the contents below.
+#
+# It runs typecheck + the full test suite on every push and PR so a red build can't reach prod.
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: ['**']
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
