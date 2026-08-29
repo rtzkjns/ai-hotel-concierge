@@ -30,24 +30,15 @@ function moneyRe(scrubPattern: string): RegExp {
 const digitsOf = (s: string): string => s.replace(/\D/g, '');
 
 /**
- * Слова, выдающие, что сумма названа ЗА НОМЕР. Номерная цена — единственная, которой в
- * статической базе нет и быть не должно: она приходит ТОЛЬКО из живого Exely. Поэтому рядом
- * с такой суммой планка «выдумки» строже — совпадения значения с любым числом базы (цена
- * абонемента, аренда зала) уже недостаточно. RU/EN/KK/ZH — бот отвечает на всех четырёх.
+ * Слова, выдающие, что предложение говорит О НОМЕРЕ. Номерная цена — единственная, которой в
+ * статической базе нет и быть не должно: она приходит ТОЛЬКО из живого Exely. Поэтому в
+ * предложении о номере планка «выдумки» строже — совпадения значения с любым числом базы (цена
+ * абонемента, аренда зала) уже недостаточно. Проверяем ВСЁ предложение, а не узкое окно: маркер
+ * «номер» может стоять далеко от суммы («Номер Стандарт … цена 25 000 ₸ в этом сезоне»). Слова
+ * «прожива…» намеренно НЕ маркер — «абонемент для проживающих» это фитнес, не номер. RU/EN/KK/ZH.
  */
 const ROOM_CONTEXT_RE =
-  /номер|ноч[ьи]|за ночь|сутк|суток|\broom\b|\bnight|\bstay\b|бөлме|тәулік|түн|房间|每晚|一晚/i;
-
-/** Узкое окно вокруг суммы: «абонемент для проживающих — 25 000 ₸» не должно стать номерным. */
-const ROOM_CTX_WINDOW = 24;
-
-function roomPriced(text: string, at: number, len: number): boolean {
-  const around =
-    text.slice(Math.max(0, at - ROOM_CTX_WINDOW), at) +
-    ' ' +
-    text.slice(at + len, at + len + ROOM_CTX_WINDOW);
-  return ROOM_CONTEXT_RE.test(around);
-}
+  /номер|ноч[ьи]|за ночь|сутк|суток|\broom\b|\bnight\b|\bstay\b|accommodation|бөлме|тәулік|түн|房间|每晚|一晚/i;
 
 /** Предложения целиком — чтобы убрать ровно то, где стоит выдуманная цифра. */
 function sentences(text: string): string[] {
@@ -88,18 +79,20 @@ export function guardInventedPrices(
   // сумма «за номер» без похода в Exely выдумана, даже если совпала с ценой абонемента.
   // У тенанта со статическими тарифами такие цены попадут сюда из его же базы и уцелеют.
   const knownRoomPrice = new Set<string>();
-  for (const m of knowledge.matchAll(money)) {
-    if (roomPriced(knowledge, m.index ?? 0, m[0].length)) knownRoomPrice.add(digitsOf(m[0]));
+  for (const ks of sentences(knowledge)) {
+    if (!ROOM_CONTEXT_RE.test(ks)) continue;
+    for (const m of ks.matchAll(money)) knownRoomPrice.add(digitsOf(m[0]));
   }
 
   const invented: string[] = [];
   const kept = sentences(reply).filter((s) => {
+    const roomCtx = ROOM_CONTEXT_RE.test(s); // whole sentence — the marker can be far from the sum
     let bad = false;
     for (const m of s.matchAll(money)) {
       const d = digitsOf(m[0]);
       if (d.length < 3) continue;
-      // Номерная сумма — строгая планка; всё прочее — прежняя лёгкая.
-      const ok = roomPriced(s, m.index ?? 0, m[0].length) ? knownRoomPrice.has(d) : known.has(d);
+      // Предложение о номере — строгая планка; всё прочее — прежняя лёгкая.
+      const ok = roomCtx ? knownRoomPrice.has(d) : known.has(d);
       if (!ok) {
         invented.push(d);
         bad = true;

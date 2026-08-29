@@ -25,6 +25,7 @@
  */
 
 import type { BookingRq, PlaceResult, ReservationClient } from './reservation';
+import { activeTenant } from '../../tenant';
 
 /** Region host for Kazakhstan properties — RegionMap/host answers this for code 801. */
 export const IBE_BASE_URL = 'https://kz-ibe.hopenapi.com/ApiWebDistribution/BookingForm';
@@ -39,7 +40,9 @@ const TIMEOUT_MS = 20_000;
 export const DEFAULT_INTEGRATION_KEY = 'BE-INT-kazzhol-mediacorporation-kz_2024-11-06';
 
 /** Where the engine sends the guest after a card payment. Unused for pay-at-hotel, required anyway. */
-const RETURN_URL = 'https://kazzhol.com/ru/booking';
+// Guest-visible: the browser is redirected here after paying/declining. From the tenant brand so a
+// second tenant's guest isn't bounced to kazzhol.com. For Kazzhol this is kazzhol.com/ru/booking.
+const RETURN_URL = `https://${activeTenant.brand.website}/ru/booking`;
 
 export interface IbeDeps {
   fetchImpl?: typeof fetch;

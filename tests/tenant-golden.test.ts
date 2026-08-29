@@ -122,6 +122,25 @@ describe('tenant golden — price scrubber recognises KZT tokens exactly as toda
     expect(r.reply).toContain('30 000 ₸');
   });
 
+  // The marker can sit far from the figure — the guard checks the whole sentence, not a window.
+  it('catches a room price with the room word far from the sum (>24 chars)', () => {
+    const r = guardInventedPrices(
+      'Номер Стандарт — прекрасный выбор для наших гостей, цена 25 000 ₸ в этом сезоне.',
+      fitnessKb,
+      false,
+    );
+    expect(r.invented).toContain('25000');
+  });
+
+  it('catches an English room price phrased as "accommodation ... per person"', () => {
+    const r = guardInventedPrices(
+      'The standard accommodation is very comfortable and it costs 25 000 ₸ per person.',
+      fitnessKb,
+      false,
+    );
+    expect(r.invented).toContain('25000');
+  });
+
   it('recognises ₸ and KZT tokens exactly as the current MONEY_RE does', () => {
     // NB: the live regex uses ASCII \b, so «тг»/«тенге» before a period/space do NOT match —
     // only ₸ and KZT (word-boundary) reliably scrub. The refactor must preserve this quirk.
