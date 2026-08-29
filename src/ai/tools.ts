@@ -1,4 +1,5 @@
 import type Anthropic from '@anthropic-ai/sdk';
+import { activeTenant, bookablePropertyKeys } from '../tenant';
 
 /**
  * Anthropic tool definitions for the Kazzhol hotel assistant.
@@ -93,10 +94,12 @@ export interface EscalateInput {
 
 const propertySchema = {
   type: 'string' as const,
-  enum: ['astana', 'almaty', 'park_almaty'],
+  // Derived from the active tenant's roster (bookable hotels, in roster order) — a second tenant's
+  // hotels appear here automatically. For Kazzhol this is ['astana','almaty','park_almaty'].
+  enum: bookablePropertyKeys(activeTenant),
   description:
     "Hotel key. Defaults to the hotel this conversation belongs to; pass the other hotel's " +
-    'key when the guest asks about a sister Kazzhol hotel.',
+    'key when the guest asks about a sister hotel of the same chain.',
 };
 
 export const toolDefinitions: Anthropic.Tool[] = [

@@ -13,6 +13,8 @@ import { describe, it, expect } from 'vitest';
 import { buildSystemPrompt } from '../src/ai/systemPrompt';
 import { guardInventedPrices } from '../src/style/prices';
 import { propertyList } from '../src/knowledge';
+import { bookablePropertyKeys, kazzholTenant } from '../src/tenant';
+import { toolDefinitions } from '../src/ai/tools';
 
 // Rebuild the sister-hotel set exactly the way HotelEngine.buildPrompts() does, so the golden
 // prompt is the real production prompt (minus live Exely sync + styleGuide, which are env-driven).
@@ -60,6 +62,19 @@ describe('tenant golden — Kazzhol system prompt is byte-identical through the 
       {},
     );
     expect(prompt).toContain('kazzhol.com');
+  });
+});
+
+describe('tenant golden — tool property enum is tenant-derived, unchanged for Kazzhol', () => {
+  it('bookable keys are exactly astana/almaty/park_almaty (seven excluded), in roster order', () => {
+    expect(bookablePropertyKeys(kazzholTenant)).toEqual(['astana', 'almaty', 'park_almaty']);
+  });
+
+  it('check_availability tool exposes that exact enum', () => {
+    const tool = toolDefinitions.find((d) => d.name === 'check_availability');
+    const enumVals = (tool?.input_schema as { properties?: { property?: { enum?: string[] } } })
+      ?.properties?.property?.enum;
+    expect(enumVals).toEqual(['astana', 'almaty', 'park_almaty']);
   });
 });
 
