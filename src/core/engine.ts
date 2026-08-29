@@ -1,6 +1,7 @@
 // Channel-independent message pipeline: InboundMessage → guarded, tooled model
 // reply → 1-3 human-paced OutboundParts. Every channel adapter feeds this one class.
 import { generateReply, type AnthropicLike, type ToolHandlers } from '../ai/orchestrator';
+import { Pseudonymizer } from './pseudonymize';
 import { buildLiveContentSection, buildSystemPrompt } from '../ai/systemPrompt';
 import type {
   CancelBookingInput,
@@ -573,6 +574,7 @@ export class Engine {
           kbSection,
         tools: this.buildTools(convo, history, turn),
         exhaustedReply: ROUNDS_EXHAUSTED_FALLBACK[convo.language ?? 'ru'],
+        pseudonymizer: activeTenant.dataResidency?.pseudonymizePII ? new Pseudonymizer() : undefined,
       });
       // Enforce the official register deterministically, BEFORE the reply is stored: the
       // history is fed back to the model, so an un-stripped smiley would teach it to keep
@@ -638,6 +640,7 @@ export class Engine {
             'и сообщать об этом отдельной фразой тоже. Ответь гостю сам: сначала прямо назови то, что ' +
             'точно знаешь по его вопросу, затем одной короткой фразой — что именно уточняешь у коллег.',
           tools: {},
+          pseudonymizer: activeTenant.dataResidency?.pseudonymizePII ? new Pseudonymizer() : undefined,
         }).catch(() => null);
         const better = retry?.reply ? enforceOfficialTone(retry.reply) : '';
         if (better.trim().length > reply.trim().length) {

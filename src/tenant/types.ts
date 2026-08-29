@@ -66,6 +66,14 @@ export interface TenantConfig {
    * null/absent → a tenant outside a supported region gets none of it.
    */
   regionPack?: 'kz-cis' | null;
+  /**
+   * Data-residency policy for jurisdictions that require in-country storage (e.g. KZ Law 94-V).
+   * - inCountry: boot refuses to start unless DATA_RESIDENCY_CONFIRMED is set (the deploy declares the
+   *   DB_PATH points at an in-country volume) — a code-enforced deploy contract.
+   * - pseudonymizePII: tokenize guest phone/email before every foreign-LLM call so raw identifiers do
+   *   not cross the border. Absent (Kazzhol) → no change.
+   */
+  dataResidency?: { inCountry?: boolean; pseudonymizePII?: boolean };
 }
 
 /** Property keys the assistant may act on (quote/book) — bookable ones, in roster order. */

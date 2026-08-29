@@ -41,12 +41,24 @@ Remaining GAPS (code-fixable, not blockers): webhook fail-closed on misconfig, a
 outage, read-back verification on the documented Exely path (Kazzhol uses the IBE path which already
 has it), CI activation (needs `workflow` scope), offsite backups, and fleet/onboarding tooling.
 
-## Remaining — Category A: needs a FOUNDER decision (not code)
+## KZ data-residency law — what CODE has now done, and the residual (non-code)
 
-- **KZ personal-data law.** Guest PII goes to Anthropic (US) and the DB sits on a VPS in DE/FI, never
-  in Kazakhstan. To sell legally in KZ you must decide: host in KZ (ps.kz / RK cloud) + sign a DPA +
-  a real consent flow — or sell outside the regulated perimeter for now. **This is the top commercial
-  blocker.** Code can be made residency-configurable, but the hosting/legal commitment is yours.
+The code side is now implemented as far as it can go:
+- **Reversible PII pseudonymization** (`src/core/pseudonymize.ts`): for a residency-strict tenant,
+  guest phone + email are tokenized before every Anthropic (US) call and restored in tool inputs +
+  the reply — raw identifiers no longer cross the border. Gated per tenant (`dataResidency.pseudonymizePII`);
+  OFF for Kazzhol → its model path is byte-identical. (v1 = phone/email; names are NLP-hard → v2.)
+- **Per-tenant residency policy** (`dataResidency.inCountry`) with a **boot-enforced contract**: such a
+  tenant refuses to start unless `DATA_RESIDENCY_CONFIRMED=true`, turning "host in KZ" from a silent
+  assumption into a hard startup check. `DB_PATH` already points anywhere (incl. a KZ volume).
+- **Cross-border transfer disclosed** in `/privacy`.
+
+**Residual — genuinely NOT code (a deploy + a signature):**
+- Physically host the DB/instance in Kazakhstan (set `DB_PATH` → a KZ volume + `DATA_RESIDENCY_CONFIRMED=true`).
+- Sign a DPA with Anthropic (a legal contract — cannot be produced in code).
+- A formal consent-capture step if counsel requires more than the policy disclosure.
+
+These are a hosting choice + a legal signature. No further code closes them.
 - **Load / scale spend.** Single-file SQLite + one process per tenant is fine to ~a handful of hotels;
   a growing fleet needs Postgres + horizontal ops. That's an infra investment decision.
 - **CI activation.** Move `deploy/ci.yml` → `.github/workflows/` (needs `gh auth refresh -s workflow`

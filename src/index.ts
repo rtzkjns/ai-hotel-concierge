@@ -122,6 +122,15 @@ async function main(): Promise<void> {
   // Refuse to boot if this DB belongs to another tenant — enforces one-DB-per-tenant in code so a
   // mis-set DB_PATH can't silently pool two brands' guest data.
   store.assertTenant(activeTenant.id);
+  // Code-enforced data-residency contract: a tenant that must keep guest data in-country will not
+  // boot until the deploy explicitly confirms the DB_PATH points at an in-country volume. Turns a
+  // silent hosting assumption into a hard startup check (KZ Law 94-V and similar).
+  if (activeTenant.dataResidency?.inCountry && process.env.DATA_RESIDENCY_CONFIRMED !== 'true') {
+    throw new Error(
+      `Tenant "${activeTenant.id}" requires in-country data residency, but DATA_RESIDENCY_CONFIRMED ` +
+        'is not set. Point DB_PATH at an in-country volume and set DATA_RESIDENCY_CONFIRMED=true.',
+    );
+  }
 
   // First boot: seed the console admin account from env, if configured.
   if (store.countStaff() === 0 && config.console.adminPassword) {
