@@ -11,7 +11,8 @@
     "start": "tsx src/index.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "onboard": "tsx scripts/onboard-whatsapp.ts"
+    "onboard": "tsx scripts/onboard-whatsapp.ts",
+    "scaffold-tenant": "tsx scripts/scaffold-tenant.mts"
   },
   "keywords": [],
   "author": "",
