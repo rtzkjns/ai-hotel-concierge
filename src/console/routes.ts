@@ -1986,7 +1986,9 @@ export async function registerConsoleRoutes(
 
       const hotels = PROPERTY_KEYS.map((key) => {
         const mine = chats.filter((c) => c.property === key);
-        const link = `https://t.me/${bot}?start=staff-${key}`;
+        // The bind code gates enrolment (telegram.ts /start) so a guessable link can't subscribe a
+        // stranger to a hotel's guest-handoff PII. Only admins see this page, so the code stays with the owner.
+        const link = `https://t.me/${bot}?start=staff-${key}-${store.bindCode?.() ?? ''}`;
         const rows = mine.length
           ? mine
               .map(

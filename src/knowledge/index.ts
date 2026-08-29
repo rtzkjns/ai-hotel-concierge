@@ -1,8 +1,8 @@
 export interface Property {
   key: string;
   name: string;
-  /** Город: замену гостю предлагаем только в его же городе. */
-  city?: 'almaty' | 'astana';
+  /** Город (свободная строка): замену гостю предлагаем только в его же городе. */
+  city?: string;
   /** Exely Connect property id, when this hotel is wired to the live API. */
   exelyPropertyId?: string;
   /** Guest-facing WhatsApp number. */

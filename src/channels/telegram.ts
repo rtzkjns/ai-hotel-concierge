@@ -33,6 +33,32 @@ const HOTEL_TITLE: Record<string, string> = {
   seven: 'Kazzhol Seven',
 };
 
+/**
+ * Parse AND AUTHORIZE a «staff» deep-link payload. Enrolling a chat via this link subscribes it to
+ * a hotel's guest-handoff notifications — guest PII — so it MUST carry the owner's bind code, just
+ * like /привязать. Returns the hotel key ONLY for «staff-<hotel>-<CODE>» with a matching code;
+ * returns null (→ reject) for a bare/guessable «staff-<hotel>», an unknown hotel, or a wrong code.
+ */
+export function authorizeStaffDeepLink(
+  payload: string,
+  knownKeys: string[],
+  bindCode: string | undefined,
+): string | null {
+  const m = /^staff[-_](.+)$/i.exec(payload);
+  if (!m) return null;
+  const rest = m[1];
+  const hotel = knownKeys.find(
+    (k) =>
+      rest.toLowerCase() === k ||
+      rest.toLowerCase().startsWith(`${k}-`) ||
+      rest.toLowerCase().startsWith(`${k}_`),
+  );
+  if (!hotel) return null;
+  const code = rest.slice(hotel.length + 1);
+  if (!bindCode || !code || code.toUpperCase() !== bindCode.toUpperCase()) return null;
+  return hotel;
+}
+
 export interface TelegramChannelDeps {
   botToken: string;
   engine: TelegramEngine;
@@ -74,8 +100,19 @@ export class TelegramChannel {
      */
     this.bot.start(async (ctx) => {
       const payload = (ctx as { startPayload?: string }).startPayload ?? '';
-      const hotel = /^staff[-_](almaty|astana|park_almaty|seven)$/i.exec(payload)?.[1]?.toLowerCase();
-      if (hotel) {
+      if (/^staff[-_]/i.test(payload)) {
+        const hotel = authorizeStaffDeepLink(
+          payload,
+          propertyList.map((p) => p.key),
+          deps.bindCode?.(),
+        );
+        if (!hotel) {
+          await ctx.reply(
+            'Ссылка-приглашение недействительна или устарела. Возьмите актуальную ссылку ' +
+              'у владельца в панели (раздел «Менеджеры»).',
+          );
+          return;
+        }
         const who =
           [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(' ') ||
           (ctx.from?.username ? `@${ctx.from.username}` : 'менеджер');
@@ -132,7 +169,7 @@ export class TelegramChannel {
       if (!/^\/(привязать|bind)\b/i.test(raw)) return next();
       const [, key = '', code = ''] = raw.split(/\s+/);
       const hotel = key.toLowerCase();
-      const known = ['almaty', 'astana', 'park_almaty', 'seven'];
+      const known = propertyList.map((p) => p.key);
 
       if (!known.includes(hotel)) {
         await ctx.reply(
