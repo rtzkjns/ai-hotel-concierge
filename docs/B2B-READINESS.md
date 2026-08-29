@@ -24,6 +24,10 @@ until the blockers below are closed.
 - **Per-tenant DB file** + **fail-fast tenant validation** (+ ReDoS length cap on scrubPattern).
   Re-verify: FIXED (kazzhol→./kazzhol.db unchanged, demo→./demo.db; invalid/mismatched regex crashes).
 - **CI defined** (`deploy/ci.yml`) — typecheck + tests on push/PR.
+- **Durable inbound intake** — guest webhook messages are journalled (SQLite `inbound_queue`) BEFORE
+  the slow work and replayed on boot, so a deploy/crash no longer loses them. Idempotent (native
+  message id) + at-most-once reply gate (`markReplying`) → no double-reply on replay. Affected
+  Kazzhol prod too. 5 store tests.
 
 ## Remaining — Category A: needs a FOUNDER decision (not code)
 
@@ -36,22 +40,14 @@ until the blockers below are closed.
 - **CI activation.** Move `deploy/ci.yml` → `.github/workflows/` (needs `gh auth refresh -s workflow`
   or the GitHub web UI once).
 
-## Remaining — Category B: code-fixable (DESIGNED, implementation-ready, next focused pass)
+## Remaining — Category B: one designed code item + two deferred
 
-Both below have detailed, implementation-ready designs. They are deferred deliberately, not skipped:
-each touches a high-risk surface (the LIVE Kazzhol intake path / prompt byte-identity), so they get a
-dedicated pass rather than a rushed one — the "don't break Kazzhol" rule outranks speed.
-
-- **Message durability** — inbound is 200-ack-then-async in memory; a deploy/crash loses in-flight
-  guest messages. Design ready: an `inbound_queue` (SQLite) written BEFORE the ack, same-tick
-  dispatch (no latency change), boot + periodic replay, idempotent via the native message id +
-  a `markReplying` gate (at-most-once reply). ~1 table + 7 store methods + handler rewire + 8 tests.
-- **Region pack** — Kazakh суржик / CIS-doc rules apply to every tenant; a non-CIS hotel needs them
-  behind a tenant `regionPack`. Design ready: cut 4 verbatim spans from `systemPrompt.ts` into a
-  `kzCis` pack; Kazzhol stays byte-identical (golden snapshots are the gate). Low near-term value
-  (CIS beachhead first), high byte-identity risk → sequenced after durability.
-
-Also open (not yet designed):
+- **Region pack** (SOLE remaining designed code change) — Kazakh суржик / CIS-doc rules apply to every
+  tenant; a non-CIS hotel needs them behind a tenant `regionPack`. Design ready: cut 4 verbatim spans
+  from `systemPrompt.ts` into a `kzCis` pack; Kazzhol stays byte-identical (golden snapshots are the
+  gate). Deliberately deferred: **lowest near-term value** (CIS beachhead first — a non-CIS tenant is
+  far off) at the **highest byte-identity risk** (4 surgical newline/comma seams). The golden gate
+  makes it safe to do in a focused pass; it is the one place where care beats haste.
 - **Eval battery runs on stub only** — never exercises real bookings, real prices, or a second tenant.
 - **Full tenant isolation** (tenant_id-scoped queries) — deferred until tenants are pooled into one DB;
   the one-DB-per-tenant posture (per-tenant DB file) avoids it for now.
