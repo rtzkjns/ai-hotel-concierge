@@ -183,9 +183,15 @@ function canSee(staff: AuthedStaff, property: string | undefined): boolean {
   return !property || property === staff.property;
 }
 
-function visibleConversations(store: ConsoleStore, staff: AuthedStaff): Conversation[] {
+function visibleConversations(
+  store: ConsoleStore,
+  staff: AuthedStaff,
+  activeWithinDays = 30,
+): Conversation[] {
+  // Окно по умолчанию 30 дней (было 7 — из-за чего Instagram/WhatsApp-чаты, затихшие больше недели
+  // назад, ПРОПАДАЛИ из панели). Route даёт выбрать 7 / 30 / Все.
   return store
-    .listConversations()
+    .listConversations(activeWithinDays)
     // Разговоры из «Спросить бота» — служебные: в очереди менеджеров им не место.
     .filter((c) => !c.senderId.startsWith('console-test:'))
     .filter((c) => canSee(staff, c.property));
@@ -574,26 +580,44 @@ export async function registerConsoleRoutes(
 
     scope.get('/console', async (req, reply) => {
       const staff = req.staff!;
-      const q = req.query as { channel?: string };
-      const everything = visibleConversations(store, staff);
+      const q = req.query as { channel?: string; window?: string };
+      const win = q.window === '7' ? '7' : q.window === 'all' ? 'all' : '30';
+      const windowDays = win === '7' ? 7 : win === 'all' ? 36500 : 30;
+      const everything = visibleConversations(store, staff, windowDays);
       // Разделение по каналам: WhatsApp / Instagram / … — вкладки над списком.
       const channelsPresent = CHANNEL_ORDER.filter((ch) => everything.some((c) => c.channel === ch));
       const channel = channelsPresent.includes(q.channel ?? '') ? (q.channel as string) : '';
       const all = channel ? everything.filter((c) => c.channel === channel) : everything;
       const showProperty = new Set(all.map((c) => c.property)).size > 1;
 
-      // Вкладки каналов (показываем, только если каналов больше одного).
-      const channelTabs =
-        channelsPresent.length > 1
-          ? pills([
-              { href: '/console', label: 'Все', active: channel === '' },
-              ...channelsPresent.map((ch) => ({
-                href: `/console?channel=${encodeURIComponent(ch)}`,
-                label: channelLabel(ch),
-                active: channel === ch,
-              })),
-            ])
-          : '';
+      // Ссылка панели с сохранением выбранных канала и окна.
+      const url = (ch: string, w: string): string => {
+        const p = new URLSearchParams();
+        if (ch) p.set('channel', ch);
+        if (w !== '30') p.set('window', w);
+        const qs = p.toString();
+        return `/console${qs ? `?${qs}` : ''}`;
+      };
+      const countBy = (ch: string): number => everything.filter((c) => c.channel === ch).length;
+
+      // Вкладки каналов СО СЧЁТЧИКАМИ — всегда видны при наличии чатов, чтобы WhatsApp/Instagram
+      // были явно разделены и было понятно, сколько где.
+      const channelTabs = everything.length
+        ? pills([
+            { href: url('', win), label: `Все · ${everything.length}`, active: channel === '' },
+            ...channelsPresent.map((ch) => ({
+              href: url(ch, win),
+              label: `${channelLabel(ch)} · ${countBy(ch)}`,
+              active: channel === ch,
+            })),
+          ])
+        : '';
+      // Окно времени: раньше панель молча прятала всё старше 7 дней. Теперь 30 по умолчанию + выбор.
+      const windowTabs = pills([
+        { href: url(channel, '7'), label: '7 дней', active: win === '7' },
+        { href: url(channel, '30'), label: '30 дней', active: win === '30' },
+        { href: url(channel, 'all'), label: 'Все', active: win === 'all' },
+      ]);
 
       const waiting = all
         .filter((c) => c.status === 'handed_off' && !c.takenBy)
@@ -658,7 +682,7 @@ export async function registerConsoleRoutes(
       }
       if (botHandled.length) {
         const rows = botHandled
-          .slice(0, 60)
+          .slice(0, 200)
           .map((c) => {
             const last = lastVisible(c.history);
             const snippet = last
@@ -681,7 +705,7 @@ export async function registerConsoleRoutes(
       const title = waiting.length ? `(${waiting.length}) Входящие` : 'Входящие';
       return sendHtml(
         reply,
-        shell(title, `${channelTabs}<div id="live">${bands.join('')}</div>`, {
+        shell(title, `${channelTabs}${windowTabs}<div id="live">${bands.join('')}</div>`, {
           heading: 'Входящие',
           staff,
           csrf: csrfTokenFor(req.sessionToken!),
