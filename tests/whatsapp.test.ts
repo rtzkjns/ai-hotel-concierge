@@ -635,3 +635,34 @@ describe('подпись вебхука на разных провайдерах
     await app.close();
   });
 });
+
+describe('WhatsAppAdapter.send — transient retry (task 1: no false "not delivered" alarms)', () => {
+  const to = 'PID|77010000001';
+  it('retries a transient 500 then succeeds — message delivered, no failure surfaced', async () => {
+    let calls = 0;
+    const fn = vi.fn(async () => {
+      calls++;
+      return { ok: calls >= 3, status: calls >= 3 ? 200 : 500 } as Response;
+    });
+    const adapter = new WhatsAppAdapter(
+      { accessToken: 't', phoneNumberIds: { almaty: 'PID' }, sendRetryDelaysMs: [0, 0, 0] },
+      fn,
+    );
+    await expect(adapter.send(to, [{ text: 'hi', delayMs: 0 }])).resolves.toBeUndefined();
+    expect(calls).toBe(3);
+  });
+
+  it('does NOT retry a 4xx — a real error (bad payload/token) surfaces immediately', async () => {
+    let calls = 0;
+    const fn = vi.fn(async () => {
+      calls++;
+      return { ok: false, status: 400 } as Response;
+    });
+    const adapter = new WhatsAppAdapter(
+      { accessToken: 't', phoneNumberIds: { almaty: 'PID' }, sendRetryDelaysMs: [0, 0, 0] },
+      fn,
+    );
+    await expect(adapter.send(to, [{ text: 'hi', delayMs: 0 }])).rejects.toThrow(/HTTP 400/);
+    expect(calls).toBe(1);
+  });
+});

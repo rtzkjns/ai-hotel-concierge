@@ -25,6 +25,13 @@ export interface WhatsAppAdapterConfig {
   provider?: WhatsAppProvider;
   /** Override the API base URL (else derived from provider). */
   baseUrl?: string;
+  /**
+   * Backoff (ms) between retries when the gateway returns a TRANSIENT error (5xx / 429). 360dialog
+   * throws intermittent HTTP 500s and Meta rate-limits; without a retry these surface as false
+   * "ответ гостю НЕ доставлен" alarms in the staff chat when the message would send a moment later.
+   * Defaults to [400, 1200, 3000]. Tests pass [] to disable sleeping.
+   */
+  sendRetryDelaysMs?: number[];
 }
 
 /** One inbound guest message plus the number it arrived on (→ hotel). */
@@ -362,10 +369,20 @@ export class WhatsAppAdapter implements ChannelAdapter {
     if (isD360) headers['D360-API-KEY'] = this.cfg.accessToken;
     else headers.Authorization = `Bearer ${this.cfg.accessToken}`;
 
-    const res = await this.fetchFn(url, { method: 'POST', headers, body: JSON.stringify(body) });
-    if (!res.ok) {
-      // Status only — never the token, never the guest's number.
-      throw new Error(`WhatsApp send failed: HTTP ${res.status}`);
+    // Transient 5xx/429 (360dialog HTTP 500 spikes, Meta rate limits) are the #1 cause of false
+    // "ответ гостю НЕ доставлен" alarms — the message delivers on a retry a moment later. Retry a
+    // few times with backoff; a 4xx (bad payload / expired token) is real and never retried.
+    const delays = this.cfg.sendRetryDelaysMs ?? [400, 1200, 3000];
+    let lastStatus = 0;
+    for (let attempt = 0; ; attempt++) {
+      const res = await this.fetchFn(url, { method: 'POST', headers, body: JSON.stringify(body) });
+      if (res.ok) return;
+      lastStatus = res.status;
+      const transient = res.status === 429 || res.status >= 500;
+      if (!transient || attempt >= delays.length) break;
+      await new Promise((r) => setTimeout(r, delays[attempt]));
     }
+    // Status only — never the token, never the guest's number.
+    throw new Error(`WhatsApp send failed: HTTP ${lastStatus}`);
   }
 }
