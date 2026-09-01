@@ -102,7 +102,7 @@ const PROMISE_TOOLS = ['capture_lead', 'submit_mice_request', 'escalate_to_human
 // просьбу сразу, даже первую, которую бот пробует решить сам.
 export const HUMAN_REQUEST_RE = (() => {
   const req = 'да[йи]те|позов|соедин|переключ|свяж|поговорить|talk to|speak to|connect|give me|want a|хочу|нужен|нужна|можно|call';
-  const role = 'менеджер|оператор|manager|operator|human|agent|real person|reception|ресепшн|сотрудник|жив\\S* человек';
+  const role = 'менеджер|оператор|manager|operator|human|agent|real person|жив\\S* человек';
   // глагол↔роль в любом порядке (≤25 симв.) ИЛИ идиома «поговорить с человеком / с живым человеком».
   return new RegExp(
     `(?:${req})[^.!?\\n]{0,25}(?:${role})|(?:${role})[^.!?\\n]{0,25}(?:${req})|поговорить\\s+с[о]?\\s+человек`,

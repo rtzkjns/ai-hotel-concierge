@@ -32,6 +32,8 @@ describe('HUMAN_REQUEST_RE — explicit manager/human requests', () => {
       'a room for 2 people',
       'какие цены на завтра',
       'менеджер по продажам приходил вчера', // mentions менеджер but not a request
+      'нужна бронь на 10 сотрудников', // corporate booking — сотрудник is not a "human" role
+      'можно оставить вещи на ресепшене?', // reception luggage — not a manager request
     ]) {
       expect(match(s), s).toBe(false);
     }

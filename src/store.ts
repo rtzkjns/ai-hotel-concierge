@@ -313,6 +313,18 @@ export class Store {
     };
   }
 
+  /** Broadcasts a crash/restart left mid-send: status 'sending' with recipients still pending. */
+  resumableBroadcasts(): number[] {
+    const rows = this.db
+      .prepare(
+        `SELECT DISTINCT b.id FROM broadcasts b
+         JOIN broadcast_recipients r ON r.broadcast_id = b.id
+         WHERE b.status = 'sending' AND r.status = 'pending'`,
+      )
+      .all() as Array<{ id: number }>;
+    return rows.map((r) => r.id);
+  }
+
   broadcastCounts(id: number): Record<string, number> {
     const rows = this.db
       .prepare('SELECT status, COUNT(*) n FROM broadcast_recipients WHERE broadcast_id = ? GROUP BY status')
@@ -545,6 +557,7 @@ export class Store {
         updated_at      TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_bcast_recip ON broadcast_recipients(broadcast_id, status);
+      CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at);
     `);
   }
 

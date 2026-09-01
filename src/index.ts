@@ -554,6 +554,9 @@ async function main(): Promise<void> {
   const inboundSweep = setInterval(() => void sweepInbound(), INBOUND_GRACE_MS);
   inboundSweep.unref();
 
+  // Resume any broadcast a crash/restart left mid-send (status 'sending' with pending recipients).
+  for (const broadcastId of store.resumableBroadcasts()) runBroadcast(broadcastId);
+
   // Twice-daily catalog refresh so room/service/policy changes made in Exely reach the bot with
   // no redeploy (staff can also force it from the console). unref() so it never holds the process up.
   const knowledgeTimer = setInterval(
