@@ -1,6 +1,6 @@
 // Boot: store → integrations → engine → channel adapters → fastify server.
 import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
 import { InstagramAdapter } from './channels/instagram';
@@ -311,6 +311,67 @@ async function main(): Promise<void> {
     }
   };
 
+  // Фоновая отправка рассылки: читаем получателей пачками, шлём текст через тот же канал, что и у
+  // диалога; в Telegram при наличии файла — нативно (фото/видео/док/аудио). Для WhatsApp/Instagram
+  // ещё раз проверяем окно 24ч на момент отправки (оно могло закрыться) и медиа НЕ шлём (v1).
+  const BROADCAST_MEDIA_DIR = './data/broadcasts';
+  const runBroadcast = (broadcastId: number): void => {
+    void (async () => {
+      const b = store.getBroadcast?.(broadcastId);
+      if (!b) return;
+      let mediaBuf: Buffer | null = null;
+      if (b.mediaPath) {
+        try {
+          mediaBuf = readFileSync(b.mediaPath);
+        } catch {
+          mediaBuf = null;
+        }
+      }
+      const text = (b.body ?? '').trim();
+      const WINDOW = 24 * 60 * 60 * 1000;
+      for (;;) {
+        const batch = store.nextPendingRecipients(broadcastId, 20);
+        if (batch.length === 0) break;
+        for (const r of batch) {
+          try {
+            const convo = store.getConversation(r.conversationId);
+            if (!convo) {
+              store.markRecipient(r.id, 'skipped', 'conversation_gone');
+              continue;
+            }
+            if (
+              (convo.channel === 'whatsapp' || convo.channel === 'instagram') &&
+              Date.now() - Date.parse(convo.updatedAt) >= WINDOW
+            ) {
+              store.markRecipient(r.id, 'skipped', 'outside_24h_window');
+              continue;
+            }
+            if (convo.channel === 'telegram' && mediaBuf && telegram && b.mediaPath) {
+              const chatId = Number(convo.senderId);
+              const src = { source: mediaBuf, filename: basename(b.mediaPath) };
+              const cap = text ? { caption: text } : {};
+              if (b.mediaKind === 'image') await telegram.bot.telegram.sendPhoto(chatId, src, cap);
+              else if (b.mediaKind === 'video') await telegram.bot.telegram.sendVideo(chatId, src, cap);
+              else if (b.mediaKind === 'audio') await telegram.bot.telegram.sendAudio(chatId, src, cap);
+              else await telegram.bot.telegram.sendDocument(chatId, src, cap);
+              store.markRecipient(r.id, 'sent');
+            } else if (text) {
+              const res = await sendToConversation(convo, text);
+              store.markRecipient(r.id, res.ok ? 'sent' : 'failed', res.error);
+            } else {
+              // Медиа-рассылка без текста в не-Telegram канал — в v1 не отправляем.
+              store.markRecipient(r.id, 'skipped', 'media_telegram_only');
+            }
+          } catch (err) {
+            store.markRecipient(r.id, 'failed', err instanceof Error ? err.message : 'error');
+          }
+          await new Promise((res) => setTimeout(res, 700)); // темп ~1 сообщение/сек на чат
+        }
+      }
+      store.setBroadcastStatus(broadcastId, 'done');
+    })().catch(() => {});
+  };
+
   if (process.env.WEBHOOK_OBSERVE_ONLY === 'true') {
     console.warn(
       'WEBHOOK_OBSERVE_ONLY=true — подпись вебхуков ПРОВЕРЯЕТСЯ, но несовпадение НЕ отклоняется. ' +
@@ -404,6 +465,8 @@ async function main(): Promise<void> {
           botUsername: config.telegram.botUsername,
           notifyStaff: async (text, property) => { await staffNotifier.notify(text, property); },
           publicBaseUrl: config.server.publicBaseUrl,
+          runBroadcast,
+          broadcastMediaDir: BROADCAST_MEDIA_DIR,
           // Служебный вопрос из панели: тот же движок и та же база знаний, но
           // отдельный разговор с префиксом console-test — он не попадает во «Входящие».
           askBot: async (property, question) => {

@@ -2,6 +2,8 @@
 // client frameworks), role-gated, CSRF-protected POSTs. All PII shown to
 // non-admin roles passes maskPII; all dynamic values pass escapeHtml.
 import { randomUUID } from 'node:crypto';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import cookie from '@fastify/cookie';
 import formbody from '@fastify/formbody';
 import multipart from '@fastify/multipart';
@@ -125,6 +127,35 @@ export interface ConsoleStore extends SessionStore {
     id: number,
     patch: Partial<Pick<HotelContent, 'title' | 'body' | 'property' | 'startsAt' | 'endsAt'>>,
   ): void;
+  // Broadcasts (mailings)
+  createBroadcast?(rec: {
+    property: string;
+    createdBy: string;
+    body: string;
+    mediaPath?: string;
+    mediaKind?: string;
+    audience: string;
+  }): number;
+  addBroadcastRecipients?(
+    broadcastId: number,
+    rows: Array<{ conversationId: string; channel: string; status: string; reason?: string }>,
+  ): void;
+  listBroadcasts?(
+    property?: string,
+    limit?: number,
+  ): Array<{ id: number; property: string; body: string; status: string; createdBy: string; createdAt: string; audience: string }>;
+  getBroadcast?(id: number): {
+    id: number;
+    property: string;
+    body: string;
+    mediaPath: string | null;
+    mediaKind: string | null;
+    audience: string;
+    status: string;
+    createdBy: string;
+    createdAt: string;
+  } | undefined;
+  broadcastCounts?(id: number): Record<string, number>;
 }
 
 /**
@@ -156,6 +187,10 @@ export interface ConsoleDeps {
   notifyStaff?: (text: string, property?: string) => Promise<void>;
   /** Внешний адрес панели, чтобы ссылка в Telegram была кликабельной. */
   publicBaseUrl?: string;
+  /** Стартует фоновую отправку рассылки (реализована в boot-коде поверх каналов). */
+  runBroadcast?: (broadcastId: number) => void;
+  /** Каталог для сохранения загруженного в рассылку файла (worker читает его при отправке). */
+  broadcastMediaDir?: string;
 }
 
 // --- HTML helpers ------------------------------------------------------------------
@@ -718,6 +753,141 @@ export async function registerConsoleRoutes(
 
     // Старые адреса продолжают работать — закладки персонала не ломаем.
     scope.get('/console/chats', async (_req, reply) => reply.redirect('/console'));
+
+    // --- Рассылки (mailings) -----------------------------------------------------------------
+    const BROADCAST_WINDOW_MS = 24 * 60 * 60 * 1000;
+    // Кому уйдёт рассылка по правилам площадок: Telegram — всем; WhatsApp/Instagram — только тем,
+    // кто писал за 24ч (иначе площадка отклонит); виджет — эфемерный, пропускаем.
+    const broadcastAudience = (staff: AuthedStaff, property: string) => {
+      const now = Date.now();
+      return store
+        .listConversations(365)
+        .filter((c) => !c.senderId.startsWith('console-test:'))
+        .filter((c) => canSee(staff, c.property))
+        .filter((c) => !property || c.property === property)
+        .map((c) => {
+          if (c.channel === 'telegram') return { conversationId: c.id, channel: c.channel, status: 'pending' };
+          if (c.channel === 'whatsapp' || c.channel === 'instagram') {
+            const last = lastGuestAt(c);
+            const within = last ? now - Date.parse(last) < BROADCAST_WINDOW_MS : false;
+            return within
+              ? { conversationId: c.id, channel: c.channel, status: 'pending' }
+              : { conversationId: c.id, channel: c.channel, status: 'skipped', reason: 'outside_24h_window' };
+          }
+          return { conversationId: c.id, channel: c.channel, status: 'skipped', reason: 'ephemeral' };
+        });
+    };
+
+    scope.get('/console/broadcasts', async (req, reply) => {
+      const staff = req.staff!;
+      const csrf = csrfTokenFor(req.sessionToken!);
+      const rows = store.listBroadcasts?.(staff.property || undefined) ?? [];
+      const list = rows.length
+        ? rows
+            .map((b) => {
+              const c = store.broadcastCounts?.(b.id) ?? {};
+              return (
+                `<a class="row" href="/console/broadcasts/${b.id}">` +
+                `<span class="name">${escapeHtml(b.body.slice(0, 40) || '(файл)')}</span>` +
+                `<span class="grow">✅ ${c.sent ?? 0} · ⏳ ${c.pending ?? 0} · ⏭ ${c.skipped ?? 0} · ⚠ ${c.failed ?? 0}</span>` +
+                `<time>${escapeHtml(ago(b.createdAt))}</time></a>`
+              );
+            })
+            .join('')
+        : emptyState('Рассылок пока нет', 'Отправьте объявление или акцию гостям.', undefined, 'ok');
+      const html = `<p><a class="btn" href="/console/broadcasts/new">Новая рассылка</a></p>${list}`;
+      return sendHtml(reply, shell('Рассылки', html, { heading: 'Рассылки', staff, csrf, active: '/console/broadcasts' }));
+    });
+
+    scope.get('/console/broadcasts/new', async (req, reply) => {
+      const staff = req.staff!;
+      const csrf = csrfTokenFor(req.sessionToken!);
+      const props = staff.property ? [staff.property] : PROPERTY_KEYS.filter((k) => canSee(staff, k));
+      const opts = [
+        staff.property ? '' : '<option value="">Все отели</option>',
+        ...props.map((k) => `<option value="${escapeHtml(k)}">${escapeHtml(k)}</option>`),
+      ].join('');
+      const form =
+        `<form method="post" action="/console/broadcasts" enctype="multipart/form-data" data-once>` +
+        `<input type="hidden" name="_csrf" value="${escapeHtml(csrf)}">` +
+        `<p><label>Отель<br><select name="property">${opts}</select></label></p>` +
+        `<p><label>Сообщение<br><textarea name="body" rows="5" placeholder="Текст объявления или акции"></textarea></label></p>` +
+        `<p><label>Файл (необязательно) — фото / видео / PDF, уходит в Telegram<br>` +
+        `<input type="file" name="file" accept="image/*,video/*,application/pdf,audio/*"></label></p>` +
+        `<p class="quiet">Telegram — всем гостям, кто писал боту. WhatsApp и Instagram — только тем, кто ` +
+        `писал за последние 24 часа (правило площадок); остальные будут отмечены «пропущено». Виджет пропускается.</p>` +
+        `<button type="submit">Отправить</button></form>`;
+      return sendHtml(reply, shell('Новая рассылка', form, { heading: 'Новая рассылка', staff, csrf, active: '/console/broadcasts' }));
+    });
+
+    scope.post('/console/broadcasts', async (req, reply) => {
+      const staff = req.staff!;
+      let body = '';
+      let property = '';
+      let csrfField = '';
+      let fileBuf: Buffer | null = null;
+      let filename = '';
+      let mimetype = '';
+      try {
+        for await (const part of req.parts()) {
+          if (part.type === 'file') {
+            filename = part.filename ?? '';
+            mimetype = part.mimetype ?? '';
+            fileBuf = await part.toBuffer().catch(() => null);
+          } else if (part.fieldname === '_csrf') csrfField = String(part.value);
+          else if (part.fieldname === 'property') property = String(part.value);
+          else if (part.fieldname === 'body') body = String(part.value);
+        }
+      } catch {
+        return reply.redirect('/console/broadcasts/new');
+      }
+      if (!req.sessionToken || csrfField !== csrfTokenFor(req.sessionToken)) {
+        return reply.code(403).type('text/html; charset=utf-8').send(FORBIDDEN_HTML);
+      }
+      if (staff.property) property = staff.property; // менеджер шлёт только своему отелю
+      if (!canSee(staff, property)) {
+        return reply.code(403).type('text/html; charset=utf-8').send(FORBIDDEN_HTML);
+      }
+      let mediaPath: string | undefined;
+      let mediaKind: string | undefined;
+      if (fileBuf && fileBuf.length && filename) {
+        const dir = deps.broadcastMediaDir ?? './data/broadcasts';
+        mkdirSync(dir, { recursive: true });
+        const ext = (filename.match(/\.[a-z0-9]+$/i)?.[0] ?? '').toLowerCase();
+        mediaPath = join(dir, `${randomUUID()}${ext}`);
+        writeFileSync(mediaPath, fileBuf);
+        mediaKind = mimetype.startsWith('image/')
+          ? 'image'
+          : mimetype.startsWith('video/')
+            ? 'video'
+            : mimetype.startsWith('audio/')
+              ? 'audio'
+              : 'document';
+      }
+      if (!body.trim() && !mediaPath) return reply.redirect('/console/broadcasts/new');
+      const id = store.createBroadcast?.({ property, createdBy: staff.login, body, mediaPath, mediaKind, audience: 'safe' }) ?? 0;
+      store.addBroadcastRecipients?.(id, broadcastAudience(staff, property));
+      deps.runBroadcast?.(id);
+      return reply.redirect(`/console/broadcasts/${id}`);
+    });
+
+    scope.get('/console/broadcasts/:id', async (req, reply) => {
+      const staff = req.staff!;
+      const id = Number((req.params as { id: string }).id);
+      const b = store.getBroadcast?.(id);
+      if (!b || !canSee(staff, b.property)) {
+        return reply.code(404).type('text/html; charset=utf-8').send(FORBIDDEN_HTML);
+      }
+      const c = store.broadcastCounts?.(id) ?? {};
+      const csrf = csrfTokenFor(req.sessionToken!);
+      const html =
+        `<p>${escapeHtml(b.body || '(файл)')}</p>` +
+        `<p class="quiet">Статус: ${escapeHtml(b.status)}${b.mediaKind ? ` · вложение: ${escapeHtml(b.mediaKind)}` : ''}</p>` +
+        `<ul><li>✅ Отправлено: ${c.sent ?? 0}</li><li>⏳ В очереди: ${c.pending ?? 0}</li>` +
+        `<li>⏭ Пропущено (окно 24ч / виджет): ${c.skipped ?? 0}</li><li>⚠ Ошибок: ${c.failed ?? 0}</li></ul>` +
+        `<p><a class="btn" href="/console/broadcasts/${id}">Обновить</a> · <a href="/console/broadcasts">К списку</a></p>`;
+      return sendHtml(reply, shell('Рассылка', html, { heading: 'Рассылка', staff, csrf, active: '/console/broadcasts' }));
+    });
 
     /** Loads the conversation and enforces the mice_manager handed_off-only rule. */
     const chatAccess = async (

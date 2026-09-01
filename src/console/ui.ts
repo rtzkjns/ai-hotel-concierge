@@ -492,6 +492,7 @@ const ICONS: Record<string, string> = {
   book: '<path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"/><path d="M9 7h7M9 11h7"/>',
   list: '<path d="M8 6h12M8 12h12M8 18h12"/><path d="M4 6h.01M4 12h.01M4 18h.01"/>',
   chart: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
+  send: '<path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/>',
 };
 
 export interface NavItem {
@@ -508,6 +509,7 @@ export function navItems(role: string, waiting: number): NavItem[] {
   ];
   if (role === 'admin') items.push({ href: '/console/kb', label: 'Знания', icon: 'book' });
   items.push({ href: '/console/requests', label: 'Заявки', icon: 'list' });
+  items.push({ href: '/console/broadcasts', label: 'Рассылки', icon: 'send' });
   if (role === 'admin') items.push({ href: '/console/summary', label: 'Итоги', icon: 'chart' });
   return items;
 }

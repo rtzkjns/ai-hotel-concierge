@@ -217,6 +217,131 @@ export class Store {
       .get(type, conversationId);
   }
 
+  // --- Broadcasts (staff mailings) ---------------------------------------------------------
+
+  createBroadcast(rec: {
+    property: string;
+    createdBy: string;
+    body: string;
+    mediaPath?: string;
+    mediaKind?: string;
+    audience: string;
+  }): number {
+    const now = nowIso();
+    const res = this.db
+      .prepare(
+        `INSERT INTO broadcasts (property, created_by, body, media_path, media_kind, audience, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'sending', ?, ?)`,
+      )
+      .run(rec.property, rec.createdBy, rec.body, rec.mediaPath ?? null, rec.mediaKind ?? null, rec.audience, now, now);
+    return Number(res.lastInsertRowid);
+  }
+
+  addBroadcastRecipients(
+    broadcastId: number,
+    rows: Array<{ conversationId: string; channel: string; status: string; reason?: string }>,
+  ): void {
+    const now = nowIso();
+    const stmt = this.db.prepare(
+      `INSERT INTO broadcast_recipients (broadcast_id, conversation_id, channel, status, reason, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    );
+    const tx = this.db.transaction((rs: typeof rows) => {
+      for (const r of rs) stmt.run(broadcastId, r.conversationId, r.channel, r.status, r.reason ?? null, now);
+    });
+    tx(rows);
+  }
+
+  nextPendingRecipients(
+    broadcastId: number,
+    limit: number,
+  ): Array<{ id: number; conversationId: string; channel: string }> {
+    const rows = this.db
+      .prepare(
+        `SELECT id, conversation_id, channel FROM broadcast_recipients
+         WHERE broadcast_id = ? AND status = 'pending' ORDER BY id LIMIT ?`,
+      )
+      .all(broadcastId, limit) as Array<{ id: number; conversation_id: string; channel: string }>;
+    return rows.map((r) => ({ id: r.id, conversationId: r.conversation_id, channel: r.channel }));
+  }
+
+  markRecipient(id: number, status: string, reason?: string): void {
+    this.db
+      .prepare('UPDATE broadcast_recipients SET status = ?, reason = ?, updated_at = ? WHERE id = ?')
+      .run(status, reason ?? null, nowIso(), id);
+  }
+
+  setBroadcastStatus(id: number, status: string): void {
+    this.db.prepare('UPDATE broadcasts SET status = ?, updated_at = ? WHERE id = ?').run(status, nowIso(), id);
+  }
+
+  getBroadcast(id: number): {
+    id: number;
+    property: string;
+    body: string;
+    mediaPath: string | null;
+    mediaKind: string | null;
+    audience: string;
+    status: string;
+    createdBy: string;
+    createdAt: string;
+  } | undefined {
+    const r = this.db.prepare('SELECT * FROM broadcasts WHERE id = ?').get(id) as
+      | {
+          id: number;
+          property: string;
+          body: string;
+          media_path: string | null;
+          media_kind: string | null;
+          audience: string;
+          status: string;
+          created_by: string;
+          created_at: string;
+        }
+      | undefined;
+    if (!r) return undefined;
+    return {
+      id: r.id,
+      property: r.property,
+      body: r.body,
+      mediaPath: r.media_path,
+      mediaKind: r.media_kind,
+      audience: r.audience,
+      status: r.status,
+      createdBy: r.created_by,
+      createdAt: r.created_at,
+    };
+  }
+
+  broadcastCounts(id: number): Record<string, number> {
+    const rows = this.db
+      .prepare('SELECT status, COUNT(*) n FROM broadcast_recipients WHERE broadcast_id = ? GROUP BY status')
+      .all(id) as Array<{ status: string; n: number }>;
+    const out: Record<string, number> = {};
+    for (const r of rows) out[r.status] = r.n;
+    return out;
+  }
+
+  listBroadcasts(
+    property?: string,
+    limit = 30,
+  ): Array<{ id: number; property: string; body: string; status: string; createdBy: string; createdAt: string; audience: string }> {
+    const rows = (
+      property
+        ? this.db.prepare('SELECT * FROM broadcasts WHERE property = ? ORDER BY id DESC LIMIT ?').all(property, limit)
+        : this.db.prepare('SELECT * FROM broadcasts ORDER BY id DESC LIMIT ?').all(limit)
+    ) as Array<{ id: number; property: string; body: string; status: string; created_by: string; created_at: string; audience: string }>;
+    return rows.map((r) => ({
+      id: r.id,
+      property: r.property,
+      body: r.body,
+      status: r.status,
+      createdBy: r.created_by,
+      createdAt: r.created_at,
+      audience: r.audience,
+    }));
+  }
+
   assertTenant(tenantId: string): void {
     const row = this.db
       .prepare("SELECT body FROM kb_entries WHERE kind='tenant_marker' LIMIT 1")
@@ -396,6 +521,30 @@ export class Store {
         updated_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_inbound_queue_status ON inbound_queue(status, id);
+      -- Staff broadcasts (mailings). One row per broadcast + one per recipient, so a restart can
+      -- resume mid-send and the console can show honest per-recipient delivery counts.
+      CREATE TABLE IF NOT EXISTS broadcasts (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        property    TEXT NOT NULL DEFAULT '',
+        created_by  TEXT NOT NULL,
+        body        TEXT NOT NULL DEFAULT '',
+        media_path  TEXT,
+        media_kind  TEXT,
+        audience    TEXT NOT NULL,
+        status      TEXT NOT NULL DEFAULT 'sending',
+        created_at  TEXT NOT NULL,
+        updated_at  TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS broadcast_recipients (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        broadcast_id    INTEGER NOT NULL,
+        conversation_id TEXT NOT NULL,
+        channel         TEXT NOT NULL,
+        status          TEXT NOT NULL DEFAULT 'pending',
+        reason          TEXT,
+        updated_at      TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_bcast_recip ON broadcast_recipients(broadcast_id, status);
     `);
   }
 

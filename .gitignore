@@ -7,3 +7,4 @@ dist/
 
 # Agent worktrees / local agent metadata
 .claude/
+data/
