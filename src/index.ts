@@ -49,27 +49,41 @@ function createStaffNotifier(store: {
   if (!token) return { notify: (text) => console.log('[staff]', text) };
 
   async function send(chatId: string, text: string): Promise<boolean> {
-    try {
-      const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: chatId, text, disable_web_page_preview: true }),
-      });
-      if (!res.ok) {
-        console.error(`staff notify failed: Telegram HTTP ${res.status} (chat ${chatId})`);
-        // 403 — это «бот заблокирован» или «диалог не начат», и само оно не пройдёт.
-        // Такой получатель остаётся в списке навсегда и на каждой заявке даёт ошибку,
-        // за которой перестают быть видны настоящие сбои доставки. Отключаем его.
+    // Transient Telegram errors (5xx / 429 / a dropped connection) must NOT silently lose a staff
+    // notification — that is exactly the "сообщения в телеграм не приходят" complaint. Retry with
+    // backoff; a 403 (bot blocked / chat not started) is permanent and deactivates the recipient.
+    const delays = [400, 1500, 4000];
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: chatId, text, disable_web_page_preview: true }),
+        });
+        if (res.ok) return true;
+        // 403 — «бот заблокирован» или «диалог не начат»: само не пройдёт и на каждой заявке даёт
+        // ошибку, за которой теряются настоящие сбои. Отключаем получателя и не ретраим.
         if (res.status === 403 && store.deactivateStaffChat?.(chatId)) {
           console.warn(`staff chat ${chatId} отключён: Telegram отвечает 403`);
           store.recordEvent?.('staff_chat_disabled', { payload: { chatId } });
+          return false;
+        }
+        console.error(
+          `staff notify failed: Telegram HTTP ${res.status} (chat ${chatId}) — попытка ${attempt + 1}`,
+        );
+        if ((res.status === 429 || res.status >= 500) && attempt < delays.length) {
+          await new Promise((r) => setTimeout(r, delays[attempt]));
+          continue;
+        }
+        return false;
+      } catch (err) {
+        console.error('staff notify failed:', err instanceof Error ? err.message : 'unknown error');
+        if (attempt < delays.length) {
+          await new Promise((r) => setTimeout(r, delays[attempt]));
+          continue;
         }
         return false;
       }
-      return true;
-    } catch (err) {
-      console.error('staff notify failed:', err instanceof Error ? err.message : 'unknown error');
-      return false;
     }
   }
 

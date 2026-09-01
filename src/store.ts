@@ -209,6 +209,14 @@ export class Store {
    * Enforces the one-DB-per-tenant posture in CODE — a mis-set DB_PATH pointing a second tenant at
    * another brand's DB now crashes at boot instead of silently commingling two hotels' guest data.
    */
+  /** Has an event of this type already been recorded for this conversation? Used for
+   *  once-per-conversation notifications (e.g. the manager-request heads-up) so staff aren't spammed. */
+  conversationHadEvent(type: string, conversationId: string): boolean {
+    return !!this.db
+      .prepare('SELECT 1 FROM events WHERE type = ? AND conversation_id = ? LIMIT 1')
+      .get(type, conversationId);
+  }
+
   assertTenant(tenantId: string): void {
     const row = this.db
       .prepare("SELECT body FROM kb_entries WHERE kind='tenant_marker' LIMIT 1")

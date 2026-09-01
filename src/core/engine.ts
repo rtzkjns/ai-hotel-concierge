@@ -96,6 +96,20 @@ const PROMISE_RE =
   /(верн[уё]сь с ответом|уточню у коллег|передам коллегам|переда[юё] коллегам|коллеги свяжутся|уточню и вернусь)/i;
 const PROMISE_TOOLS = ['capture_lead', 'submit_mice_request', 'escalate_to_human'];
 
+// Явная просьба переключить на живого человека (ru/kk/en). КОНСЕРВАТИВНО: глагол-просьба рядом с
+// ролью — «дайте менеджера», «соедините с оператором», «talk to a human». «На 2 человека» или
+// «сколько человек» НЕ матчатся (нет глагола-просьбы). Нужен, чтобы менеджер видел КАЖДУЮ такую
+// просьбу сразу, даже первую, которую бот пробует решить сам.
+export const HUMAN_REQUEST_RE = (() => {
+  const req = 'да[йи]те|позов|соедин|переключ|свяж|поговорить|talk to|speak to|connect|give me|want a|хочу|нужен|нужна|можно|call';
+  const role = 'менеджер|оператор|manager|operator|human|agent|real person|reception|ресепшн|сотрудник|жив\\S* человек';
+  // глагол↔роль в любом порядке (≤25 симв.) ИЛИ идиома «поговорить с человеком / с живым человеком».
+  return new RegExp(
+    `(?:${req})[^.!?\\n]{0,25}(?:${role})|(?:${role})[^.!?\\n]{0,25}(?:${req})|поговорить\\s+с[о]?\\s+человек`,
+    'i',
+  );
+})();
+
 export function needsSubstance(reply: string, toolsUsed: string[]): boolean {
   const text = reply.trim();
   if (!text) return true;
@@ -223,6 +237,8 @@ export interface EngineStore {
   listLeads?(): BookingLead[];
   listMice?(): MiceRequest[];
   recordEvent(type: string, data?: EventData): void;
+  /** Idempotency for once-per-conversation notifications (manager-request heads-up). */
+  conversationHadEvent?(type: string, conversationId: string): boolean;
   /** Live per-hotel promos/announcements for the prompt (optional; absent stores just skip it). */
   listActiveContent?(property: string, nowIso: string): HotelContent[];
   /** Записи базы знаний из админ-панели (факты, правила тона, подтянутые источники). */
@@ -502,6 +518,32 @@ export class Engine {
     }
 
     store.appendMessage(convo.id, { role: 'user', content: text });
+
+    // Менеджер должен ВИДЕТЬ каждую явную просьбу переключить на человека — даже первую, которую
+    // бот ещё пробует решить сам (эскалация приходит позже/по второму разу). Один раз на диалог,
+    // детерминированно, не мешая работе бота.
+    if (
+      HUMAN_REQUEST_RE.test(text) &&
+      !store.conversationHadEvent?.('manager_headsup', convo.id)
+    ) {
+      const hn = properties[convo.property]?.name ?? convo.property;
+      const link = this.deps.chatLink?.(convo.id);
+      void Promise.resolve(
+        this.deps.staffNotifier.notify(
+          maskPII(
+            `👋 Гость просит менеджера — ${hn} (${convo.id}). Бот пробует помочь; ` +
+              `вмешайтесь при необходимости.${link ? `\n${link}` : ''}\nСообщение: ${text}`,
+          ),
+          convo.property,
+        ),
+      ).catch(() => {});
+      track(store, 'manager_headsup', {
+        conversationId: convo.id,
+        property: convo.property,
+        channel: msg.channel,
+      });
+    }
+
     const history: ChatMessage[] = [...convo.history, { role: 'user', content: text }];
     track(store, 'message_in', {
       conversationId: convo.id,
