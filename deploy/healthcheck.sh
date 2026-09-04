@@ -73,10 +73,24 @@ exely "$(grep '^EXELY_PARK_ALMATY_CLIENT_ID=' "$ENV" | cut -d= -f2-)" "$(grep '^
 
 # --- Модель: без неё бот молчит ---
 AK=$(grep '^ANTHROPIC_API_KEY=' "$ENV" | cut -d= -f2-)
-AC=$(curl -s -m 25 -o /dev/null -w '%{http_code}' -X POST https://api.anthropic.com/v1/messages \
-  -H "x-api-key: ${AK}" -H 'anthropic-version: 2023-06-01' -H 'content-type: application/json' \
-  -d '{"model":"claude-sonnet-5","max_tokens":4,"messages":[{"role":"user","content":"hi"}]}')
-[ "$AC" != "200" ] && add "Anthropic API: HTTP ${AC} — бот не сможет отвечать (кончились средства или ключ отозван)"
+anthropic_ping() {
+  curl -s -m 25 -o /dev/null -w '%{http_code}' -X POST https://api.anthropic.com/v1/messages \
+    -H "x-api-key: ${AK}" -H 'anthropic-version: 2023-06-01' -H 'content-type: application/json' \
+    -d '{"model":"claude-sonnet-5","max_tokens":4,"messages":[{"role":"user","content":"hi"}]}'
+}
+AC=$(anthropic_ping)
+# 529/429/5xx/timeout — это ВРЕМЕННАЯ перегрузка серверов Anthropic (Overloaded), а НЕ деньги/ключ.
+# SDK бота их и так ретраит; здесь ретраим один раз, чтобы не бить тревогу на секундном всплеске.
+case "$AC" in
+  429|500|502|503|529|000) sleep 5; AC=$(anthropic_ping);;
+esac
+case "$AC" in
+  200) : ;;
+  401) add "Anthropic: ключ недействителен или отозван (HTTP 401)";;
+  402|403) add "Anthropic: отказ доступа/оплаты (HTTP ${AC}) — проверьте баланс и ключ";;
+  429|500|502|503|529|000) add "Anthropic: временная перегрузка (HTTP ${AC}) — обычно проходит сама, тревога только если повторяется";;
+  *) add "Anthropic API: HTTP ${AC}";;
+esac
 
 # --- Сам сервис и сайт ---
 systemctl is-active --quiet kazzhol-bot || add "Сервис kazzhol-bot НЕ запущен"
